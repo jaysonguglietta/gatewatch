@@ -8,6 +8,27 @@
       "when": 1785424316479,
       "tag": "0000_glamorous_amazoness",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1785426497219,
+      "tag": "0001_nosy_queen_noir",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785426512328,
+      "tag": "0002_dashing_exodus",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1785426812885,
+      "tag": "0003_salty_king_cobra",
+      "breakpoints": true
     }
   ]
 }

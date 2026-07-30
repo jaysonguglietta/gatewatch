@@ -25,7 +25,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const metadataBase = new URL(`${protocol}://${host}`);
   const title = "Gatewatch — AWS Security Group Posture";
   const description =
-    "Prioritize, investigate, and document AWS Security Group exposure across every account and region.";
+    "Investigate effective AWS Security Group reachability with policy intent, traffic evidence, change provenance, vulnerability context, and explainable risk.";
 
   return {
     metadataBase,
@@ -36,10 +36,10 @@ export async function generateMetadata(): Promise<Metadata> {
       description,
       images: [
         {
-          url: "/og.png",
+          url: "/og-evidence.png",
           width: 1200,
           height: 630,
-          alt: "Gatewatch security group posture dashboard",
+          alt: "Gatewatch evidence-backed AWS security group posture",
         },
       ],
     },
@@ -47,7 +47,7 @@ export async function generateMetadata(): Promise<Metadata> {
       card: "summary_large_image",
       title,
       description,
-      images: ["/og.png"],
+      images: ["/og-evidence.png"],
     },
   };
 }

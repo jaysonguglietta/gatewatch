@@ -1,0 +1,1 @@
+CREATE INDEX `security_group_review_events_group_idx` ON `security_group_review_events` (`security_group_id`,`created_at`);
