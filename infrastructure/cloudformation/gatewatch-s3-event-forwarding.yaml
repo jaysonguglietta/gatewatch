@@ -1,0 +1,65 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Forwards S3 Object Created events from a CloudTrail or AWS Config delivery
+  bucket to the central Gatewatch SQS ingestion queue through EventBridge.
+
+Parameters:
+  SourceBucketName:
+    Type: String
+  SourcePrefix:
+    Type: String
+    Default: AWSLogs/
+  GatewatchIngestionQueueArn:
+    Type: String
+  GatewatchIngestionQueueUrl:
+    Type: String
+
+Resources:
+  ForwardingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub GatewatchEventForwardingRole-${AWS::Region}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SendGatewatchObjectEvents
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !Ref GatewatchIngestionQueueArn
+
+  ObjectCreatedRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub Gatewatch-S3Forward-${AWS::Region}
+      Description: Sends matching CloudTrail or AWS Config objects to Gatewatch.
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - Object Created
+        detail:
+          bucket:
+            name:
+              - !Ref SourceBucketName
+          object:
+            key:
+              - prefix: !Ref SourcePrefix
+      State: ENABLED
+      Targets:
+        - Arn: !Ref GatewatchIngestionQueueArn
+          Id: GatewatchIngestionQueue
+          RoleArn: !GetAtt ForwardingRole.Arn
+
+Outputs:
+  RuleArn:
+    Value: !GetAtt ObjectCreatedRule.Arn
+  RequiredBucketSetting:
+    Value: Enable Amazon EventBridge notifications on the source S3 bucket.

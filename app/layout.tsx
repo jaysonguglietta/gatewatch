@@ -23,9 +23,9 @@ export async function generateMetadata(): Promise<Metadata> {
     requestHeaders.get("x-forwarded-proto") ??
     (host.startsWith("localhost") ? "http" : "https");
   const metadataBase = new URL(`${protocol}://${host}`);
-  const title = "Gatewatch — AWS Security Group Posture";
+  const title = "Gatewatch — AWS Network Access Governance";
   const description =
-    "Investigate effective AWS Security Group reachability with policy intent, traffic evidence, change provenance, vulnerability context, and explainable risk.";
+    "Prove whether AWS network access matches business intent with reachability, traffic evidence, ownership, recertification, connectivity history, and controlled remediation.";
 
   return {
     metadataBase,

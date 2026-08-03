@@ -1,0 +1,650 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://gatewatch.local/schemas/security-group-snapshot-1.0.json",
+  "title": "Gatewatch AWS security-group snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "snapshotId",
+    "generatedAt",
+    "collectionStartedAt",
+    "durationMilliseconds",
+    "source",
+    "complete",
+    "summary",
+    "accounts",
+    "errors",
+    "securityGroups"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "snapshotId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "collectionStartedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "durationMilliseconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "source": {
+      "$ref": "#/definitions/source"
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "summary": {
+      "$ref": "#/definitions/summary"
+    },
+    "accounts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/account"
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/collectionError"
+      }
+    },
+    "securityGroups": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/securityGroup"
+      }
+    }
+  },
+  "definitions": {
+    "awsAccountId": {
+      "type": "string",
+      "pattern": "^[0-9]{12}$"
+    },
+    "nullableString": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tags": {
+      "type": "object",
+      "propertyNames": {
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 256
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "collectorAccountId",
+        "collectorRegion",
+        "scope",
+        "organizationTargetIds",
+        "excludedAccounts",
+        "regionAllowList",
+        "networkInterfaceUsageIncluded"
+      ],
+      "properties": {
+        "type": {
+          "const": "aws-ec2-describe-api"
+        },
+        "collectorAccountId": {
+          "$ref": "#/definitions/awsAccountId"
+        },
+        "collectorRegion": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+-[0-9]$"
+        },
+        "scope": {
+          "enum": [
+            "single-account",
+            "organization"
+          ]
+        },
+        "organizationTargetIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(r-[0-9a-z]{4,32}|ou-[0-9a-z]{4,32}-[a-z0-9]{8,32})$"
+          },
+          "uniqueItems": true
+        },
+        "excludedAccounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/excludedAccount"
+          }
+        },
+        "regionAllowList": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+-[0-9]$"
+          },
+          "uniqueItems": true
+        },
+        "networkInterfaceUsageIncluded": {
+          "type": "boolean"
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountsExpected",
+        "accountsAuthenticated",
+        "regionsExpected",
+        "regionsScanned",
+        "securityGroupCount",
+        "securityGroupRuleCount",
+        "errorCount"
+      ],
+      "properties": {
+        "accountsExpected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "accountsAuthenticated": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "regionsExpected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "regionsScanned": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "securityGroupCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "securityGroupRuleCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "errorCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "account": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "state"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/awsAccountId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "state": {
+          "const": "ACTIVE"
+        }
+      }
+    },
+    "excludedAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountId",
+        "accountName",
+        "reason"
+      ],
+      "properties": {
+        "accountId": {
+          "$ref": "#/definitions/awsAccountId"
+        },
+        "accountName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "reason": {
+          "enum": [
+            "parameter-exclusion",
+            "stacksets-management-account-exclusion"
+          ]
+        }
+      }
+    },
+    "collectionError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountId",
+        "accountName",
+        "region",
+        "code",
+        "message"
+      ],
+      "properties": {
+        "accountId": {
+          "$ref": "#/definitions/awsAccountId"
+        },
+        "accountName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "region": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+-[0-9]$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      }
+    },
+    "securityGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resourceKey",
+        "arn",
+        "accountId",
+        "accountName",
+        "region",
+        "id",
+        "name",
+        "description",
+        "vpcId",
+        "ownerId",
+        "isDefault",
+        "tags",
+        "inboundRuleCount",
+        "outboundRuleCount",
+        "publicIngressRuleCount",
+        "publicEgressRuleCount",
+        "networkInterfaceAttachmentCount",
+        "networkInterfaceTypes",
+        "networkEvidence",
+        "observedAt",
+        "rules",
+        "configurationHash"
+      ],
+      "properties": {
+        "resourceKey": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+:[0-9]{12}:[a-z0-9-]+-[0-9]:sg-[a-zA-Z0-9-]+$"
+        },
+        "arn": {
+          "type": "string",
+          "pattern": "^arn:[a-z0-9-]+:ec2:[a-z0-9-]+-[0-9]:[0-9]{12}:security-group/sg-[a-zA-Z0-9-]+$"
+        },
+        "accountId": {
+          "$ref": "#/definitions/awsAccountId"
+        },
+        "accountName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "region": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+-[0-9]$"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^sg-[a-zA-Z0-9-]+$"
+        },
+        "name": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "description": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "vpcId": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "ownerId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/awsAccountId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "isDefault": {
+          "type": "boolean"
+        },
+        "tags": {
+          "$ref": "#/definitions/tags"
+        },
+        "inboundRuleCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "outboundRuleCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "publicIngressRuleCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "publicEgressRuleCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "networkInterfaceAttachmentCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "networkInterfaceTypes": {
+          "type": "object",
+          "propertyNames": {
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "resourceAttachments": {
+          "type": "array",
+          "maxItems": 5000,
+          "items": {
+            "$ref": "#/definitions/resourceAttachment"
+          }
+        },
+        "networkEvidence": {
+          "$ref": "#/definitions/networkEvidence"
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/securityGroupRule"
+          }
+        },
+        "configurationHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "resourceAttachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resourceId",
+        "resourceName",
+        "resourceType",
+        "resourceArn",
+        "networkInterfaceId",
+        "description",
+        "privateIpAddress",
+        "publicIpAddress",
+        "tags"
+      ],
+      "properties": {
+        "resourceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "resourceName": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "resourceType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "resourceArn": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "networkInterfaceId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^eni-[a-zA-Z0-9-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "privateIpAddress": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "publicIpAddress": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "subnetId": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "vpcId": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "tags": {
+          "$ref": "#/definitions/tags"
+        }
+      }
+    },
+    "networkEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subnetIds",
+        "routeTableIds",
+        "networkAclIds",
+        "publicAddressCount",
+        "internetGatewayRoute",
+        "networkAclAllowsInternetIngress",
+        "state"
+      ],
+      "properties": {
+        "subnetIds": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^subnet-[a-zA-Z0-9-]+$" },
+          "uniqueItems": true
+        },
+        "routeTableIds": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^rtb-[a-zA-Z0-9-]+$" },
+          "uniqueItems": true
+        },
+        "networkAclIds": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^acl-[a-zA-Z0-9-]+$" },
+          "uniqueItems": true
+        },
+        "publicAddressCount": { "type": "integer", "minimum": 0 },
+        "internetGatewayRoute": { "type": "boolean" },
+        "networkAclAllowsInternetIngress": { "type": "boolean" },
+        "state": {
+          "enum": ["configured-internet-path", "blocked", "incomplete"]
+        }
+      }
+    },
+    "securityGroupRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ruleId",
+        "groupId",
+        "groupOwnerId",
+        "isEgress",
+        "direction",
+        "protocol",
+        "fromPort",
+        "toPort",
+        "cidrIpv4",
+        "cidrIpv6",
+        "prefixListId",
+        "referencedGroup",
+        "description",
+        "tags"
+      ],
+      "properties": {
+        "ruleId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sgr-[a-zA-Z0-9-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "groupId": {
+          "type": "string",
+          "pattern": "^sg-[a-zA-Z0-9-]+$"
+        },
+        "groupOwnerId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/awsAccountId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "isEgress": {
+          "type": "boolean"
+        },
+        "direction": {
+          "enum": [
+            "ingress",
+            "egress"
+          ]
+        },
+        "protocol": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "fromPort": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": -1,
+          "maximum": 65535
+        },
+        "toPort": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": -1,
+          "maximum": 65535
+        },
+        "cidrIpv4": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "cidrIpv6": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "prefixListId": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "referencedGroup": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/referencedGroup"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "tags": {
+          "$ref": "#/definitions/tags"
+        }
+      }
+    },
+    "referencedGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "groupId",
+        "accountId",
+        "vpcId",
+        "vpcPeeringConnectionId",
+        "peeringStatus"
+      ],
+      "properties": {
+        "groupId": {
+          "type": "string",
+          "pattern": "^sg-[a-zA-Z0-9-]+$"
+        },
+        "accountId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/awsAccountId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "vpcId": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "vpcPeeringConnectionId": {
+          "$ref": "#/definitions/nullableString"
+        },
+        "peeringStatus": {
+          "$ref": "#/definitions/nullableString"
+        }
+      }
+    }
+  }
+}

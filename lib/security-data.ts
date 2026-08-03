@@ -30,9 +30,24 @@ export type SecurityRule = {
 export type ResourceAttachment = {
   id: string;
   name: string;
-  type: "EC2" | "ALB" | "RDS" | "ElastiCache" | "SageMaker" | "Lambda";
+  type:
+    | "EC2"
+    | "ALB"
+    | "RDS"
+    | "EFS"
+    | "ElastiCache"
+    | "SageMaker"
+    | "Lambda"
+    | "Network interface";
   criticality: "Critical" | "High" | "Medium" | "Low";
   publicAddress?: string;
+  privateAddress?: string;
+  networkInterfaceId?: string;
+  subnetId?: string;
+  vpcId?: string;
+  description?: string;
+  arn?: string;
+  tags?: Record<string, string>;
 };
 
 export type ConnectivityPath = {

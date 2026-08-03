@@ -1,0 +1,468 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Gatewatch AWS ingestion and database platform. Creates an encrypted Aurora
+  PostgreSQL Serverless v2 cluster, SQS ingestion and dead-letter queues,
+  a bounded idempotent ingestion worker, alarms, and least-privilege runtime IAM.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: production
+    AllowedPattern: "^[a-z0-9-]{2,32}$"
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  DatabaseSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  DatabaseName:
+    Type: String
+    Default: gatewatch
+    AllowedPattern: "^[a-zA-Z][a-zA-Z0-9_]{0,62}$"
+  MinAuroraCapacity:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 128
+  MaxAuroraCapacity:
+    Type: Number
+    Default: 4
+    MinValue: 1
+    MaxValue: 128
+  LambdaArtifactBucket:
+    Type: String
+    Description: Existing private S3 bucket containing the packaged ingestion Lambda.
+  LambdaArtifactKey:
+    Type: String
+    Description: Versioned object key for the packaged ingestion Lambda zip.
+  BackfillArtifactKey:
+    Type: String
+    Description: Versioned object key for the packaged backfill Lambda zip.
+  AlarmTopicArn:
+    Type: String
+    Default: ""
+    Description: Optional existing SNS topic ARN for operational alarms.
+  OrganizationId:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^o-[a-z0-9]{10,32}$"
+    Description: >
+      Optional AWS Organizations ID. When supplied, EventBridge forwarding
+      roles in that organization may send to the central ingestion queue.
+
+Conditions:
+  HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, ""]]
+  HasOrganization: !Not [!Equals [!Ref OrganizationId, ""]]
+
+Resources:
+  PlatformKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub Gatewatch ${EnvironmentName} platform encryption
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: RootAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+          - Sid: AllowCloudWatchLogsEncryption
+            Effect: Allow
+            Principal:
+              Service: !Sub logs.${AWS::Region}.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: "*"
+            Condition:
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*
+
+  DatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Gatewatch Aurora administrator credential
+      KmsKeyId: !GetAtt PlatformKey.Arn
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"gatewatch_admin"}'
+        GenerateStringKey: password
+        ExcludeCharacters: '"@/\'
+        PasswordLength: 40
+
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Gatewatch private database subnets
+      SubnetIds: !Ref DatabaseSubnetIds
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Gatewatch Aurora; Data API only, no inbound network access
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 127.0.0.1/32
+          Description: Deny practical egress while satisfying CloudFormation syntax
+
+  DatabaseCluster:
+    Type: AWS::RDS::DBCluster
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DatabaseName: !Ref DatabaseName
+      DBClusterIdentifier: !Sub gatewatch-${EnvironmentName}
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      Engine: aurora-postgresql
+      EngineMode: provisioned
+      EnableHttpEndpoint: true
+      EnableCloudwatchLogsExports:
+        - postgresql
+      KmsKeyId: !GetAtt PlatformKey.Arn
+      MasterUsername: !Sub "{{resolve:secretsmanager:${DatabaseSecret}:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}"
+      Port: 5432
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: !Ref MinAuroraCapacity
+        MaxCapacity: !Ref MaxAuroraCapacity
+      StorageEncrypted: true
+      VpcSecurityGroupIds:
+        - !Ref DatabaseSecurityGroup
+
+  DatabaseInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref DatabaseCluster
+      DBInstanceClass: db.serverless
+      Engine: aurora-postgresql
+      PubliclyAccessible: false
+
+  DatabaseSecretAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref DatabaseSecret
+      TargetId: !Ref DatabaseCluster
+      TargetType: AWS::RDS::DBCluster
+
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub gatewatch-${EnvironmentName}-ingestion-dlq
+      KmsMasterKeyId: alias/aws/sqs
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  IngestionQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub gatewatch-${EnvironmentName}-ingestion
+      KmsMasterKeyId: alias/aws/sqs
+      MessageRetentionPeriod: 1209600
+      ReceiveMessageWaitTimeSeconds: 20
+      VisibilityTimeout: 360
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  OrganizationQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Condition: HasOrganization
+    Properties:
+      Queues:
+        - !Ref IngestionQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: OrganizationEventForwardingRoles
+            Effect: Allow
+            Principal: "*"
+            Action: sqs:SendMessage
+            Resource: !GetAtt IngestionQueue.Arn
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Ref OrganizationId
+              ArnLike:
+                aws:PrincipalArn: !Sub arn:${AWS::Partition}:iam::*:role/GatewatchEventForwardingRole-*
+
+  IngestionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: GatewatchIngestionRuntime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/gatewatch-${EnvironmentName}-*:*
+              - Sid: Queue
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:SendMessage
+                Resource: !GetAtt IngestionQueue.Arn
+              - Sid: DataApi
+                Effect: Allow
+                Action:
+                  - rds-data:ExecuteStatement
+                  - rds-data:BatchExecuteStatement
+                  - rds-data:BeginTransaction
+                  - rds-data:CommitTransaction
+                  - rds-data:RollbackTransaction
+                Resource: !GetAtt DatabaseCluster.DBClusterArn
+              - Sid: DatabaseSecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref DatabaseSecret
+              - Sid: DecryptRuntimeConfiguration
+                Effect: Allow
+                Action: kms:Decrypt
+                Resource: !GetAtt PlatformKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService:
+                      - !Sub secretsmanager.${AWS::Region}.amazonaws.com
+                      - !Sub lambda.${AWS::Region}.amazonaws.com
+              - Sid: AssumeTaggedSourceRoles
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Sub arn:${AWS::Partition}:iam::*:role/GatewatchLogReadRole*
+
+  IngestionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/gatewatch-${EnvironmentName}-ingest
+      RetentionInDays: 90
+      KmsKeyId: !GetAtt PlatformKey.Arn
+
+  IngestionFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: IngestionLogGroup
+    Properties:
+      FunctionName: !Sub gatewatch-${EnvironmentName}-ingest
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt IngestionRole.Arn
+      Architectures:
+        - arm64
+      MemorySize: 1536
+      Timeout: 300
+      ReservedConcurrentExecutions: 10
+      Code:
+        S3Bucket: !Ref LambdaArtifactBucket
+        S3Key: !Ref LambdaArtifactKey
+      Environment:
+        Variables:
+          DATABASE_NAME: !Ref DatabaseName
+          DB_CLUSTER_ARN: !GetAtt DatabaseCluster.DBClusterArn
+          DB_SECRET_ARN: !Ref DatabaseSecret
+      KmsKeyArn: !GetAtt PlatformKey.Arn
+      TracingConfig:
+        Mode: Active
+
+  BackfillLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/gatewatch-${EnvironmentName}-backfill
+      RetentionInDays: 90
+      KmsKeyId: !GetAtt PlatformKey.Arn
+
+  BackfillFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: BackfillLogGroup
+    Properties:
+      FunctionName: !Sub gatewatch-${EnvironmentName}-backfill
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt IngestionRole.Arn
+      Architectures:
+        - arm64
+      MemorySize: 1024
+      Timeout: 300
+      ReservedConcurrentExecutions: 2
+      Code:
+        S3Bucket: !Ref LambdaArtifactBucket
+        S3Key: !Ref BackfillArtifactKey
+      Environment:
+        Variables:
+          DATABASE_NAME: !Ref DatabaseName
+          DB_CLUSTER_ARN: !GetAtt DatabaseCluster.DBClusterArn
+          DB_SECRET_ARN: !Ref DatabaseSecret
+          INGESTION_QUEUE_URL: !Ref IngestionQueue
+      KmsKeyArn: !GetAtt PlatformKey.Arn
+      TracingConfig:
+        Mode: Active
+
+  BackfillStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeBackfillWorker
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt BackfillFunction.Arn
+
+  BackfillStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub gatewatch-${EnvironmentName}-backfill
+      RoleArn: !GetAtt BackfillStateMachineRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "List historical S3 evidence in bounded pages and enqueue object references.",
+          "StartAt": "ListAndEnqueuePage",
+          "States": {
+            "ListAndEnqueuePage": {
+              "Type": "Task",
+              "Resource": "arn:${AWS::Partition}:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${BackfillFunction.Arn}",
+                "Payload.$": "$"
+              },
+              "OutputPath": "$.Payload",
+              "Retry": [
+                {
+                  "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 4,
+                  "BackoffRate": 2
+                }
+              ],
+              "Next": "BackfillComplete"
+            },
+            "BackfillComplete": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "Variable": "$.done",
+                  "BooleanEquals": true,
+                  "Next": "Complete"
+                }
+              ],
+              "Default": "ListAndEnqueuePage"
+            },
+            "Complete": { "Type": "Succeed" }
+          }
+        }
+
+  QueueEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 10
+      EventSourceArn: !GetAtt IngestionQueue.Arn
+      FunctionName: !Ref IngestionFunction
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+      MaximumBatchingWindowInSeconds: 5
+      ScalingConfig:
+        MaximumConcurrency: 10
+
+  QueueAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Gatewatch ingestion is falling behind.
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt IngestionQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 900
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmTopic
+        - - !Ref AlarmTopicArn
+        - !Ref AWS::NoValue
+
+  DeadLetterAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Gatewatch objects reached the ingestion dead-letter queue.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt DeadLetterQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmTopic
+        - - !Ref AlarmTopicArn
+        - !Ref AWS::NoValue
+
+  LambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Gatewatch ingestion Lambda returned errors.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref IngestionFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmTopic
+        - - !Ref AlarmTopicArn
+        - !Ref AWS::NoValue
+
+Outputs:
+  DatabaseClusterArn:
+    Value: !GetAtt DatabaseCluster.DBClusterArn
+  DatabaseSecretArn:
+    Value: !Ref DatabaseSecret
+  IngestionQueueArn:
+    Value: !GetAtt IngestionQueue.Arn
+  IngestionQueueUrl:
+    Value: !Ref IngestionQueue
+  IngestionFunctionArn:
+    Value: !GetAtt IngestionFunction.Arn
+  BackfillStateMachineArn:
+    Value: !Ref BackfillStateMachine
+  DeadLetterQueueUrl:
+    Value: !Ref DeadLetterQueue

@@ -1,0 +1,14 @@
+.git
+.next
+.wrangler
+dist
+node_modules
+samples/*.gz
+.env
+.env.*
+*.log
+*.pem
+*.key
+*.zip
+.DS_Store
+

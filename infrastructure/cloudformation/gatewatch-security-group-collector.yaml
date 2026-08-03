@@ -1,0 +1,1667 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Gatewatch security-group inventory collector. Collects normalized EC2 security
+  group and rule data from one account or selected AWS Organizations targets,
+  then writes encrypted JSON snapshots to S3.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Collection scope
+        Parameters:
+          - CollectionScope
+          - OrganizationTargetIds
+          - ExcludedAccountIds
+          - StackSetCallAs
+          - MemberReadRoleName
+          - RegionAllowList
+          - IncludeNetworkInterfaceUsage
+      - Label:
+          default: Scheduling and retention
+        Parameters:
+          - ScheduleExpression
+          - SnapshotRetentionDays
+          - LogRetentionDays
+          - StrictMode
+          - AlarmEmail
+      - Label:
+          default: Runtime
+        Parameters:
+          - CollectorFunctionName
+          - MaximumParallelScans
+    ParameterLabels:
+      CollectionScope:
+        default: Accounts to collect
+      OrganizationTargetIds:
+        default: Organization root or OU IDs
+      ExcludedAccountIds:
+        default: Excluded organization account IDs
+      StackSetCallAs:
+        default: StackSets administrator type
+      MemberReadRoleName:
+        default: Cross-account read role name
+      RegionAllowList:
+        default: Region allowlist
+      IncludeNetworkInterfaceUsage:
+        default: Collect network-interface usage counts
+      ScheduleExpression:
+        default: Collection schedule
+      SnapshotRetentionDays:
+        default: Historical snapshot retention
+      LogRetentionDays:
+        default: CloudWatch log retention
+      StrictMode:
+        default: Fail runs containing collection errors
+      AlarmEmail:
+        default: Optional alarm email
+      CollectorFunctionName:
+        default: Lambda function name
+      MaximumParallelScans:
+        default: Maximum parallel account/region scans
+
+Parameters:
+  CollectionScope:
+    Type: String
+    Default: single-account
+    AllowedValues:
+      - single-account
+      - organization
+    Description: >
+      Use single-account for the stack account only. Use organization to deploy
+      a read role with service-managed StackSets and collect selected roots/OUs.
+
+  OrganizationTargetIds:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: >
+      Required for organization scope. Comma-separated root or OU IDs, such as
+      r-abcd or ou-abcd-12345678. The collector only scans accounts beneath
+      these targets.
+
+  ExcludedAccountIds:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[0-9]{12}(,[0-9]{12})*$"
+    Description: >
+      Optional comma-separated account IDs to omit from organization collection.
+      The Organizations management account is also omitted automatically when
+      collection runs from a delegated administrator because service-managed
+      StackSets cannot deploy the member role to the management account.
+
+  StackSetCallAs:
+    Type: String
+    Default: DELEGATED_ADMIN
+    AllowedValues:
+      - SELF
+      - DELEGATED_ADMIN
+    Description: >
+      SELF when deploying from the Organizations management account;
+      DELEGATED_ADMIN when deploying from a registered StackSets delegated
+      administrator account.
+
+  MemberReadRoleName:
+    Type: String
+    Default: GatewatchSecurityGroupReadRole
+    AllowedPattern: "^[A-Za-z0-9+=,.@_-]{1,64}$"
+    Description: Name of the least-privilege IAM role deployed to member accounts.
+
+  RegionAllowList:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[a-z0-9-]+-[0-9](,[a-z0-9-]+-[0-9])*$"
+    Description: >
+      Optional comma-separated AWS Regions. Leave blank to scan every enabled
+      Region in each account.
+
+  IncludeNetworkInterfaceUsage:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >
+      When true, scans network interfaces to calculate attachment counts and
+      interface-type counts for each security group.
+
+  ScheduleExpression:
+    Type: String
+    Default: rate(15 minutes)
+    AllowedPattern: "^(rate\\([1-9][0-9]* (minute|minutes|hour|hours|day|days)\\)|cron\\(.+\\))$"
+    Description: EventBridge schedule expression for full reconciliation.
+
+  SnapshotRetentionDays:
+    Type: Number
+    Default: 365
+    MinValue: 1
+    MaxValue: 3650
+    Description: Days to retain versioned historical snapshots.
+
+  LogRetentionDays:
+    Type: Number
+    Default: 90
+    AllowedValues:
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1096
+      - 1827
+      - 2192
+      - 2557
+      - 2922
+      - 3288
+      - 3653
+    Description: CloudWatch Logs retention in days.
+
+  StrictMode:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >
+      When true, any account or Region collection error fails the invocation,
+      triggers retries/alarms, and prevents replacement of the latest snapshot.
+
+  AlarmEmail:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$"
+    Description: Optional email address for Lambda error alarm notifications.
+
+  CollectorFunctionName:
+    Type: String
+    Default: gatewatch-security-group-collector
+    AllowedPattern: "^[A-Za-z0-9-_]{1,64}$"
+    Description: Stable Lambda function name used by IAM and monitoring resources.
+
+  MaximumParallelScans:
+    Type: Number
+    Default: 8
+    MinValue: 1
+    MaxValue: 32
+    Description: Maximum number of account/Region API scans performed concurrently.
+
+Conditions:
+  IsOrganizationScope: !Equals [!Ref CollectionScope, organization]
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+
+Resources:
+  SnapshotKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Encrypts Gatewatch security-group inventory snapshots.
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableAccountIAMPolicies
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+      Tags:
+        - Key: Application
+          Value: Gatewatch
+        - Key: DataClassification
+          Value: SecurityConfiguration
+
+  SnapshotBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !GetAtt SnapshotKey.Arn
+              SSEAlgorithm: aws:kms
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireHistoricalSnapshots
+            Status: Enabled
+            Prefix: snapshots/
+            ExpirationInDays: !Ref SnapshotRetentionDays
+            NoncurrentVersionExpiration:
+              NoncurrentDays: !Ref SnapshotRetentionDays
+          - Id: ExpireNoncurrentExports
+            Status: Enabled
+            Prefix: exports/
+            NoncurrentVersionExpiration:
+              NoncurrentDays: !Ref SnapshotRetentionDays
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Application
+          Value: Gatewatch
+        - Key: DataClassification
+          Value: SecurityConfiguration
+
+  SnapshotBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SnapshotBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt SnapshotBucket.Arn
+              - !Sub ${SnapshotBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  CollectorExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Least-privilege execution role for Gatewatch inventory collection.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: GatewatchCollectorRuntime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WriteFunctionLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${CollectorFunctionName}:*
+              - Sid: ReadLocalSecurityGroups
+                Effect: Allow
+                Action:
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeRegions
+                  - ec2:DescribeSecurityGroupRules
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeInstances
+                  - ec2:DescribeInternetGateways
+                  - ec2:DescribeNetworkAcls
+                  - ec2:DescribeRouteTables
+                  - ec2:DescribeSubnets
+                  - elasticfilesystem:DescribeFileSystems
+                  - elasticfilesystem:DescribeMountTargets
+                  - elasticfilesystem:DescribeMountTargetSecurityGroups
+                  - rds:DescribeDBClusters
+                  - rds:DescribeDBInstances
+                Resource: "*"
+              - !If
+                - IsOrganizationScope
+                - Sid: ReadOrganizationInventory
+                  Effect: Allow
+                  Action:
+                    - organizations:DescribeOrganization
+                    - organizations:ListAccountsForParent
+                    - organizations:ListOrganizationalUnitsForParent
+                  Resource: "*"
+                - !Ref AWS::NoValue
+              - !If
+                - IsOrganizationScope
+                - Sid: AssumeMemberReadRoles
+                  Effect: Allow
+                  Action: sts:AssumeRole
+                  Resource: !Sub arn:${AWS::Partition}:iam::*:role/${MemberReadRoleName}
+                - !Ref AWS::NoValue
+              - Sid: WriteSnapshots
+                Effect: Allow
+                Action: s3:PutObject
+                Resource:
+                  - !Sub ${SnapshotBucket.Arn}/exports/*
+                  - !Sub ${SnapshotBucket.Arn}/manifests/*
+                  - !Sub ${SnapshotBucket.Arn}/snapshots/*
+              - Sid: EncryptSnapshots
+                Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt SnapshotKey.Arn
+              - Sid: WriteFailedAsyncInvocations
+                Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt InvocationDeadLetterQueue.Arn
+              - Sid: PublishOperationalMetrics
+                Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: Gatewatch/Collector
+              - Sid: WriteXRayTelemetry
+                Effect: Allow
+                Action:
+                  - xray:PutTelemetryRecords
+                  - xray:PutTraceSegments
+                Resource: "*"
+      Tags:
+        - Key: Application
+          Value: Gatewatch
+
+  MemberReadRoleStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Condition: IsOrganizationScope
+    Properties:
+      StackSetName: !Sub ${AWS::StackName}-member-read-role
+      Description: Deploys the Gatewatch security-group read role to selected organization targets.
+      PermissionModel: SERVICE_MANAGED
+      CallAs: !Ref StackSetCallAs
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+      AutoDeployment:
+        Enabled: true
+        RetainStacksOnAccountRemoval: false
+      ManagedExecution:
+        Active: true
+      OperationPreferences:
+        FailureTolerancePercentage: 10
+        MaxConcurrentPercentage: 25
+        RegionConcurrencyType: PARALLEL
+      StackInstancesGroup:
+        - DeploymentTargets:
+            OrganizationalUnitIds: !Ref OrganizationTargetIds
+          Regions:
+            - !Ref AWS::Region
+      TemplateBody: !Sub |
+        AWSTemplateFormatVersion: "2010-09-09"
+        Description: Gatewatch least-privilege security-group inventory read role.
+        Resources:
+          MemberReadRole:
+            Type: AWS::IAM::Role
+            Properties:
+              RoleName: ${MemberReadRoleName}
+              Description: Read-only role assumed by the central Gatewatch collector.
+              MaxSessionDuration: 3600
+              AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                  - Effect: Allow
+                    Principal:
+                      AWS: ${CollectorExecutionRole.Arn}
+                    Action: sts:AssumeRole
+                    Condition:
+                      StringLike:
+                        sts:RoleSessionName: gatewatch-*
+              Policies:
+                - PolicyName: ReadSecurityGroupInventory
+                  PolicyDocument:
+                    Version: "2012-10-17"
+                    Statement:
+                      - Sid: DescribeSecurityGroupInventory
+                        Effect: Allow
+                        Action:
+                          - ec2:DescribeNetworkInterfaces
+                          - ec2:DescribeRegions
+                          - ec2:DescribeSecurityGroupRules
+                          - ec2:DescribeSecurityGroups
+                          - ec2:DescribeInstances
+                          - ec2:DescribeInternetGateways
+                          - ec2:DescribeNetworkAcls
+                          - ec2:DescribeRouteTables
+                          - ec2:DescribeSubnets
+                          - elasticfilesystem:DescribeFileSystems
+                          - elasticfilesystem:DescribeMountTargets
+                          - elasticfilesystem:DescribeMountTargetSecurityGroups
+                          - rds:DescribeDBClusters
+                          - rds:DescribeDBInstances
+                        Resource: "*"
+              Tags:
+                - Key: Application
+                  Value: Gatewatch
+        Outputs:
+          RoleArn:
+            Description: Role assumed by the central Gatewatch collector.
+            Value:
+              Fn::GetAtt:
+                - MemberReadRole
+                - Arn
+
+  CollectorLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${CollectorFunctionName}
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Application
+          Value: Gatewatch
+
+  CollectorFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - CollectorLogGroup
+      - SnapshotBucketPolicy
+    Properties:
+      FunctionName: !Ref CollectorFunctionName
+      Description: Exports normalized AWS EC2 security-group inventory for Gatewatch.
+      Runtime: python3.13
+      Handler: index.lambda_handler
+      Architectures:
+        - arm64
+      MemorySize: 1024
+      Timeout: 840
+      ReservedConcurrentExecutions: 1
+      Role: !GetAtt CollectorExecutionRole.Arn
+      DeadLetterConfig:
+        TargetArn: !GetAtt InvocationDeadLetterQueue.Arn
+      TracingConfig:
+        Mode: Active
+      Environment:
+        Variables:
+          COLLECTION_SCOPE: !Ref CollectionScope
+          EXCLUDED_ACCOUNT_IDS: !Ref ExcludedAccountIds
+          INCLUDE_NETWORK_INTERFACE_USAGE: !Ref IncludeNetworkInterfaceUsage
+          KMS_KEY_ARN: !GetAtt SnapshotKey.Arn
+          MAX_PARALLEL_SCANS: !Ref MaximumParallelScans
+          MEMBER_ROLE_NAME: !Ref MemberReadRoleName
+          ORGANIZATION_TARGET_IDS: !Join [",", !Ref OrganizationTargetIds]
+          OUTPUT_BUCKET: !Ref SnapshotBucket
+          PARTITION: !Ref AWS::Partition
+          REGION_ALLOW_LIST: !Ref RegionAllowList
+          SOURCE_ACCOUNT_ID: !Ref AWS::AccountId
+          SOURCE_REGION: !Ref AWS::Region
+          STRICT_MODE: !Ref StrictMode
+      Code:
+        ZipFile: |
+          import concurrent.futures
+          import gzip
+          import hashlib
+          import json
+          import logging
+          import os
+          import re
+          import uuid
+          from collections import defaultdict
+          from datetime import datetime, timezone
+
+          import boto3
+          from botocore.config import Config
+          from botocore.exceptions import BotoCoreError, ClientError
+
+
+          LOGGER = logging.getLogger()
+          LOGGER.setLevel(logging.INFO)
+
+          COLLECTION_SCOPE = os.environ["COLLECTION_SCOPE"]
+          EXCLUDED_ACCOUNT_IDS = {
+              item.strip()
+              for item in os.environ.get("EXCLUDED_ACCOUNT_IDS", "").split(",")
+              if item.strip()
+          }
+          INCLUDE_NETWORK_INTERFACE_USAGE = (
+              os.environ.get("INCLUDE_NETWORK_INTERFACE_USAGE", "true").lower() == "true"
+          )
+          KMS_KEY_ARN = os.environ["KMS_KEY_ARN"]
+          MAX_PARALLEL_SCANS = max(
+              1, min(32, int(os.environ.get("MAX_PARALLEL_SCANS", "8")))
+          )
+          MEMBER_ROLE_NAME = os.environ["MEMBER_ROLE_NAME"]
+          ORGANIZATION_TARGET_IDS = [
+              item.strip()
+              for item in os.environ.get("ORGANIZATION_TARGET_IDS", "").split(",")
+              if item.strip()
+          ]
+          OUTPUT_BUCKET = os.environ["OUTPUT_BUCKET"]
+          PARTITION = os.environ.get("PARTITION", "aws")
+          REGION_ALLOW_LIST = {
+              item.strip()
+              for item in os.environ.get("REGION_ALLOW_LIST", "").split(",")
+              if item.strip()
+          }
+          SOURCE_ACCOUNT_ID = os.environ["SOURCE_ACCOUNT_ID"]
+          SOURCE_REGION = os.environ["SOURCE_REGION"]
+          STRICT_MODE = os.environ.get("STRICT_MODE", "true").lower() == "true"
+          DISCOVERED_EXCLUSIONS = []
+
+          SDK_CONFIG = Config(
+              connect_timeout=5,
+              read_timeout=60,
+              retries={"max_attempts": 8, "mode": "adaptive"},
+              user_agent_extra="GatewatchSecurityGroupCollector/1.0",
+          )
+
+
+          def utc_now():
+              return datetime.now(timezone.utc)
+
+
+          def isoformat(value):
+              return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+          def tags_to_dict(tags):
+              return {
+                  item["Key"]: item.get("Value", "")
+                  for item in (tags or [])
+                  if item.get("Key")
+              }
+
+
+          def clean_error(error):
+              if isinstance(error, ClientError):
+                  payload = error.response.get("Error", {})
+                  return {
+                      "code": str(payload.get("Code", "ClientError"))[:120],
+                      "message": str(payload.get("Message", "AWS API request failed"))[:500],
+                  }
+              return {
+                  "code": error.__class__.__name__[:120],
+                  "message": str(error)[:500],
+              }
+
+
+          def paginate(client, operation_name, result_key, **kwargs):
+              paginator = client.get_paginator(operation_name)
+              for page in paginator.paginate(**kwargs):
+                  for item in page.get(result_key, []):
+                      yield item
+
+
+          def list_accounts_for_organization():
+              if not ORGANIZATION_TARGET_IDS:
+                  raise ValueError(
+                      "ORGANIZATION_TARGET_IDS must contain at least one root or OU ID"
+                  )
+
+              organizations = boto3.client("organizations", config=SDK_CONFIG)
+              DISCOVERED_EXCLUSIONS.clear()
+              accounts = {}
+              visited_parents = set()
+              organization = organizations.describe_organization().get(
+                  "Organization", {}
+              )
+              management_account_id = organization.get(
+                  "ManagementAccountId"
+              ) or organization.get("MasterAccountId")
+
+              def visit(parent_id):
+                  if parent_id in visited_parents:
+                      return
+                  visited_parents.add(parent_id)
+
+                  token = None
+                  while True:
+                      request = {"ParentId": parent_id}
+                      if token:
+                          request["NextToken"] = token
+                      response = organizations.list_accounts_for_parent(**request)
+                      for account in response.get("Accounts", []):
+                          state = account.get("State") or account.get("Status")
+                          if state == "ACTIVE":
+                              accounts[account["Id"]] = {
+                                  "id": account["Id"],
+                                  "name": account.get("Name") or account["Id"],
+                                  "state": state,
+                              }
+                      token = response.get("NextToken")
+                      if not token:
+                          break
+
+                  token = None
+                  while True:
+                      request = {"ParentId": parent_id}
+                      if token:
+                          request["NextToken"] = token
+                      response = organizations.list_organizational_units_for_parent(
+                          **request
+                      )
+                      for organizational_unit in response.get(
+                          "OrganizationalUnits", []
+                      ):
+                          visit(organizational_unit["Id"])
+                      token = response.get("NextToken")
+                      if not token:
+                          break
+
+              for target_id in ORGANIZATION_TARGET_IDS:
+                  visit(target_id)
+
+              for account_id in sorted(EXCLUDED_ACCOUNT_IDS):
+                  account = accounts.pop(account_id, None)
+                  if account:
+                      DISCOVERED_EXCLUSIONS.append(
+                          {
+                              "accountId": account_id,
+                              "accountName": account["name"],
+                              "reason": "parameter-exclusion",
+                          }
+                      )
+
+              if (
+                  management_account_id
+                  and management_account_id != SOURCE_ACCOUNT_ID
+                  and management_account_id in accounts
+              ):
+                  account = accounts.pop(management_account_id)
+                  DISCOVERED_EXCLUSIONS.append(
+                      {
+                          "accountId": management_account_id,
+                          "accountName": account["name"],
+                          "reason": "stacksets-management-account-exclusion",
+                      }
+                  )
+
+              return sorted(accounts.values(), key=lambda item: item["id"])
+
+
+          def collection_accounts():
+              if COLLECTION_SCOPE == "organization":
+                  return list_accounts_for_organization()
+              return [
+                  {
+                      "id": SOURCE_ACCOUNT_ID,
+                      "name": "Current AWS account",
+                      "state": "ACTIVE",
+                  }
+              ]
+
+
+          def current_credentials():
+              credentials = boto3.Session().get_credentials()
+              if credentials is None:
+                  raise RuntimeError("Lambda runtime credentials are unavailable")
+              frozen = credentials.get_frozen_credentials()
+              return {
+                  "aws_access_key_id": frozen.access_key,
+                  "aws_secret_access_key": frozen.secret_key,
+                  "aws_session_token": frozen.token,
+              }
+
+
+          def credentials_for_account(account_id):
+              if account_id == SOURCE_ACCOUNT_ID:
+                  return current_credentials()
+
+              sts = boto3.client("sts", config=SDK_CONFIG)
+              role_arn = (
+                  f"arn:{PARTITION}:iam::{account_id}:role/{MEMBER_ROLE_NAME}"
+              )
+              response = sts.assume_role(
+                  RoleArn=role_arn,
+                  RoleSessionName=f"gatewatch-{account_id}",
+                  DurationSeconds=3600,
+              )
+              credentials = response["Credentials"]
+              return {
+                  "aws_access_key_id": credentials["AccessKeyId"],
+                  "aws_secret_access_key": credentials["SecretAccessKey"],
+                  "aws_session_token": credentials["SessionToken"],
+              }
+
+
+          def session_for(credentials, region_name):
+              return boto3.Session(region_name=region_name, **credentials)
+
+
+          def enabled_regions(credentials):
+              session = session_for(credentials, SOURCE_REGION)
+              ec2 = session.client("ec2", config=SDK_CONFIG)
+              response = ec2.describe_regions(AllRegions=True)
+              regions = {
+                  item["RegionName"]
+                  for item in response.get("Regions", [])
+                  if item.get("OptInStatus") in ("opt-in-not-required", "opted-in")
+              }
+              if REGION_ALLOW_LIST:
+                  regions &= REGION_ALLOW_LIST
+              return sorted(regions)
+
+
+          def normalize_rule(rule):
+              referenced = rule.get("ReferencedGroupInfo")
+              normalized = {
+                  "ruleId": rule.get("SecurityGroupRuleId"),
+                  "groupId": rule.get("GroupId"),
+                  "groupOwnerId": rule.get("GroupOwnerId"),
+                  "isEgress": bool(rule.get("IsEgress")),
+                  "direction": "egress" if rule.get("IsEgress") else "ingress",
+                  "protocol": str(rule.get("IpProtocol", "-1")),
+                  "fromPort": rule.get("FromPort"),
+                  "toPort": rule.get("ToPort"),
+                  "cidrIpv4": rule.get("CidrIpv4"),
+                  "cidrIpv6": rule.get("CidrIpv6"),
+                  "prefixListId": rule.get("PrefixListId"),
+                  "referencedGroup": (
+                      {
+                          "groupId": referenced.get("GroupId"),
+                          "accountId": referenced.get("UserId"),
+                          "vpcId": referenced.get("VpcId"),
+                          "vpcPeeringConnectionId": referenced.get(
+                              "VpcPeeringConnectionId"
+                          ),
+                          "peeringStatus": referenced.get("PeeringStatus"),
+                      }
+                      if referenced
+                      else None
+                  ),
+                  "description": rule.get("Description"),
+                  "tags": tags_to_dict(rule.get("Tags")),
+              }
+              return normalized
+
+
+          def public_rule(rule):
+              return rule.get("cidrIpv4") == "0.0.0.0/0" or rule.get(
+                  "cidrIpv6"
+              ) == "::/0"
+
+
+          def resource_name(tags, fallback):
+              for key in ("Name", "name", "Application", "Service"):
+                  if tags.get(key):
+                      return tags[key]
+              return fallback
+
+
+          def add_attachment(attachments, group_id, attachment):
+              if not group_id or not attachment.get("resourceId"):
+                  return
+              identity = (
+                  attachment.get("resourceType"),
+                  attachment.get("resourceId"),
+                  attachment.get("networkInterfaceId"),
+              )
+              attachments[group_id][identity] = attachment
+
+
+          def collect_instance_details(ec2, interfaces):
+              instance_ids = sorted(
+                  {
+                      interface.get("Attachment", {}).get("InstanceId")
+                      for interface in interfaces
+                      if interface.get("Attachment", {}).get("InstanceId")
+                  }
+              )
+              instances = {}
+              for offset in range(0, len(instance_ids), 100):
+                  response = ec2.describe_instances(
+                      InstanceIds=instance_ids[offset : offset + 100]
+                  )
+                  for reservation in response.get("Reservations", []):
+                      for instance in reservation.get("Instances", []):
+                          instances[instance["InstanceId"]] = instance
+              return instances
+
+
+          def collect_network_attachments(account, region, ec2, interfaces):
+              attachments = defaultdict(dict)
+              instances = collect_instance_details(ec2, interfaces)
+              for interface in interfaces:
+                  interface_id = interface.get("NetworkInterfaceId")
+                  description = interface.get("Description") or None
+                  private_ip = interface.get("PrivateIpAddress")
+                  public_ip = (interface.get("Association") or {}).get("PublicIp")
+                  subnet_id = interface.get("SubnetId")
+                  vpc_id = interface.get("VpcId")
+                  interface_tags = tags_to_dict(interface.get("TagSet"))
+                  instance_id = (interface.get("Attachment") or {}).get("InstanceId")
+                  instance = instances.get(instance_id)
+                  if instance:
+                      tags = tags_to_dict(instance.get("Tags"))
+                      attachment = {
+                          "resourceId": instance_id,
+                          "resourceName": resource_name(tags, instance_id),
+                          "resourceType": "AWS::EC2::Instance",
+                          "resourceArn": (
+                              f"arn:{PARTITION}:ec2:{region}:{account['id']}:"
+                              f"instance/{instance_id}"
+                          ),
+                          "networkInterfaceId": interface_id,
+                          "description": description,
+                          "privateIpAddress": private_ip,
+                          "publicIpAddress": public_ip,
+                          "subnetId": subnet_id,
+                          "vpcId": vpc_id,
+                          "tags": tags,
+                      }
+                  else:
+                      attachment = {
+                          "resourceId": interface_id,
+                          "resourceName": resource_name(
+                              interface_tags, description or interface_id
+                          ),
+                          "resourceType": "AWS::EC2::NetworkInterface",
+                          "resourceArn": (
+                              f"arn:{PARTITION}:ec2:{region}:{account['id']}:"
+                              f"network-interface/{interface_id}"
+                          ),
+                          "networkInterfaceId": interface_id,
+                          "description": description,
+                          "privateIpAddress": private_ip,
+                          "publicIpAddress": public_ip,
+                          "subnetId": subnet_id,
+                          "vpcId": vpc_id,
+                          "tags": interface_tags,
+                      }
+                  for membership in interface.get("Groups", []):
+                      add_attachment(attachments, membership.get("GroupId"), attachment)
+              return attachments
+
+
+          def enrich_rds_attachments(session, attachments):
+              try:
+                  rds = session.client("rds", config=SDK_CONFIG)
+                  for instance in paginate(
+                      rds, "describe_db_instances", "DBInstances"
+                  ):
+                      tags = tags_to_dict(instance.get("TagList"))
+                      identifier = instance.get("DBInstanceIdentifier")
+                      attachment = {
+                          "resourceId": identifier,
+                          "resourceName": resource_name(tags, identifier),
+                          "resourceType": "AWS::RDS::DBInstance",
+                          "resourceArn": instance.get("DBInstanceArn"),
+                          "networkInterfaceId": None,
+                          "description": " ".join(
+                              filter(
+                                  None,
+                                  [instance.get("Engine"), instance.get("DBInstanceClass")],
+                              )
+                          ) or None,
+                          "privateIpAddress": None,
+                          "publicIpAddress": None,
+                          "tags": tags,
+                      }
+                      for membership in instance.get("VpcSecurityGroups", []):
+                          add_attachment(
+                              attachments,
+                              membership.get("VpcSecurityGroupId"),
+                              attachment,
+                          )
+                  for cluster in paginate(
+                      rds, "describe_db_clusters", "DBClusters"
+                  ):
+                      tags = tags_to_dict(cluster.get("TagList"))
+                      identifier = cluster.get("DBClusterIdentifier")
+                      attachment = {
+                          "resourceId": identifier,
+                          "resourceName": resource_name(tags, identifier),
+                          "resourceType": "AWS::RDS::DBCluster",
+                          "resourceArn": cluster.get("DBClusterArn"),
+                          "networkInterfaceId": None,
+                          "description": " ".join(
+                              filter(None, [cluster.get("Engine"), cluster.get("EngineMode")])
+                          ) or None,
+                          "privateIpAddress": None,
+                          "publicIpAddress": None,
+                          "tags": tags,
+                      }
+                      for membership in cluster.get("VpcSecurityGroups", []):
+                          add_attachment(
+                              attachments,
+                              membership.get("VpcSecurityGroupId"),
+                              attachment,
+                          )
+              except (BotoCoreError, ClientError) as error:
+                  LOGGER.warning("Unable to enrich RDS attachments: %s", clean_error(error))
+
+
+          def enrich_efs_attachments(session, attachments):
+              try:
+                  efs = session.client("efs", config=SDK_CONFIG)
+                  for file_system in paginate(
+                      efs, "describe_file_systems", "FileSystems"
+                  ):
+                      file_system_id = file_system.get("FileSystemId")
+                      tags = tags_to_dict(file_system.get("Tags"))
+                      for mount_target in paginate(
+                          efs,
+                          "describe_mount_targets",
+                          "MountTargets",
+                          FileSystemId=file_system_id,
+                      ):
+                          mount_target_id = mount_target.get("MountTargetId")
+                          response = efs.describe_mount_target_security_groups(
+                              MountTargetId=mount_target_id
+                          )
+                          attachment = {
+                              "resourceId": file_system_id,
+                              "resourceName": resource_name(tags, file_system_id),
+                              "resourceType": "AWS::EFS::FileSystem",
+                              "resourceArn": file_system.get("FileSystemArn"),
+                              "networkInterfaceId": mount_target.get("NetworkInterfaceId"),
+                              "description": f"EFS mount target {mount_target_id}",
+                              "privateIpAddress": mount_target.get("IpAddress"),
+                              "publicIpAddress": None,
+                              "tags": tags,
+                          }
+                          for group_id in response.get("SecurityGroups", []):
+                              add_attachment(attachments, group_id, attachment)
+              except (BotoCoreError, ClientError) as error:
+                  LOGGER.warning("Unable to enrich EFS attachments: %s", clean_error(error))
+
+
+          def collect_network_context(ec2, interfaces):
+              route_tables = list(
+                  paginate(
+                      ec2,
+                      "describe_route_tables",
+                      "RouteTables",
+                      PaginationConfig={"PageSize": 1000},
+                  )
+              )
+              network_acls = list(
+                  paginate(
+                      ec2,
+                      "describe_network_acls",
+                      "NetworkAcls",
+                      PaginationConfig={"PageSize": 1000},
+                  )
+              )
+              route_by_subnet = {}
+              main_route_by_vpc = {}
+              for table in route_tables:
+                  for association in table.get("Associations", []):
+                      if association.get("SubnetId"):
+                          route_by_subnet[association["SubnetId"]] = table
+                      if association.get("Main"):
+                          main_route_by_vpc[table.get("VpcId")] = table
+              acl_by_subnet = {}
+              for acl in network_acls:
+                  for association in acl.get("Associations", []):
+                      if association.get("SubnetId"):
+                          acl_by_subnet[association["SubnetId"]] = acl
+
+              result = defaultdict(
+                  lambda: {
+                      "subnetIds": set(),
+                      "routeTableIds": set(),
+                      "networkAclIds": set(),
+                      "publicAddressCount": 0,
+                      "internetGatewayRoute": False,
+                      "networkAclAllowsInternetIngress": False,
+                  }
+              )
+              for interface in interfaces:
+                  subnet_id = interface.get("SubnetId")
+                  vpc_id = interface.get("VpcId")
+                  table = route_by_subnet.get(subnet_id) or main_route_by_vpc.get(vpc_id)
+                  acl = acl_by_subnet.get(subnet_id)
+                  has_public_route = bool(
+                      table
+                      and any(
+                          route.get("State", "active") == "active"
+                          and str(route.get("GatewayId", "")).startswith("igw-")
+                          and (
+                              route.get("DestinationCidrBlock") == "0.0.0.0/0"
+                              or route.get("DestinationIpv6CidrBlock") == "::/0"
+                          )
+                          for route in table.get("Routes", [])
+                      )
+                  )
+                  acl_allows = bool(
+                      acl
+                      and any(
+                          not entry.get("Egress", False)
+                          and entry.get("RuleAction") == "allow"
+                          and str(entry.get("Protocol", "-1")) == "-1"
+                          and (
+                              entry.get("CidrBlock") == "0.0.0.0/0"
+                              or entry.get("Ipv6CidrBlock") == "::/0"
+                          )
+                          for entry in acl.get("Entries", [])
+                      )
+                  )
+                  for membership in interface.get("Groups", []):
+                      group_id = membership.get("GroupId")
+                      if not group_id:
+                          continue
+                      context = result[group_id]
+                      if subnet_id:
+                          context["subnetIds"].add(subnet_id)
+                      if table and table.get("RouteTableId"):
+                          context["routeTableIds"].add(table["RouteTableId"])
+                      if acl and acl.get("NetworkAclId"):
+                          context["networkAclIds"].add(acl["NetworkAclId"])
+                      context["publicAddressCount"] += int(
+                          bool((interface.get("Association") or {}).get("PublicIp"))
+                      )
+                      context["internetGatewayRoute"] |= has_public_route
+                      context["networkAclAllowsInternetIngress"] |= acl_allows
+              return {
+                  group_id: {
+                      **context,
+                      "subnetIds": sorted(context["subnetIds"]),
+                      "routeTableIds": sorted(context["routeTableIds"]),
+                      "networkAclIds": sorted(context["networkAclIds"]),
+                      "state": (
+                          "configured-internet-path"
+                          if context["internetGatewayRoute"]
+                          and context["publicAddressCount"] > 0
+                          and context["networkAclAllowsInternetIngress"]
+                          else "blocked"
+                          if context["routeTableIds"]
+                          and not context["internetGatewayRoute"]
+                          else "incomplete"
+                      ),
+                  }
+                  for group_id, context in result.items()
+              }
+
+
+          def final_attachments(attachments, group_id):
+              values = list(attachments[group_id].values())
+              parent_types = {item["resourceType"] for item in values}
+              if any(value.startswith("AWS::RDS::DB") for value in parent_types):
+                  values = [
+                      item
+                      for item in values
+                      if not (
+                          item["resourceType"] == "AWS::EC2::NetworkInterface"
+                          and (item.get("description") or "").startswith("RDS")
+                      )
+                  ]
+              if "AWS::EFS::FileSystem" in parent_types:
+                  efs_interfaces = {
+                      item.get("networkInterfaceId")
+                      for item in values
+                      if item["resourceType"] == "AWS::EFS::FileSystem"
+                  }
+                  values = [
+                      item
+                      for item in values
+                      if not (
+                          item["resourceType"] == "AWS::EC2::NetworkInterface"
+                          and item.get("networkInterfaceId") in efs_interfaces
+                      )
+                  ]
+              return sorted(
+                  values,
+                  key=lambda item: (
+                      item.get("resourceType") or "",
+                      item.get("resourceName") or "",
+                      item.get("resourceId") or "",
+                      item.get("networkInterfaceId") or "",
+                  ),
+              )
+
+
+          def scan_region(account, credentials, region, observed_at):
+              session = session_for(credentials, region)
+              ec2 = session.client("ec2", config=SDK_CONFIG)
+
+              groups = list(
+                  paginate(
+                      ec2,
+                      "describe_security_groups",
+                      "SecurityGroups",
+                      PaginationConfig={"PageSize": 1000},
+                  )
+              )
+              raw_rules = list(
+                  paginate(
+                      ec2,
+                      "describe_security_group_rules",
+                      "SecurityGroupRules",
+                      PaginationConfig={"PageSize": 1000},
+                  )
+              )
+
+              rules_by_group = defaultdict(list)
+              for raw_rule in raw_rules:
+                  rules_by_group[raw_rule.get("GroupId")].append(
+                      normalize_rule(raw_rule)
+                  )
+
+              attachment_counts = defaultdict(int)
+              interface_types = defaultdict(lambda: defaultdict(int))
+              resource_attachments = defaultdict(dict)
+              network_context = {}
+              if INCLUDE_NETWORK_INTERFACE_USAGE:
+                  interfaces = list(
+                      paginate(
+                          ec2,
+                          "describe_network_interfaces",
+                          "NetworkInterfaces",
+                          PaginationConfig={"PageSize": 1000},
+                      )
+                  )
+                  resource_attachments = collect_network_attachments(
+                      account, region, ec2, interfaces
+                  )
+                  network_context = collect_network_context(ec2, interfaces)
+                  enrich_rds_attachments(session, resource_attachments)
+                  enrich_efs_attachments(session, resource_attachments)
+                  for interface in interfaces:
+                      interface_type = interface.get("InterfaceType", "unknown")
+                      for membership in interface.get("Groups", []):
+                          group_id = membership.get("GroupId")
+                          if group_id:
+                              attachment_counts[group_id] += 1
+                              interface_types[group_id][interface_type] += 1
+
+              normalized_groups = []
+              for group in groups:
+                  group_id = group["GroupId"]
+                  rules = sorted(
+                      rules_by_group.get(group_id, []),
+                      key=lambda item: (
+                          item.get("ruleId") or "",
+                          item.get("direction") or "",
+                      ),
+                  )
+                  inbound_rules = [
+                      rule for rule in rules if rule["direction"] == "ingress"
+                  ]
+                  outbound_rules = [
+                      rule for rule in rules if rule["direction"] == "egress"
+                  ]
+                  normalized = {
+                      "resourceKey": (
+                          f"{PARTITION}:{account['id']}:{region}:{group_id}"
+                      ),
+                      "arn": (
+                          f"arn:{PARTITION}:ec2:{region}:{account['id']}:"
+                          f"security-group/{group_id}"
+                      ),
+                      "accountId": account["id"],
+                      "accountName": account["name"],
+                      "region": region,
+                      "id": group_id,
+                      "name": group.get("GroupName"),
+                      "description": group.get("Description"),
+                      "vpcId": group.get("VpcId"),
+                      "ownerId": group.get("OwnerId"),
+                      "isDefault": group.get("GroupName") == "default",
+                      "tags": tags_to_dict(group.get("Tags")),
+                      "inboundRuleCount": len(inbound_rules),
+                      "outboundRuleCount": len(outbound_rules),
+                      "publicIngressRuleCount": sum(
+                          1 for rule in inbound_rules if public_rule(rule)
+                      ),
+                      "publicEgressRuleCount": sum(
+                          1 for rule in outbound_rules if public_rule(rule)
+                      ),
+                      "networkInterfaceAttachmentCount": attachment_counts[group_id],
+                      "networkInterfaceTypes": dict(
+                          sorted(interface_types[group_id].items())
+                      ),
+                      "resourceAttachments": final_attachments(
+                          resource_attachments, group_id
+                      ),
+                      "networkEvidence": network_context.get(
+                          group_id,
+                          {
+                              "subnetIds": [],
+                              "routeTableIds": [],
+                              "networkAclIds": [],
+                              "publicAddressCount": 0,
+                              "internetGatewayRoute": False,
+                              "networkAclAllowsInternetIngress": False,
+                              "state": "incomplete",
+                          },
+                      ),
+                      "observedAt": observed_at,
+                      "rules": rules,
+                  }
+                  hashable_configuration = {
+                      key: value
+                      for key, value in normalized.items()
+                      if key != "observedAt"
+                  }
+                  canonical = json.dumps(
+                      hashable_configuration, separators=(",", ":"), sort_keys=True
+                  ).encode("utf-8")
+                  normalized["configurationHash"] = hashlib.sha256(
+                      canonical
+                  ).hexdigest()
+                  normalized_groups.append(normalized)
+
+              return sorted(
+                  normalized_groups,
+                  key=lambda item: (item["accountId"], item["region"], item["id"]),
+              )
+
+
+          def put_json(s3, key, body, content_encoding=None):
+              request = {
+                  "Bucket": OUTPUT_BUCKET,
+                  "Key": key,
+                  "Body": body,
+                  "ContentType": "application/json",
+                  "ExpectedBucketOwner": SOURCE_ACCOUNT_ID,
+                  "ServerSideEncryption": "aws:kms",
+                  "SSEKMSKeyId": KMS_KEY_ARN,
+              }
+              if content_encoding:
+                  request["ContentEncoding"] = content_encoding
+              s3.put_object(**request)
+
+
+          def publish_metrics(complete, account_count, region_count, group_count, error_count):
+              try:
+                  cloudwatch = boto3.client("cloudwatch", config=SDK_CONFIG)
+                  cloudwatch.put_metric_data(
+                      Namespace="Gatewatch/Collector",
+                      MetricData=[
+                          {
+                              "MetricName": "CollectionComplete",
+                              "Value": 1 if complete else 0,
+                              "Unit": "Count",
+                          },
+                          {
+                              "MetricName": "AccountsScanned",
+                              "Value": account_count,
+                              "Unit": "Count",
+                          },
+                          {
+                              "MetricName": "RegionsScanned",
+                              "Value": region_count,
+                              "Unit": "Count",
+                          },
+                          {
+                              "MetricName": "SecurityGroupsCollected",
+                              "Value": group_count,
+                              "Unit": "Count",
+                          },
+                          {
+                              "MetricName": "CollectionErrors",
+                              "Value": error_count,
+                              "Unit": "Count",
+                          },
+                      ],
+                  )
+              except (BotoCoreError, ClientError) as error:
+                  LOGGER.warning("Unable to publish collection metrics: %s", clean_error(error))
+
+
+          def lambda_handler(event, context):
+              started_at = utc_now()
+              observed_at = isoformat(started_at)
+              snapshot_id = str(uuid.uuid4())
+              errors = []
+              account_contexts = []
+
+              accounts = collection_accounts()
+              LOGGER.info(
+                  "Starting Gatewatch collection snapshot=%s scope=%s accounts=%s",
+                  snapshot_id,
+                  COLLECTION_SCOPE,
+                  len(accounts),
+              )
+
+              for account in accounts:
+                  try:
+                      credentials = credentials_for_account(account["id"])
+                      regions = enabled_regions(credentials)
+                      if REGION_ALLOW_LIST and not regions:
+                          raise RuntimeError(
+                              "No allowlisted Regions are enabled in this account"
+                          )
+                      account_contexts.append((account, credentials, regions))
+                  except (BotoCoreError, ClientError, RuntimeError, ValueError) as error:
+                      details = clean_error(error)
+                      errors.append(
+                          {
+                              "accountId": account["id"],
+                              "accountName": account["name"],
+                              "region": None,
+                              **details,
+                          }
+                      )
+
+              targets = [
+                  (account, credentials, region)
+                  for account, credentials, regions in account_contexts
+                  for region in regions
+              ]
+              security_groups = []
+              regions_scanned = 0
+
+              def collect_target(target):
+                  account, credentials, region = target
+                  if context.get_remaining_time_in_millis() < 60000:
+                      raise TimeoutError(
+                          "Collection stopped with less than 60 seconds remaining"
+                      )
+                  return account, region, scan_region(
+                      account, credentials, region, observed_at
+                  )
+
+              with concurrent.futures.ThreadPoolExecutor(
+                  max_workers=MAX_PARALLEL_SCANS
+              ) as executor:
+                  future_targets = {
+                      executor.submit(collect_target, target): target
+                      for target in targets
+                  }
+                  for future in concurrent.futures.as_completed(future_targets):
+                      account, _, region = future_targets[future]
+                      try:
+                          _, _, groups = future.result()
+                          security_groups.extend(groups)
+                          regions_scanned += 1
+                      except (
+                          BotoCoreError,
+                          ClientError,
+                          RuntimeError,
+                          TimeoutError,
+                          ValueError,
+                      ) as error:
+                          details = clean_error(error)
+                          errors.append(
+                              {
+                                  "accountId": account["id"],
+                                  "accountName": account["name"],
+                                  "region": region,
+                                  **details,
+                              }
+                          )
+
+              security_groups.sort(
+                  key=lambda item: (
+                      item["accountId"],
+                      item["region"],
+                      item["id"],
+                  )
+              )
+              rule_count = sum(
+                  len(group["rules"]) for group in security_groups
+              )
+              complete = len(errors) == 0
+              finished_at = utc_now()
+
+              snapshot = {
+                  "schemaVersion": "1.0",
+                  "snapshotId": snapshot_id,
+                  "generatedAt": isoformat(finished_at),
+                  "collectionStartedAt": observed_at,
+                  "durationMilliseconds": int(
+                      (finished_at - started_at).total_seconds() * 1000
+                  ),
+                  "source": {
+                      "type": "aws-ec2-describe-api",
+                      "collectorAccountId": SOURCE_ACCOUNT_ID,
+                      "collectorRegion": SOURCE_REGION,
+                      "scope": COLLECTION_SCOPE,
+                      "organizationTargetIds": ORGANIZATION_TARGET_IDS,
+                      "excludedAccounts": DISCOVERED_EXCLUSIONS,
+                      "regionAllowList": sorted(REGION_ALLOW_LIST),
+                      "networkInterfaceUsageIncluded": (
+                          INCLUDE_NETWORK_INTERFACE_USAGE
+                      ),
+                  },
+                  "complete": complete,
+                  "summary": {
+                      "accountsExpected": len(accounts),
+                      "accountsAuthenticated": len(account_contexts),
+                      "regionsExpected": len(targets),
+                      "regionsScanned": regions_scanned,
+                      "securityGroupCount": len(security_groups),
+                      "securityGroupRuleCount": rule_count,
+                      "errorCount": len(errors),
+                  },
+                  "accounts": accounts,
+                  "errors": errors,
+                  "securityGroups": security_groups,
+              }
+
+              serialized = json.dumps(
+                  snapshot,
+                  ensure_ascii=False,
+                  separators=(",", ":"),
+                  sort_keys=True,
+              ).encode("utf-8")
+              checksum = hashlib.sha256(serialized).hexdigest()
+              compressed = gzip.compress(serialized, compresslevel=9)
+              timestamp = started_at.strftime("%Y%m%dT%H%M%SZ")
+              historical_key = (
+                  f"snapshots/{started_at:%Y/%m/%d}/"
+                  f"{timestamp}-{snapshot_id}.json.gz"
+              )
+
+              s3 = boto3.client("s3", config=SDK_CONFIG)
+              put_json(s3, historical_key, compressed, "gzip")
+
+              manifest = {
+                  "schemaVersion": "1.0",
+                  "snapshotId": snapshot_id,
+                  "generatedAt": snapshot["generatedAt"],
+                  "complete": complete,
+                  "sha256": checksum,
+                  "historicalObject": f"s3://{OUTPUT_BUCKET}/{historical_key}",
+                  "latestObject": (
+                      f"s3://{OUTPUT_BUCKET}/exports/latest.json"
+                      if complete
+                      else None
+                  ),
+                  "summary": snapshot["summary"],
+              }
+              manifest_body = json.dumps(
+                  manifest, separators=(",", ":"), sort_keys=True
+              ).encode("utf-8")
+              put_json(
+                  s3,
+                  f"manifests/{timestamp}-{snapshot_id}.json",
+                  manifest_body,
+              )
+
+              if complete:
+                  put_json(s3, "exports/latest.json", serialized)
+                  put_json(s3, "manifests/latest.json", manifest_body)
+
+              publish_metrics(
+                  complete,
+                  len(account_contexts),
+                  regions_scanned,
+                  len(security_groups),
+                  len(errors),
+              )
+
+              LOGGER.info(
+                  "Finished Gatewatch collection snapshot=%s complete=%s "
+                  "accounts=%s regions=%s groups=%s rules=%s errors=%s",
+                  snapshot_id,
+                  complete,
+                  len(account_contexts),
+                  regions_scanned,
+                  len(security_groups),
+                  rule_count,
+                  len(errors),
+              )
+
+              result = {
+                  "snapshotId": snapshot_id,
+                  "complete": complete,
+                  "bucket": OUTPUT_BUCKET,
+                  "historicalKey": historical_key,
+                  "latestKey": "exports/latest.json" if complete else None,
+                  "summary": snapshot["summary"],
+              }
+              if not complete and STRICT_MODE:
+                  raise RuntimeError(
+                      f"Collection completed with {len(errors)} error(s); "
+                      f"partial snapshot stored at s3://{OUTPUT_BUCKET}/{historical_key}"
+                  )
+              return result
+      Tags:
+        - Key: Application
+          Value: Gatewatch
+
+  InvocationDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Application
+          Value: Gatewatch
+
+  CollectionSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Scheduled full reconciliation of Gatewatch security-group inventory.
+      ScheduleExpression: !Ref ScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt CollectorFunction.Arn
+          Id: GatewatchCollector
+          Input: '{"trigger":"schedule"}'
+          DeadLetterConfig:
+            Arn: !GetAtt InvocationDeadLetterQueue.Arn
+          RetryPolicy:
+            MaximumEventAgeInSeconds: 21600
+            MaximumRetryAttempts: 2
+
+  InvocationDeadLetterQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref InvocationDeadLetterQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowEventBridgeDeadLetters
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt InvocationDeadLetterQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt CollectionSchedule.Arn
+
+  AllowEventBridgeInvocation:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref CollectorFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt CollectionSchedule.Arn
+
+  CollectorAlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      KmsMasterKeyId: alias/aws/sns
+      Tags:
+        - Key: Application
+          Value: Gatewatch
+
+  CollectorAlarmTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref CollectorAlarmTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowScopedCloudWatchAlarmPublishing
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref CollectorAlarmTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:*
+
+  CollectorAlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      Endpoint: !Ref AlarmEmail
+      Protocol: email
+      TopicArn: !Ref CollectorAlarmTopic
+
+  CollectorErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Gatewatch collector invocation errors require investigation.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CollectorFunction
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref CollectorAlarmTopic
+
+  CollectionStaleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Gatewatch has not recorded a successful complete collection.
+      Namespace: Gatewatch/Collector
+      MetricName: CollectionComplete
+      Statistic: Maximum
+      Period: 900
+      EvaluationPeriods: 4
+      DatapointsToAlarm: 4
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref CollectorAlarmTopic
+
+Outputs:
+  CollectorFunctionArn:
+    Description: Lambda function that performs scheduled and on-demand collection.
+    Value: !GetAtt CollectorFunction.Arn
+
+  DeadLetterQueueUrl:
+    Description: Queue containing scheduled invocations that exhausted retries.
+    Value: !Ref InvocationDeadLetterQueue
+
+  LatestSnapshotS3Uri:
+    Description: Stable S3 URI for the latest complete uncompressed JSON snapshot.
+    Value: !Sub s3://${SnapshotBucket}/exports/latest.json
+
+  LatestManifestS3Uri:
+    Description: Stable S3 URI for metadata and the SHA-256 checksum of the latest snapshot.
+    Value: !Sub s3://${SnapshotBucket}/manifests/latest.json
+
+  ManualCollectionCommand:
+    Description: AWS CLI command to start an on-demand collection.
+    Value: !Sub >
+      aws lambda invoke --function-name ${CollectorFunction}
+      --cli-binary-format raw-in-base64-out --payload '{"trigger":"manual"}'
+      gatewatch-collection-result.json
+
+  SnapshotBucketName:
+    Description: Encrypted, versioned bucket containing Gatewatch inventory exports.
+    Value: !Ref SnapshotBucket
+
+  SnapshotDownloadCommand:
+    Description: AWS CLI command to download the latest complete JSON snapshot.
+    Value: !Sub aws s3 cp s3://${SnapshotBucket}/exports/latest.json gatewatch-security-groups.json

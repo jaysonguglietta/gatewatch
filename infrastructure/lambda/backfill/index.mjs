@@ -1,0 +1,143 @@
+import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
+import { SendMessageBatchCommand, SQSClient } from "@aws-sdk/client-sqs";
+import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
+import { ExecuteStatementCommand, RDSDataClient } from "@aws-sdk/client-rds-data";
+
+const rds = new RDSDataClient({});
+const sts = new STSClient({});
+const sqs = new SQSClient({});
+const database = process.env.DATABASE_NAME;
+const resourceArn = process.env.DB_CLUSTER_ARN;
+const secretArn = process.env.DB_SECRET_ARN;
+const queueUrl = process.env.INGESTION_QUEUE_URL;
+
+function fieldString(field) {
+  return field?.stringValue ?? "";
+}
+
+async function sourceById(sourceId) {
+  const result = await rds.send(new ExecuteStatementCommand({
+    database,
+    resourceArn,
+    secretArn,
+    sql: `SELECT bucket_name, object_prefix, region, role_arn, external_id,
+                 backfill_start::text
+            FROM ingestion_sources
+           WHERE id = CAST(:id AS uuid)
+             AND status IN ('live', 'backfilling')`,
+    parameters: [{ name: "id", value: { stringValue: sourceId } }],
+  }));
+  const row = result.records?.[0];
+  if (!row) throw new Error("BACKFILL_SOURCE_NOT_ACTIVE");
+  return {
+    bucket: fieldString(row[0]),
+    prefix: fieldString(row[1]),
+    region: fieldString(row[2]),
+    roleArn: fieldString(row[3]),
+    externalId: fieldString(row[4]),
+    startDate: fieldString(row[5]),
+  };
+}
+
+async function sourceS3(source) {
+  const assumed = await sts.send(new AssumeRoleCommand({
+    RoleArn: source.roleArn,
+    RoleSessionName: `gatewatch-backfill-${Date.now()}`,
+    ExternalId: source.externalId || undefined,
+    DurationSeconds: 900,
+  }));
+  const value = assumed.Credentials;
+  if (!value?.AccessKeyId || !value.SecretAccessKey || !value.SessionToken) {
+    throw new Error("ASSUME_ROLE_INCOMPLETE");
+  }
+  return new S3Client({
+    region: source.region,
+    credentials: {
+      accessKeyId: value.AccessKeyId,
+      secretAccessKey: value.SecretAccessKey,
+      sessionToken: value.SessionToken,
+      expiration: value.Expiration,
+    },
+  });
+}
+
+async function enqueue(source, objects, runId) {
+  for (let offset = 0; offset < objects.length; offset += 10) {
+    const batch = objects.slice(offset, offset + 10);
+    const result = await sqs.send(new SendMessageBatchCommand({
+      QueueUrl: queueUrl,
+      Entries: batch.map((item, index) => ({
+        Id: `${offset + index}`,
+        MessageBody: JSON.stringify({
+          version: "0",
+          id: `backfill-${Date.now()}-${offset + index}`,
+          "detail-type": "Object Created",
+          source: "gatewatch.backfill",
+          time: new Date().toISOString(),
+          detail: {
+            bucket: { name: source.bucket },
+            object: {
+              key: item.Key,
+              size: item.Size ?? 0,
+              etag: item.ETag?.replaceAll('"', "") ?? "",
+            },
+            gatewatch: { runId },
+          },
+        }),
+      })),
+    }));
+    if (result.Failed?.length) {
+      throw new Error(`SQS_BATCH_FAILURE:${result.Failed.map((item) => item.Code).join(",")}`);
+    }
+  }
+}
+
+async function updateRun(runId, discovered, done, cursor) {
+  await rds.send(new ExecuteStatementCommand({
+    database,
+    resourceArn,
+    secretArn,
+    sql: `UPDATE ingestion_runs
+             SET discovered_objects = discovered_objects + :discovered,
+                 cursor = :cursor,
+                 status = CASE WHEN :done THEN 'running' ELSE status END
+           WHERE id = CAST(:id AS uuid)`,
+    parameters: [
+      { name: "discovered", value: { longValue: discovered } },
+      { name: "cursor", value: { stringValue: cursor ?? "" } },
+      { name: "done", value: { booleanValue: done } },
+      { name: "id", value: { stringValue: runId } },
+    ],
+  }));
+}
+
+export async function handler(event) {
+  const source = await sourceById(event.sourceId);
+  const s3 = await sourceS3(source);
+  const result = await s3.send(new ListObjectsV2Command({
+    Bucket: source.bucket,
+    Prefix: source.prefix || undefined,
+    ContinuationToken: event.cursor || undefined,
+    MaxKeys: 1000,
+  }));
+  const startTime = source.startDate
+    ? new Date(`${source.startDate}T00:00:00Z`).getTime()
+    : 0;
+  const objects = (result.Contents ?? []).filter(
+    (item) =>
+      item.Key &&
+      (!item.LastModified || item.LastModified.getTime() >= startTime) &&
+      (item.Key.endsWith(".json") || item.Key.endsWith(".json.gz")),
+  );
+  await enqueue(source, objects, event.runId);
+  const cursor = result.NextContinuationToken ?? "";
+  const done = !cursor;
+  await updateRun(event.runId, objects.length, done, cursor);
+  return {
+    sourceId: event.sourceId,
+    runId: event.runId,
+    cursor,
+    done,
+    discovered: objects.length,
+  };
+}
