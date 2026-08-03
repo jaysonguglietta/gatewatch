@@ -1,7 +1,9 @@
 # Gatewatch threat model
 
-**Version:** 1.0  
-**Last reviewed:** July 31, 2026  
+**Version:** 1.1
+
+**Last reviewed:** August 3, 2026
+
 **Scope:** Current AWS web and collector deployment plus the planned SQS/Lambda/Aurora ingestion platform
 
 ## Security objectives
@@ -34,15 +36,21 @@ flowchart LR
     Bridge -->|"Get snapshot"| S3["Encrypted versioned S3"]
     Bridge -->|"Assume source role"| STS["AWS STS"]
     Bridge -->|"HTTPS API token"| Jira["Jira Cloud"]
-    Collector["Collector Lambda"] -->|"Snapshot and manifest"| S3
-    Source["Future source-account EventBridge"] --> Queue["Future ingestion SQS"]
-    Queue --> Ingest["Future ingestion Lambda"]
-    Ingest --> Aurora["Future Aurora PostgreSQL"]
+    Schedule["EventBridge schedule"] --> SFN["Step Functions Distributed Map"]
+    SFN --> Collector["Isolated account workers"]
+    Collector -->|"Assume read role"| Members["Organization member accounts"]
+    Collector -->|"Checksummed Region shards"| S3
+    Collector --> RunState["DynamoDB run/target coverage"]
+    S3 --> Queue["EventBridge + ingestion SQS"]
+    Queue --> Ingest["Bounded normalization Lambda"]
+    Ingest --> Aurora["Aurora PostgreSQL observations"]
 ```
 
 The current production data store is the D1-compatible local database persisted
 on encrypted EFS. The Aurora platform is represented by infrastructure and schema
-code but was not deployed at the time of this review.
+code but was not deployed at the time of the original review. The August 3
+implementation adds sharded organization collection and normalization code; the
+target AWS deployment still requires environment validation.
 
 ## Trust boundaries
 
@@ -175,4 +183,3 @@ Repeat this threat model when any of the following changes:
 - database engine, workspace model, or retention requirements;
 - Jira or any new outbound integration;
 - release, artifact, CI/CD, or secret-rotation process.
-

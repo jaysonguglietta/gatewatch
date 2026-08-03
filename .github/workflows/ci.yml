@@ -1,0 +1,44 @@
+name: Gatewatch CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      - run: npm test
+      - run: npm audit --omit=dev --audit-level=high
+
+  infrastructure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m py_compile infrastructure/lambda/organization-collector/index.py
+      - run: pip install --disable-pip-version-check cfn-lint==1.39.1
+      - run: cfn-lint infrastructure/cloudformation/*.yaml
+      - name: Reject write-capable member collector permissions
+        run: |
+          if grep -REn 'ec2:(Authorize|Revoke|Modify|Delete)SecurityGroup' \
+            infrastructure/cloudformation/gatewatch-organization-collector.yaml \
+            infrastructure/lambda/organization-collector; then
+            echo "Organization collector contains a write-capable security-group action." >&2
+            exit 1
+          fi

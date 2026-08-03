@@ -1,5 +1,34 @@
 # Gatewatch security test plan
 
+## Organization collection and evidence integrity
+
+- Deploy to a test OU containing successful, denied, opted-out-Region, empty,
+  and high-resource-count accounts.
+- Prove one denied member account produces an explicit failed account/target and
+  does not stop successful account shards.
+- Replay the same S3 event and confirm the object ledger and observation counts
+  remain unchanged.
+- Change run ID, account ID, Region, schema version, evidence type, observation
+  time, group ID, or key path independently and confirm ingestion fails closed.
+- Test compressed bombs, oversized manifests, excessive groups/rules/attachments,
+  and missing `Content-Length`/event size hints.
+- Modify canonical shard bytes and prove checksum validation fails.
+- Attempt SQS delivery from another EventBridge rule/account and prove the queue
+  policy denies it.
+- Use IAM Access Analyzer on the StackSet member role, evidence bucket, KMS key,
+  queue, and Lambda roles.
+- Confirm no collector role has EC2, IAM, Organizations, S3, KMS, or database
+  write permissions beyond its documented central resources.
+
+## Coverage correctness
+
+- Compare Organizations active account count to manifest `accountsExpected`.
+- Compare per-account enabled Regions to manifest targets after allowlist rules.
+- Confirm Coverage search, `Needs attention`, `Failed`, pagination, empty state,
+  legacy transition, retry, and stale-manifest behavior.
+- Remove a previously collected account's role and prove the current UI retains
+  its last observation while marking the new run incomplete/stale.
+
 **Version:** 1.0  
 **Baseline:** July 31, 2026 adversarial audit  
 **Purpose:** Convert the threat model and findings into repeatable release gates
@@ -283,4 +312,3 @@ Store machine-readable test output, deployed template, image digest, SBOM,
 provenance, security scans, Access Analyzer results, restore evidence, reviewer, and
 date with the release record. Redact credentials and customer data before attaching
 evidence to GitHub.
-

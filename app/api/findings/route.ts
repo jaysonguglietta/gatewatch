@@ -18,6 +18,7 @@ import {
   ensureAdminSchema,
   requestUser,
   requireAdmin,
+  requirePermission,
   safeJson,
   sameOrigin,
 } from "../../../lib/server-admin";
@@ -632,6 +633,10 @@ export async function POST(request: Request) {
 
     if (action !== "triage") {
       return apiJson({ error: "Choose a supported findings action." }, 400);
+    }
+    const permission = await requirePermission(request, "findings.triage");
+    if (!permission.allowed) {
+      return apiJson({ error: "Analyst or reviewer access is required to triage findings." }, 403);
     }
     const rawFingerprints = Array.isArray(input.fingerprints)
       ? input.fingerprints

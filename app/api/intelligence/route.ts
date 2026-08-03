@@ -5,6 +5,7 @@ import {
   audit,
   ensureAdminSchema,
   requireAdmin,
+  requirePermission,
   requestUser,
   sameOrigin,
   safeJson,
@@ -106,6 +107,10 @@ export async function POST(request: Request) {
     const user = requestUser(request);
     if (!user) return apiJson({ error: "Authentication is required." }, 401);
     if (!sameOrigin(request)) return apiJson({ error: "Origin is not allowed." }, 403);
+    const permission = await requirePermission(request, "intelligence.write");
+    if (!permission.allowed) {
+      return apiJson({ error: "Analyst or reviewer access is required to change intelligence workflows." }, 403);
+    }
     if (!acceptsJson(request, 40_000)) {
       return apiJson({ error: "Send an application/json payload under 40 KB." }, 415);
     }

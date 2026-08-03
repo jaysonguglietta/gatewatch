@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { requireAdmin, requirePermission } from "../../../lib/server-admin";
 
 type ReviewInput = {
   resourceKey?: unknown;
@@ -210,6 +211,10 @@ export async function POST(request: Request) {
     if (!sameOrigin(request)) {
       return json({ error: "Origin is not allowed." }, 403);
     }
+    const permission = await requirePermission(request, "reviews.write");
+    if (!permission.allowed) {
+      return json({ error: "Analyst or reviewer access is required to change reviews." }, 403);
+    }
     const contentLength = Number(request.headers.get("content-length") ?? "0");
     if (contentLength > 20_000) {
       return json({ error: "The review payload is too large." }, 413);
@@ -228,6 +233,12 @@ export async function POST(request: Request) {
     const note = cleanText(payload.note, 1200);
     const ticketRef = cleanText(payload.ticketRef, 120);
     const expiresAt = cleanText(payload.expiresAt, 20);
+    if (status === "exception") {
+      const authorization = await requireAdmin(request);
+      if (!authorization.allowed) {
+        return json({ error: "Administrator approval is required for an exception." }, 403);
+      }
+    }
     const evidenceSnapshot = cleanText(payload.evidenceSnapshot, 1000);
 
     if (!/^sg-[a-zA-Z0-9-]+$/.test(securityGroupId)) {

@@ -89,9 +89,11 @@ import {
   type CloudTrailImportResult,
   type ImportedCloudTrailEvent,
 } from "../lib/cloudtrail-import";
+import { csvDocument } from "../lib/csv";
 import AdminView from "./admin-view";
 import DailyFindingsView from "./daily-findings-view";
 import ReportingView from "./reporting-view";
+import OrganizationCoveragePanel from "./organization-coverage-panel";
 import {
   DriftInboxView,
   ExposureIntelligenceView,
@@ -503,11 +505,7 @@ export default function SecurityDashboard() {
       group.change.channel,
       group.findings.join("; "),
     ]);
-    const csv = [headers, ...rows]
-      .map((row) =>
-        row.map((value) => `"${value.replaceAll('"', '""')}"`).join(","),
-      )
-      .join("\n");
+    const csv = csvDocument([headers, ...rows]);
     const url = URL.createObjectURL(
       new Blob([csv], { type: "text/csv;charset=utf-8" }),
     );
@@ -1028,13 +1026,7 @@ function BroadRulesPanel({
         String(item.group.riskScore),
       ]),
     ];
-    const csv = rows
-      .map((row) =>
-        row
-          .map((value) => `"${value.replaceAll('"', '""')}"`)
-          .join(","),
-      )
-      .join("\n");
+    const csv = csvDocument(rows);
     downloadText(
       `gatewatch-broad-rules-${new Date().toISOString().slice(0, 10)}.csv`,
       csv,
@@ -4124,13 +4116,7 @@ function CloudTrailImportView({
         event.errorCode || "Success",
       ]),
     ];
-    const csv = rows
-      .map((row) =>
-        row
-          .map((value) => `"${value.replaceAll('"', '""')}"`)
-          .join(","),
-      )
-      .join("\n");
+    const csv = csvDocument(rows);
     downloadText(
       `gatewatch-cloudtrail-events-${new Date()
         .toISOString()
@@ -4993,6 +4979,10 @@ function SourcesView({
         </div>
         <em>{coverage}% collection coverage</em>
       </section>
+      <OrganizationCoveragePanel
+        legacy={inventorySource}
+        refreshSignal={syncing}
+      />
       <section className="panel sources-panel">
         <div className="panel-header">
           <div>

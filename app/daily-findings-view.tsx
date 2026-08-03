@@ -33,6 +33,7 @@ import {
   Users,
   X,
 } from "lucide-react";
+import { csvDocument } from "../lib/csv";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   DailyFinding,
@@ -230,11 +231,7 @@ function downloadCsv(items: DailyFinding[]) {
       item.expiresAt,
     ]),
   ];
-  const content = rows
-    .map((row) =>
-      row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","),
-    )
-    .join("\n");
+  const content = csvDocument(rows);
   const url = URL.createObjectURL(new Blob([content], { type: "text/csv" }));
   const link = document.createElement("a");
   link.href = url;

@@ -135,10 +135,11 @@ test("keeps Jira credentials server-side and supports duplicate-safe issue creat
 });
 
 test("ships authenticated detailed reporting with CSV injection protection", async () => {
-  const [dashboard, reportView, reportRoute] = await Promise.all([
+  const [dashboard, reportView, reportRoute, csv] = await Promise.all([
     source("app/security-dashboard.tsx"),
     source("app/reporting-view.tsx"),
     source("app/api/reports/route.ts"),
+    source("lib/csv.ts"),
   ]);
 
   assert.match(dashboard, /Detailed reports/);
@@ -147,6 +148,7 @@ test("ships authenticated detailed reporting with CSV injection protection", asy
   assert.match(reportView, /Regional concentration/);
   assert.match(reportRoute, /Authentication is required/);
   assert.match(reportRoute, /content-disposition/);
-  assert.match(reportRoute, /\[=\+\\-@\\t\\r\]/);
+  assert.match(reportRoute, /import \{ csvCell \}/);
+  assert.match(csv, /\[=\+\\-@\\t\\r\]/);
   assert.match(reportRoute, /finding_jira_links/);
 });

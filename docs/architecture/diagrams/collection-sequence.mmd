@@ -1,0 +1,19 @@
+sequenceDiagram
+  autonumber
+  participant EventBridge
+  participant StepFunctions
+  participant Discovery
+  participant Worker
+  participant MemberAccount
+  participant S3
+  participant DynamoDB
+  EventBridge->>StepFunctions: Scheduled execution
+  StepFunctions->>Discovery: Enumerate selected OUs
+  Discovery->>S3: targets.json
+  Discovery->>DynamoDB: Run and account targets
+  StepFunctions->>Worker: Distributed account item
+  Worker->>MemberAccount: AssumeRole
+  Worker->>MemberAccount: Describe Regions and network inventory
+  Worker->>S3: Checksummed Region shards
+  Worker->>DynamoDB: Target success or failure
+  StepFunctions->>S3: Final manifest and latest pointer

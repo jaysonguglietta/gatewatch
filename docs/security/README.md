@@ -18,8 +18,15 @@ authoritative governance system across hundreds of AWS accounts:
 5. Deployment artifacts are executed as root without verifying the expected
    checksum or immutable S3 object version.
 
-Gatewatch should be treated as **pre-production for multi-account governance**
-until the priority-zero exit criteria in the remediation roadmap are met.
+The August 3 architecture round implemented or materially mitigated the
+generated-template injection, artifact integrity, CSV formula, snapshot checksum,
+workflow type-confusion, and evidence-message binding risks. These are not
+closed until independently validated in AWS. Shared identity, complete central
+authorization, production runtime isolation, origin TLS/abuse controls, immutable
+audit, enforced retention, and database RLS remain production blockers.
+
+Gatewatch should be treated as **pre-production for authoritative multi-account
+governance** until the priority-zero exit criteria are met.
 
 ## Document set
 
@@ -29,6 +36,7 @@ until the priority-zero exit criteria in the remediation roadmap are met.
 | [Adversarial security audit](SECURITY_AUDIT_2026-07-31.md) | Evidence-backed findings, exploit scenarios, and fixes |
 | [Remediation roadmap](REMEDIATION_ROADMAP.md) | Priorities, work packages, dependencies, and acceptance criteria |
 | [Security test plan](SECURITY_TEST_PLAN.md) | Automated and manual validation required before production |
+| [August 3 implementation update](SECURITY_UPDATE_2026-08-03.md) | Implemented controls, evidence, residual work, and remaining release blockers |
 | [Repository security policy](../../SECURITY.md) | Private reporting and secret-handling expectations |
 
 ## How to use these documents
@@ -52,4 +60,3 @@ A production release is blocked if any of these are true:
 - cross-account IAM has not been validated with Access Analyzer and a permission boundary;
 - end-to-end TLS, edge logging, abuse controls, backup restoration, or secret
   rotation have not been demonstrated in the target AWS environment.
-

@@ -4,8 +4,11 @@ import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
 import {
   BatchExecuteStatementCommand,
+  BeginTransactionCommand,
+  CommitTransactionCommand,
   ExecuteStatementCommand,
   RDSDataClient,
+  RollbackTransactionCommand,
 } from "@aws-sdk/client-rds-data";
 
 const MAX_COMPRESSED_BYTES = 50 * 1024 * 1024;
@@ -28,6 +31,8 @@ const sts = new STSClient({});
 const database = process.env.DATABASE_NAME;
 const resourceArn = process.env.DB_CLUSTER_ARN;
 const secretArn = process.env.DB_SECRET_ARN;
+const organizationEvidenceBucket = process.env.ORGANIZATION_EVIDENCE_BUCKET ?? "";
+const runtimeS3 = new S3Client({});
 
 function parameters(values) {
   return Object.entries(values).map(([name, value]) => ({
@@ -41,7 +46,7 @@ function parameters(values) {
   }));
 }
 
-async function sql(statement, values = {}) {
+async function sql(statement, values = {}, transactionId = undefined) {
   return rds.send(
     new ExecuteStatementCommand({
       database,
@@ -50,8 +55,34 @@ async function sql(statement, values = {}) {
       sql: statement,
       parameters: parameters(values),
       includeResultMetadata: true,
+      transactionId,
     }),
   );
+}
+
+async function transaction(callback) {
+  const begun = await rds.send(new BeginTransactionCommand({
+    database,
+    resourceArn,
+    secretArn,
+  }));
+  if (!begun.transactionId) throw new Error("DATABASE_TRANSACTION_UNAVAILABLE");
+  try {
+    const result = await callback(begun.transactionId);
+    await rds.send(new CommitTransactionCommand({
+      resourceArn,
+      secretArn,
+      transactionId: begun.transactionId,
+    }));
+    return result;
+  } catch (error) {
+    await rds.send(new RollbackTransactionCommand({
+      resourceArn,
+      secretArn,
+      transactionId: begun.transactionId,
+    })).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function bodyBuffer(body) {
@@ -302,9 +333,437 @@ async function insertConfig(source, objectId, items) {
   }
 }
 
+async function batchSql(statement, rows, transactionId) {
+  for (let index = 0; index < rows.length; index += 200) {
+    await rds.send(new BatchExecuteStatementCommand({
+      database,
+      resourceArn,
+      secretArn,
+      transactionId,
+      sql: statement,
+      parameterSets: rows.slice(index, index + 200).map(parameters),
+    }));
+  }
+}
+
+async function defaultWorkspaceId() {
+  const result = await sql(
+    "SELECT id::text FROM workspaces WHERE slug = 'default' LIMIT 1",
+  );
+  const value = fieldString(result.records?.[0]?.[0]);
+  if (!value) throw new Error("DEFAULT_WORKSPACE_NOT_FOUND");
+  return value;
+}
+
+async function readEvidenceObject(object) {
+  const response = await runtimeS3.send(new GetObjectCommand({
+    Bucket: object.bucket,
+    Key: object.key,
+    VersionId: object.versionId || undefined,
+  }));
+  const compressed = await bodyBuffer(response.Body);
+  const content = object.key.endsWith(".gz")
+    ? gunzipSync(compressed, { maxOutputLength: MAX_DECOMPRESSED_BYTES })
+    : compressed;
+  if (content.length > MAX_DECOMPRESSED_BYTES) {
+    throw new Error("DECOMPRESSED_OBJECT_TOO_LARGE");
+  }
+  return { content, parsed: JSON.parse(content.toString("utf8")) };
+}
+
+function integer(value, maximum = 10_000_000) {
+  const number = Number(value ?? 0);
+  if (!Number.isSafeInteger(number) || number < 0 || number > maximum) {
+    throw new Error("INVALID_INVENTORY_COUNT");
+  }
+  return number;
+}
+
+function inventoryPeer(rule) {
+  return rule.cidrIpv4
+    ?? rule.cidrIpv6
+    ?? rule.prefixListId
+    ?? rule.referencedGroup?.groupId
+    ?? "";
+}
+
+function inventoryPeerType(rule) {
+  if (rule.cidrIpv4) return "IPv4";
+  if (rule.cidrIpv6) return "IPv6";
+  if (rule.prefixListId) return "Prefix list";
+  if (rule.referencedGroup?.groupId) return "Security group";
+  return "Unknown";
+}
+
+function validateInventoryShard(value, keyIdentity) {
+  if (
+    !value
+    || value.schemaVersion !== "2.0"
+    || value.evidenceType !== "security-group-inventory-shard"
+    || value.runId !== keyIdentity.runId
+    || value.target?.accountId !== keyIdentity.accountId
+    || value.target?.region !== keyIdentity.region
+    || !Array.isArray(value.securityGroups)
+    || value.securityGroups.length > 20_000
+  ) {
+    throw new Error("INVALID_INVENTORY_SHARD_SCHEMA");
+  }
+  const observedAt = String(value.observedAt ?? "");
+  if (!Number.isFinite(Date.parse(observedAt))) {
+    throw new Error("INVALID_INVENTORY_OBSERVATION_TIME");
+  }
+  let ruleCount = 0;
+  for (const group of value.securityGroups) {
+    if (
+      !/^sg-[a-zA-Z0-9-]{3,64}$/.test(String(group?.id ?? ""))
+      || group.accountId !== keyIdentity.accountId
+      || group.region !== keyIdentity.region
+      || !Array.isArray(group.rules)
+      || group.rules.length > 5_000
+      || !Array.isArray(group.resourceAttachments ?? [])
+    ) {
+      throw new Error("INVALID_SECURITY_GROUP_OBSERVATION");
+    }
+    ruleCount += group.rules.length;
+    if (ruleCount > MAX_RECORDS) throw new Error("INVALID_RECORD_COUNT");
+  }
+  return value;
+}
+
+async function processInventoryShard(object, identity) {
+  if (object.size > MAX_COMPRESSED_BYTES) throw new Error("OBJECT_TOO_LARGE");
+  const workspaceId = await defaultWorkspaceId();
+  const ledger = await sql(
+    `INSERT INTO inventory_shard_objects
+      (workspace_id, run_id, account_id, region, bucket_name, object_key,
+       version_id, etag, checksum_sha256, object_size, status)
+     VALUES (CAST(:workspaceId AS uuid), CAST(:runId AS uuid), :accountId,
+       :region, :bucket, :key, :versionId, :etag, '', :size, 'processing')
+     ON CONFLICT (workspace_id, bucket_name, object_key, version_id) DO NOTHING
+     RETURNING object_key`,
+    { workspaceId, ...identity, ...object },
+  );
+  if (!fieldString(ledger.records?.[0]?.[0])) return { duplicate: true };
+  try {
+    const { content, parsed } = await readEvidenceObject(object);
+    const shard = validateInventoryShard(parsed, identity);
+    const checksum = createHash("sha256").update(content).digest("hex");
+    const observedAt = String(shard.observedAt);
+    const accountName = String(shard.target.accountName ?? identity.accountId).slice(0, 160);
+    const groupRows = [];
+    const ruleRows = [];
+    for (const group of shard.securityGroups) {
+      groupRows.push({
+        workspaceId,
+        runId: identity.runId,
+        accountId: identity.accountId,
+        accountName,
+        region: identity.region,
+        securityGroupId: String(group.id),
+        name: String(group.name ?? "").slice(0, 255),
+        description: String(group.description ?? "").slice(0, 2000),
+        vpcId: String(group.vpcId ?? "").slice(0, 128),
+        isDefault: Boolean(group.isDefault),
+        tags: JSON.stringify(group.tags ?? {}),
+        inboundRuleCount: integer(group.inboundRuleCount, 100_000),
+        outboundRuleCount: integer(group.outboundRuleCount, 100_000),
+        publicIngressRuleCount: integer(group.publicIngressRuleCount, 100_000),
+        publicEgressRuleCount: integer(group.publicEgressRuleCount, 100_000),
+        attachmentCount: integer(group.networkInterfaceAttachmentCount, 1_000_000),
+        attachments: JSON.stringify((group.resourceAttachments ?? []).slice(0, 20_000)),
+        networkEvidence: JSON.stringify(group.networkEvidence ?? {}),
+        observedAt,
+        sourceObjectKey: object.key,
+      });
+      group.rules.forEach((rule, index) => {
+        const peer = String(inventoryPeer(rule)).slice(0, 512);
+        const signature = `${group.id}|${rule.isEgress}|${rule.protocol}|${rule.fromPort}|${rule.toPort}|${peer}|${index}`;
+        ruleRows.push({
+          workspaceId,
+          runId: identity.runId,
+          accountId: identity.accountId,
+          region: identity.region,
+          securityGroupId: String(group.id),
+          ruleId: String(rule.ruleId ?? createHash("sha256").update(signature).digest("hex")).slice(0, 128),
+          direction: rule.isEgress ? "Egress" : "Ingress",
+          protocol: String(rule.protocol ?? "-1").slice(0, 32),
+          fromPort: rule.fromPort ?? "",
+          toPort: rule.toPort ?? "",
+          peer,
+          peerType: inventoryPeerType(rule),
+          description: String(rule.description ?? "").slice(0, 2000),
+          internetWide: peer === "0.0.0.0/0" || peer === "::/0",
+          observedAt,
+        });
+      });
+    }
+    await sql(
+      `INSERT INTO organization_collection_runs
+        (workspace_id, run_id, status, manifest_bucket, manifest_key, started_at)
+       VALUES (CAST(:workspaceId AS uuid), CAST(:runId AS uuid), 'running',
+         :bucket, :manifestKey, CAST(:observedAt AS timestamptz))
+       ON CONFLICT (workspace_id, run_id) DO NOTHING`,
+      {
+        workspaceId,
+        runId: identity.runId,
+        bucket: object.bucket,
+        manifestKey: `runs/${identity.runId}/manifest.json`,
+        observedAt,
+      },
+    );
+    await transaction(async (transactionId) => {
+      await batchSql(
+        `INSERT INTO security_group_observations
+          (workspace_id, run_id, account_id, account_name, region,
+           security_group_id, name, description, vpc_id, is_default, tags,
+           inbound_rule_count, outbound_rule_count, public_ingress_rule_count,
+           public_egress_rule_count, attachment_count, attachments,
+           network_evidence, observed_at, source_object_key)
+         VALUES (CAST(:workspaceId AS uuid), CAST(:runId AS uuid), :accountId,
+           :accountName, :region, :securityGroupId, NULLIF(:name, ''),
+           NULLIF(:description, ''), NULLIF(:vpcId, ''), :isDefault,
+           CAST(:tags AS jsonb), :inboundRuleCount, :outboundRuleCount,
+           :publicIngressRuleCount, :publicEgressRuleCount, :attachmentCount,
+           CAST(:attachments AS jsonb), CAST(:networkEvidence AS jsonb),
+           CAST(:observedAt AS timestamptz), :sourceObjectKey)
+         ON CONFLICT (workspace_id, run_id, account_id, region, security_group_id)
+         DO UPDATE SET account_name = excluded.account_name, name = excluded.name,
+           description = excluded.description, vpc_id = excluded.vpc_id,
+           is_default = excluded.is_default, tags = excluded.tags,
+           inbound_rule_count = excluded.inbound_rule_count,
+           outbound_rule_count = excluded.outbound_rule_count,
+           public_ingress_rule_count = excluded.public_ingress_rule_count,
+           public_egress_rule_count = excluded.public_egress_rule_count,
+           attachment_count = excluded.attachment_count,
+           attachments = excluded.attachments,
+           network_evidence = excluded.network_evidence,
+           observed_at = excluded.observed_at,
+           source_object_key = excluded.source_object_key`,
+        groupRows,
+        transactionId,
+      );
+      await batchSql(
+        `INSERT INTO security_group_rule_observations
+          (workspace_id, run_id, account_id, region, security_group_id,
+           rule_id, direction, protocol, from_port, to_port, peer, peer_type,
+           description, internet_wide, observed_at)
+         VALUES (CAST(:workspaceId AS uuid), CAST(:runId AS uuid), :accountId,
+           :region, :securityGroupId, :ruleId, :direction, :protocol,
+           NULLIF(:fromPort, '')::integer, NULLIF(:toPort, '')::integer,
+           :peer, :peerType, NULLIF(:description, ''), :internetWide,
+           CAST(:observedAt AS timestamptz))
+         ON CONFLICT (workspace_id, run_id, account_id, region,
+                      security_group_id, rule_id)
+         DO UPDATE SET direction = excluded.direction,
+           protocol = excluded.protocol, from_port = excluded.from_port,
+           to_port = excluded.to_port, peer = excluded.peer,
+           peer_type = excluded.peer_type, description = excluded.description,
+           internet_wide = excluded.internet_wide,
+           observed_at = excluded.observed_at`,
+        ruleRows,
+        transactionId,
+      );
+      await sql(
+        `INSERT INTO organization_collection_targets
+          (workspace_id, run_id, account_id, account_name, region, status,
+           object_key, checksum_sha256, security_group_count,
+           security_group_rule_count, network_interface_count, completed_at)
+         VALUES (CAST(:workspaceId AS uuid), CAST(:runId AS uuid), :accountId,
+           :accountName, :region, 'succeeded', :objectKey, :checksum,
+           :groupCount, :ruleCount, :interfaceCount,
+           CAST(:observedAt AS timestamptz))
+         ON CONFLICT (workspace_id, run_id, account_id, region)
+         DO UPDATE SET status = 'succeeded', object_key = excluded.object_key,
+           checksum_sha256 = excluded.checksum_sha256,
+           security_group_count = excluded.security_group_count,
+           security_group_rule_count = excluded.security_group_rule_count,
+           network_interface_count = excluded.network_interface_count,
+           completed_at = excluded.completed_at`,
+        {
+          workspaceId,
+          runId: identity.runId,
+          accountId: identity.accountId,
+          accountName,
+          region: identity.region,
+          objectKey: object.key,
+          checksum,
+          groupCount: groupRows.length,
+          ruleCount: ruleRows.length,
+          interfaceCount: integer(shard.coverage?.networkInterfaceCount, 10_000_000),
+          observedAt,
+        },
+        transactionId,
+      );
+    });
+    await sql(
+      `UPDATE inventory_shard_objects
+          SET status = 'processed', checksum_sha256 = :checksum,
+              processed_at = now()
+        WHERE workspace_id = CAST(:workspaceId AS uuid)
+          AND bucket_name = :bucket AND object_key = :key
+          AND version_id = :versionId`,
+      { workspaceId, checksum, ...object },
+    );
+    return { duplicate: false, groups: groupRows.length, rules: ruleRows.length };
+  } catch (error) {
+    await sql(
+      `UPDATE inventory_shard_objects
+          SET status = 'failed', failure_code = :code, processed_at = now()
+        WHERE workspace_id = CAST(:workspaceId AS uuid)
+          AND bucket_name = :bucket AND object_key = :key
+          AND version_id = :versionId`,
+      {
+        workspaceId,
+        code: error instanceof Error ? error.message.slice(0, 120) : "UNKNOWN",
+        ...object,
+      },
+    );
+    throw error;
+  }
+}
+
+function validateCollectionManifest(value, runId) {
+  if (
+    !value
+    || value.schemaVersion !== "2.0"
+    || value.evidenceType !== "organization-collection-manifest"
+    || value.runId !== runId
+    || !["succeeded", "partial", "failed"].includes(value.status)
+    || !Array.isArray(value.targets)
+    || value.targets.length > 50_000
+  ) {
+    throw new Error("INVALID_COLLECTION_MANIFEST_SCHEMA");
+  }
+  return value;
+}
+
+async function processCollectionManifest(object, identity) {
+  const workspaceId = await defaultWorkspaceId();
+  const { content, parsed } = await readEvidenceObject(object);
+  const manifest = validateCollectionManifest(parsed, identity.runId);
+  const checksum = createHash("sha256").update(content).digest("hex");
+  const summary = manifest.summary ?? {};
+  await transaction(async (transactionId) => {
+    await sql(
+      `INSERT INTO organization_collection_runs
+        (workspace_id, run_id, status, manifest_bucket, manifest_key,
+         manifest_checksum_sha256, accounts_expected, accounts_succeeded,
+         accounts_partial, accounts_failed, accounts_incomplete, regions_expected,
+         regions_succeeded, regions_failed, regions_incomplete, security_group_count,
+         security_group_rule_count, coverage_percent, started_at,
+         completed_at, ingested_at)
+       VALUES (CAST(:workspaceId AS uuid), CAST(:runId AS uuid), :status,
+         :bucket, :key, :checksum, :accountsExpected, :accountsSucceeded,
+         :accountsPartial, :accountsFailed, :accountsIncomplete, :regionsExpected,
+         :regionsSucceeded, :regionsFailed, :regionsIncomplete, :securityGroupCount,
+         :securityGroupRuleCount, :coveragePercent,
+         CAST(:startedAt AS timestamptz), CAST(:completedAt AS timestamptz), now())
+       ON CONFLICT (workspace_id, run_id) DO UPDATE SET
+         status = excluded.status, manifest_bucket = excluded.manifest_bucket,
+         manifest_key = excluded.manifest_key,
+         manifest_checksum_sha256 = excluded.manifest_checksum_sha256,
+         accounts_expected = excluded.accounts_expected,
+         accounts_succeeded = excluded.accounts_succeeded,
+         accounts_partial = excluded.accounts_partial,
+         accounts_failed = excluded.accounts_failed,
+         accounts_incomplete = excluded.accounts_incomplete,
+         regions_expected = excluded.regions_expected,
+         regions_succeeded = excluded.regions_succeeded,
+         regions_failed = excluded.regions_failed,
+         regions_incomplete = excluded.regions_incomplete,
+         security_group_count = excluded.security_group_count,
+         security_group_rule_count = excluded.security_group_rule_count,
+         coverage_percent = excluded.coverage_percent,
+         started_at = excluded.started_at, completed_at = excluded.completed_at,
+         ingested_at = now()`,
+      {
+        workspaceId,
+        runId: identity.runId,
+        status: manifest.status,
+        bucket: object.bucket,
+        key: object.key,
+        checksum,
+        accountsExpected: integer(summary.accountsExpected, 100_000),
+        accountsSucceeded: integer(summary.accountsSucceeded, 100_000),
+        accountsPartial: integer(summary.accountsPartial, 100_000),
+        accountsFailed: integer(summary.accountsFailed, 100_000),
+        accountsIncomplete: integer(summary.accountsIncomplete, 100_000),
+        regionsExpected: integer(summary.regionsExpected, 1_000_000),
+        regionsSucceeded: integer(summary.regionsSucceeded, 1_000_000),
+        regionsFailed: integer(summary.regionsFailed, 1_000_000),
+        regionsIncomplete: integer(summary.regionsIncomplete, 1_000_000),
+        securityGroupCount: integer(summary.securityGroupCount, 100_000_000),
+        securityGroupRuleCount: integer(summary.securityGroupRuleCount, 500_000_000),
+        coveragePercent: Math.max(0, Math.min(100, Number(manifest.coveragePercent ?? 0))),
+        startedAt: String(manifest.startedAt),
+        completedAt: String(manifest.completedAt),
+      },
+      transactionId,
+    );
+    const targetRows = manifest.targets.map((target) => ({
+      workspaceId,
+      runId: identity.runId,
+      accountId: String(target.accountId ?? ""),
+      accountName: String(target.accountName ?? target.accountId ?? "").slice(0, 160),
+      region: String(target.region ?? ""),
+      status: ["succeeded", "failed", "incomplete"].includes(target.status)
+        ? target.status
+        : "incomplete",
+      objectKey: String(target.objectKey ?? "").slice(0, 1024),
+      checksum: String(target.checksumSha256 ?? "").slice(0, 64),
+      groupCount: integer(target.securityGroupCount, 100_000),
+      ruleCount: integer(target.securityGroupRuleCount, 1_000_000),
+      interfaceCount: integer(target.networkInterfaceCount, 10_000_000),
+      errorCode: String(target.errorCode ?? "").slice(0, 120),
+      completedAt: String(target.completedAt || manifest.completedAt),
+    }));
+    await batchSql(
+      `INSERT INTO organization_collection_targets
+        (workspace_id, run_id, account_id, account_name, region, status,
+         object_key, checksum_sha256, security_group_count,
+         security_group_rule_count, network_interface_count, error_code,
+         completed_at)
+       VALUES (CAST(:workspaceId AS uuid), CAST(:runId AS uuid), :accountId,
+         :accountName, :region, :status, :objectKey, :checksum, :groupCount,
+         :ruleCount, :interfaceCount, :errorCode,
+         CAST(:completedAt AS timestamptz))
+       ON CONFLICT (workspace_id, run_id, account_id, region) DO UPDATE SET
+         account_name = excluded.account_name, status = excluded.status,
+         object_key = excluded.object_key,
+         checksum_sha256 = excluded.checksum_sha256,
+         security_group_count = excluded.security_group_count,
+         security_group_rule_count = excluded.security_group_rule_count,
+         network_interface_count = excluded.network_interface_count,
+         error_code = excluded.error_code, completed_at = excluded.completed_at`,
+      targetRows,
+      transactionId,
+    );
+  });
+  return { duplicate: false, targets: manifest.targets.length };
+}
+
 async function processRecord(record) {
   const object = extractS3(record);
   if (object.size > MAX_COMPRESSED_BYTES) throw new Error("OBJECT_TOO_LARGE");
+  if (organizationEvidenceBucket && object.bucket === organizationEvidenceBucket) {
+    const shardMatch = object.key.match(
+      /^runs\/([a-f0-9-]{36})\/shards\/account=([0-9]{12})\/region=([a-z0-9-]+-[0-9])\/inventory\.json\.gz$/,
+    );
+    if (shardMatch) {
+      return processInventoryShard(object, {
+        runId: shardMatch[1],
+        accountId: shardMatch[2],
+        region: shardMatch[3],
+      });
+    }
+    const manifestMatch = object.key.match(
+      /^runs\/([a-f0-9-]{36})\/manifest\.json$/,
+    );
+    if (manifestMatch) {
+      return processCollectionManifest(object, { runId: manifestMatch[1] });
+    }
+    throw new Error("UNSUPPORTED_ORGANIZATION_EVIDENCE_KEY");
+  }
   const source = await findSource(object.bucket, object.key);
   const ledger = await sql(
     `INSERT INTO ingested_objects

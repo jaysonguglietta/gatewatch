@@ -65,12 +65,16 @@ resources, and vulnerability context.
 - Read-only remediation simulation with transparent risk factors
 - Collection coverage for Config, CloudTrail, Flow Logs, Inspector, Security
   Hub, and Terraform access manifests
+- Organization-scale collection health with explicit run, account, and
+  account/Region status, attention filters, and pagination for 500+ accounts
 - Administrator configuration for CloudTrail and AWS Config S3 sources,
   including prefix-scoped IAM role templates, live-capable STS/S3 verification,
   historical backfill controls, ingestion health, roles, retention, and audit
 - AWS production foundations for Aurora PostgreSQL Serverless v2, bounded and
   idempotent SQS/Lambda ingestion, Step Functions backfills, dead-letter
   handling, KMS encryption, and operational alarms
+- Step Functions Distributed Map collection with service-managed read-role
+  StackSets, immutable account/Region evidence shards, and explicit manifests
 
 When the AWS snapshot binding is configured, inventory, findings, exposure
 verdicts, ownership queues, recommendations, collection coverage, and program
@@ -121,6 +125,11 @@ transactional database. The production schema is
 bucket; normalized events, configuration items, current rule versions,
 findings, and evidence references are stored in Aurora.
 
+The current-state authority is the distributed EC2 inventory collector. AWS
+Config supplies configuration history, CloudTrail supplies actor/change
+attribution, route/NACL/public-address evidence supplies configured
+reachability, and Flow Logs supply observed use. These claims remain separate.
+
 ## AWS administration and infrastructure
 
 Open **Admin config** in the application navigation to:
@@ -154,8 +163,12 @@ AWS deployment assets are under `infrastructure/`:
 
 - `cloudformation/gatewatch-aws-platform.yaml` — Aurora, KMS, SQS/DLQ,
   ingestion and backfill workers, Step Functions, and alarms
+- `cloudformation/gatewatch-organization-collector.yaml` — Organizations
+  discovery, read-role StackSet, Distributed Map workers, DynamoDB coverage,
+  and immutable S3 shards/manifests
 - `cloudformation/gatewatch-s3-event-forwarding.yaml` — prefix-filtered S3
   Object Created forwarding through EventBridge
+- `lambda/organization-collector/` — discovery, account worker, and finalizer handlers
 - `lambda/ingest/` — duplicate-safe, size-bounded CloudTrail and Config worker
 - `lambda/backfill/` — paginated historical discovery and enqueue worker
 
@@ -174,6 +187,22 @@ The script deploys the `gatewatch-personal-sg-collector` stack in the profile's
 configured Region. Set `AWS_PROFILE`, `AWS_REGION`, or `GATEWATCH_STACK_NAME`
 to override those safe defaults. It never reads or copies credentials into the
 application package.
+
+### Organization deployment
+
+Deploy the distributed collector from an Organizations management account or
+registered StackSets delegated administrator:
+
+```bash
+export AWS_PROFILE=personal
+export GATEWATCH_ORGANIZATION_TARGET_IDS=r-abcd
+export GATEWATCH_STACKSET_CALL_AS=SELF
+./scripts/deploy-aws-organization.sh
+```
+
+Use `GATEWATCH_REGION_ALLOW_LIST` and `GATEWATCH_EXCLUDED_ACCOUNT_IDS` to scope
+the rollout. The script validates the template, uploads a content-addressed
+Lambda artifact, deploys the stack, and starts the initial collection.
 
 Deploy the complete authenticated web dashboard after the collector is ready:
 
@@ -194,6 +223,10 @@ The CloudFormation templates are source artifacts only; this repository does
 not automatically deploy them. Package the Lambda directories, upload the
 versioned zip files to a private artifact bucket, then provide those keys to the
 platform stack. Apply the PostgreSQL migration before activating any source.
+
+Architecture decisions, diagrams, deployment order, data contracts, capacity
+guidance, migration, and operational response are documented in
+[`docs/architecture`](docs/architecture/README.md).
 
 AWS handoffs are deliberately dry-run artifacts in this version. They contain
 no credentials and cannot modify AWS. The future AWS deployment should use

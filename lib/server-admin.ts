@@ -1,6 +1,24 @@
 import { env } from "cloudflare:workers";
 import { cleanText } from "./admin-sources";
 
+export type ApplicationRole = "admin" | "analyst" | "reviewer" | "viewer";
+export type Permission =
+  | "administration.manage"
+  | "findings.triage"
+  | "reviews.write"
+  | "governance.write"
+  | "intelligence.write"
+  | "remediation.write";
+
+const permissionRoles: Record<Permission, ReadonlySet<ApplicationRole>> = {
+  "administration.manage": new Set(["admin"]),
+  "findings.triage": new Set(["admin", "analyst", "reviewer"]),
+  "reviews.write": new Set(["admin", "analyst", "reviewer"]),
+  "governance.write": new Set(["admin", "analyst", "reviewer"]),
+  "intelligence.write": new Set(["admin", "analyst", "reviewer"]),
+  "remediation.write": new Set(["admin", "analyst"]),
+};
+
 export function apiJson(body: Record<string, unknown>, status = 200) {
   return Response.json(body, {
     status,
@@ -31,29 +49,44 @@ export function requestUser(request: Request) {
 }
 
 export async function requireAdmin(request: Request) {
+  return requirePermission(request, "administration.manage");
+}
+
+export async function requirePermission(
+  request: Request,
+  permission: Permission,
+) {
   const user = requestUser(request);
-  if (!user) return { user: "", allowed: false };
+  if (!user) return { user: "", role: null, permission, allowed: false };
   const hostname = new URL(request.url).hostname;
   if (
     typeof process !== "undefined" &&
     process.env.NODE_ENV !== "production" &&
     ["localhost", "127.0.0.1"].includes(hostname)
   ) {
-    return { user, allowed: true };
+    return { user, role: "admin" as const, permission, allowed: true };
   }
   if (
     env.GATEWATCH_BOOTSTRAP_ADMIN_EMAIL &&
     env.GATEWATCH_BOOTSTRAP_ADMIN_EMAIL.toLowerCase() === user
   ) {
-    return { user, allowed: true };
+    return { user, role: "admin" as const, permission, allowed: true };
   }
   await ensureAdminSchema();
-  const role = await env.DB.prepare(
+  const result = await env.DB.prepare(
     "SELECT role FROM user_roles WHERE email = ? AND workspace_id = 'default'",
   )
     .bind(user)
     .first<{ role: string }>();
-  return { user, allowed: role?.role === "admin" };
+  const role = ["admin", "analyst", "reviewer", "viewer"].includes(result?.role ?? "")
+    ? (result?.role as ApplicationRole)
+    : "viewer";
+  return {
+    user,
+    role,
+    permission,
+    allowed: permissionRoles[permission].has(role),
+  };
 }
 
 export function sameOrigin(request: Request) {

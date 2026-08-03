@@ -115,6 +115,8 @@ export function validateSourceInput(value: unknown) {
   const kmsKeyArn = cleanText(record.kmsKeyArn, 300);
   const ingestionMode = cleanText(record.ingestionMode, 20);
   const backfillStart = cleanText(record.backfillStart, 20);
+  const externalId = cleanText(record.externalId, 128);
+  const objectPrefix = normalizePrefix(cleanText(record.objectPrefix, 900));
   const retentionDays = Math.min(
     3650,
     Math.max(30, Math.trunc(Number(record.retentionDays) || 365)),
@@ -139,6 +141,15 @@ export function validateSourceInput(value: unknown) {
     )
   ) {
     errors.push("Enter a valid IAM role ARN.");
+  }
+  if (!/^[A-Za-z0-9+=,.@:/_-]{16,128}$/.test(externalId)) {
+    errors.push("Use a 16–128 character external ID without whitespace or control characters.");
+  }
+  if (
+    /[\u0000-\u001f\u007f]/.test(objectPrefix)
+    || objectPrefix.includes("\\")
+  ) {
+    errors.push("The S3 prefix cannot contain control characters or backslashes.");
   }
   if (organizationId && !/^o-[a-z0-9]{10,32}$/.test(organizationId)) {
     errors.push("Enter a valid AWS Organizations ID or leave it blank.");
@@ -169,9 +180,9 @@ export function validateSourceInput(value: unknown) {
       bucketArn,
       bucketName: bucketNameFromArn(bucketArn),
       region,
-      objectPrefix: normalizePrefix(cleanText(record.objectPrefix, 900)),
+      objectPrefix,
       roleArn,
-      externalId: cleanText(record.externalId, 128),
+      externalId,
       kmsKeyArn,
       organizationId,
       ingestionMode: ingestionMode as IngestionSource["ingestionMode"],
@@ -201,64 +212,93 @@ export function generateExternalId() {
 export function sourceAccessCloudFormation(source: IngestionSource) {
   const prefix = normalizePrefix(source.objectPrefix);
   const objectArn = `${source.bucketArn}/${prefix ? `${prefix}*` : "*"}`;
-  const listCondition = prefix
-    ? `\n                    s3:prefix:\n                      - "${prefix}*"`
-    : "";
-  const kmsStatement = source.kmsKeyArn
-    ? `
-              - Sid: DecryptConfiguredLogObjects
-                Effect: Allow
-                Action: kms:Decrypt
-                Resource: "${source.kmsKeyArn}"
-                Condition:
-                  StringEquals:
-                    kms:ViaService: "s3.${source.region}.amazonaws.com"`
-    : "";
-
-  return `AWSTemplateFormatVersion: "2010-09-09"
-Description: Read-only Gatewatch access to one AWS log prefix.
-Parameters:
-  GatewatchApplicationRoleArn:
-    Type: String
-    Description: IAM role used by the deployed Gatewatch ingestion service.
-  GatewatchSourceRoleName:
-    Type: String
-    Default: GatewatchLogReadRole
-    AllowedPattern: "^[A-Za-z0-9+=,.@_-]{1,64}$"
-Resources:
-  GatewatchLogReadRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Ref GatewatchSourceRoleName
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              AWS: !Ref GatewatchApplicationRoleArn
-            Action: sts:AssumeRole
-            Condition:
-              StringEquals:
-                sts:ExternalId: "${source.externalId}"
-      Policies:
-        - PolicyName: ReadGatewatchLogPrefix
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Sid: ListConfiguredPrefix
-                Effect: Allow
-                Action: s3:ListBucket
-                Resource: "${source.bucketArn}"
-                Condition:
-                  StringLike:${listCondition || "\n                    s3:prefix: \"*\""}
-              - Sid: ReadConfiguredLogObjects
-                Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:GetObjectVersion
-                Resource: "${objectArn}"${kmsStatement}
-Outputs:
-  RoleArn:
-    Value: !GetAtt GatewatchLogReadRole.Arn
-`;
+  const statements: Record<string, unknown>[] = [
+    {
+      Sid: "ListConfiguredPrefix",
+      Effect: "Allow",
+      Action: "s3:ListBucket",
+      Resource: source.bucketArn,
+      Condition: {
+        StringLike: {
+          "s3:prefix": prefix ? [`${prefix}*`] : ["*"],
+        },
+      },
+    },
+    {
+      Sid: "ReadConfiguredLogObjects",
+      Effect: "Allow",
+      Action: ["s3:GetObject", "s3:GetObjectVersion"],
+      Resource: objectArn,
+    },
+  ];
+  if (source.kmsKeyArn) {
+    statements.push({
+      Sid: "DecryptConfiguredLogObjects",
+      Effect: "Allow",
+      Action: "kms:Decrypt",
+      Resource: source.kmsKeyArn,
+      Condition: {
+        StringEquals: {
+          "kms:ViaService": `s3.${source.region}.amazonaws.com`,
+        },
+      },
+    });
+  }
+  const template = {
+    AWSTemplateFormatVersion: "2010-09-09",
+    Description: "Read-only Gatewatch access to one AWS log prefix.",
+    Parameters: {
+      GatewatchApplicationRoleArn: {
+        Type: "String",
+        Description: "IAM role used by the deployed Gatewatch ingestion service.",
+        AllowedPattern:
+          "^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$",
+      },
+      GatewatchSourceRoleName: {
+        Type: "String",
+        Default: "GatewatchLogReadRole",
+        AllowedPattern: "^[A-Za-z0-9+=,.@_-]{1,64}$",
+      },
+    },
+    Resources: {
+      GatewatchLogReadRole: {
+        Type: "AWS::IAM::Role",
+        Properties: {
+          RoleName: { Ref: "GatewatchSourceRoleName" },
+          AssumeRolePolicyDocument: {
+            Version: "2012-10-17",
+            Statement: [
+              {
+                Effect: "Allow",
+                Principal: {
+                  AWS: { Ref: "GatewatchApplicationRoleArn" },
+                },
+                Action: "sts:AssumeRole",
+                Condition: {
+                  StringEquals: {
+                    "sts:ExternalId": source.externalId,
+                  },
+                },
+              },
+            ],
+          },
+          Policies: [
+            {
+              PolicyName: "ReadGatewatchLogPrefix",
+              PolicyDocument: {
+                Version: "2012-10-17",
+                Statement: statements,
+              },
+            },
+          ],
+        },
+      },
+    },
+    Outputs: {
+      RoleArn: {
+        Value: { "Fn::GetAtt": ["GatewatchLogReadRole", "Arn"] },
+      },
+    },
+  };
+  return `${JSON.stringify(template, null, 2)}\n`;
 }

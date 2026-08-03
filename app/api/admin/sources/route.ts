@@ -314,7 +314,7 @@ export async function POST(request: Request) {
 
     if (action === "template") {
       return apiJson({
-        filename: `gatewatch-${existing.sourceType}-read-role.yaml`,
+        filename: `gatewatch-${existing.sourceType}-read-role.json`,
         template: sourceAccessCloudFormation(existing),
       });
     }

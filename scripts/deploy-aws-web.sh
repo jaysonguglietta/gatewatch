@@ -7,6 +7,7 @@ REGION="${AWS_REGION:-$(aws configure get region --profile "$PROFILE")}"
 REGION="${REGION:-us-east-1}"
 STACK_NAME="${GATEWATCH_WEB_STACK_NAME:-gatewatch-personal-web}"
 COLLECTOR_STACK_NAME="${GATEWATCH_STACK_NAME:-gatewatch-personal-sg-collector}"
+ORGANIZATION_COLLECTOR_STACK_NAME="${GATEWATCH_ORGANIZATION_STACK_NAME:-gatewatch-organization-collector}"
 TEMPLATE="infrastructure/cloudformation/gatewatch-aws-web.yaml"
 
 if [[ ! -f "$TEMPLATE" || ! -f package-lock.json ]]; then
@@ -31,6 +32,17 @@ SNAPSHOT_BUCKET="$(aws cloudformation describe-stacks \
 if [[ -z "$SNAPSHOT_BUCKET" || "$SNAPSHOT_BUCKET" == "None" ]]; then
   echo "Deploy the Gatewatch collector before deploying the web dashboard." >&2
   exit 1
+fi
+
+ORGANIZATION_EVIDENCE_BUCKET="$(aws cloudformation describe-stacks \
+  --profile "$PROFILE" \
+  --region "$REGION" \
+  --stack-name "$ORGANIZATION_COLLECTOR_STACK_NAME" \
+  --query 'Stacks[0].Outputs[?OutputKey==`EvidenceBucketName`].OutputValue' \
+  --output text \
+  --no-cli-pager 2>/dev/null || true)"
+if [[ "$ORGANIZATION_EVIDENCE_BUCKET" == "None" ]]; then
+  ORGANIZATION_EVIDENCE_BUCKET=""
 fi
 
 if ! aws s3api head-bucket \
@@ -106,6 +118,19 @@ aws s3 cp "$PACKAGE_PATH" "s3://$ARTIFACT_BUCKET/$ARTIFACT_KEY" \
   --metadata "sha256=$PACKAGE_SHA256" \
   --no-progress
 
+ARTIFACT_VERSION_ID="$(aws s3api head-object \
+  --profile "$PROFILE" \
+  --region "$REGION" \
+  --bucket "$ARTIFACT_BUCKET" \
+  --key "$ARTIFACT_KEY" \
+  --query VersionId \
+  --output text \
+  --no-cli-pager)"
+if [[ -z "$ARTIFACT_VERSION_ID" || "$ARTIFACT_VERSION_ID" == "None" ]]; then
+  echo "The release artifact must have an immutable S3 version ID." >&2
+  exit 1
+fi
+
 CLOUDFRONT_PREFIX_LIST="$(aws ec2 describe-managed-prefix-lists \
   --profile "$PROFILE" \
   --region "$REGION" \
@@ -157,9 +182,14 @@ aws cloudformation deploy \
     EnvironmentName=personal \
     ArtifactBucket="$ARTIFACT_BUCKET" \
     ArtifactKey="$ARTIFACT_KEY" \
+    ArtifactVersionId="$ARTIFACT_VERSION_ID" \
+    ArtifactSha256="$PACKAGE_SHA256" \
     SnapshotBucket="$SNAPSHOT_BUCKET" \
     SnapshotKey=exports/latest.json \
+    SnapshotManifestKey=manifests/latest.json \
     SnapshotRegion="$REGION" \
+    OrganizationEvidenceBucket="$ORGANIZATION_EVIDENCE_BUCKET" \
+    OrganizationManifestKey=manifests/latest.json \
     CloudFrontOriginPrefixListId="$CLOUDFRONT_PREFIX_LIST" \
     InstanceType=t4g.small
 

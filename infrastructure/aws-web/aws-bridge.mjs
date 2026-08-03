@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { GetObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
 import {
@@ -12,9 +13,13 @@ const host = process.env.GATEWATCH_AWS_BRIDGE_HOST ?? "127.0.0.1";
 const token = process.env.GATEWATCH_AWS_BRIDGE_TOKEN ?? "";
 const snapshotBucket = process.env.GATEWATCH_SNAPSHOT_BUCKET ?? "";
 const snapshotKey = process.env.GATEWATCH_SNAPSHOT_KEY ?? "exports/latest.json";
+const snapshotManifestKey = process.env.GATEWATCH_SNAPSHOT_MANIFEST_KEY ?? "manifests/latest.json";
 const snapshotRegion = process.env.GATEWATCH_SNAPSHOT_REGION ?? process.env.AWS_REGION ?? "us-east-1";
+const organizationEvidenceBucket = process.env.GATEWATCH_ORGANIZATION_EVIDENCE_BUCKET ?? "";
+const organizationManifestKey = process.env.GATEWATCH_ORGANIZATION_MANIFEST_KEY ?? "manifests/latest.json";
 const maxRequestBytes = 80_000;
 const maxSnapshotBytes = 25 * 1024 * 1024;
+const maxManifestBytes = 8 * 1024 * 1024;
 const jiraSecretArn = process.env.GATEWATCH_JIRA_SECRET_ARN ?? "";
 const secrets = new SecretsManagerClient({ region: process.env.AWS_REGION ?? "us-east-1" });
 
@@ -315,7 +320,24 @@ function check(key, label, status, detail) {
 }
 
 async function inventory() {
-  const result = await new S3Client({ region: snapshotRegion }).send(
+  const s3 = new S3Client({ region: snapshotRegion });
+  const manifestResult = await s3.send(
+    new GetObjectCommand({ Bucket: snapshotBucket, Key: snapshotManifestKey }),
+  );
+  const manifestValue = await manifestResult.Body?.transformToString("utf8");
+  if (!manifestValue || Buffer.byteLength(manifestValue) > 1_000_000) {
+    throw new Error("SNAPSHOT_MANIFEST_INVALID");
+  }
+  const manifest = JSON.parse(manifestValue);
+  if (
+    manifest?.schemaVersion !== "1.0"
+    || manifest?.complete !== true
+    || !/^[a-f0-9]{64}$/.test(String(manifest?.sha256 ?? ""))
+    || typeof manifest?.snapshotId !== "string"
+  ) {
+    throw new Error("SNAPSHOT_MANIFEST_SCHEMA_INVALID");
+  }
+  const result = await s3.send(
     new GetObjectCommand({ Bucket: snapshotBucket, Key: snapshotKey }),
   );
   if (
@@ -328,7 +350,43 @@ async function inventory() {
   if (!value || Buffer.byteLength(value) > maxSnapshotBytes) {
     throw new Error("SNAPSHOT_INVALID");
   }
-  return JSON.parse(value);
+  const expected = Buffer.from(manifest.sha256, "hex");
+  const actual = createHash("sha256").update(value, "utf8").digest();
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+    throw new Error("SNAPSHOT_CHECKSUM_MISMATCH");
+  }
+  const snapshot = JSON.parse(value);
+  if (snapshot.snapshotId !== manifest.snapshotId || snapshot.complete !== true) {
+    throw new Error("SNAPSHOT_MANIFEST_MISMATCH");
+  }
+  return snapshot;
+}
+
+async function organizationCoverage() {
+  if (!organizationEvidenceBucket) throw new Error("ORGANIZATION_EVIDENCE_NOT_CONFIGURED");
+  const result = await new S3Client({ region: snapshotRegion }).send(
+    new GetObjectCommand({
+      Bucket: organizationEvidenceBucket,
+      Key: organizationManifestKey,
+    }),
+  );
+  if (typeof result.ContentLength === "number" && result.ContentLength > maxManifestBytes) {
+    throw new Error("ORGANIZATION_MANIFEST_TOO_LARGE");
+  }
+  const value = await result.Body?.transformToString("utf8");
+  if (!value || Buffer.byteLength(value) > maxManifestBytes) {
+    throw new Error("ORGANIZATION_MANIFEST_INVALID");
+  }
+  const parsed = JSON.parse(value);
+  if (
+    parsed?.schemaVersion !== "2.0"
+    || parsed?.evidenceType !== "organization-collection-manifest"
+    || !Array.isArray(parsed.accounts)
+    || !Array.isArray(parsed.targets)
+  ) {
+    throw new Error("ORGANIZATION_MANIFEST_SCHEMA_INVALID");
+  }
+  return parsed;
 }
 
 async function testSource(source) {
@@ -430,6 +488,9 @@ createServer(async (request, response) => {
     if (!authorized(request)) return json(response, 401, { error: "Unauthorized" });
     if (request.method === "GET" && request.url === "/inventory") {
       return json(response, 200, await inventory());
+    }
+    if (request.method === "GET" && request.url === "/coverage") {
+      return json(response, 200, await organizationCoverage());
     }
     if (request.method === "POST" && request.url === "/test-source") {
       return json(response, 200, await testSource(await requestBody(request)));

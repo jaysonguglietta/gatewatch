@@ -41,6 +41,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import { csvDocument } from "../lib/csv";
 import type { LucideIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { LiveIntelligence } from "../lib/live-intelligence";
@@ -255,11 +256,7 @@ function WorkflowError({ message }: { message: string }) {
 }
 
 function downloadCsv(filename: string, rows: string[][]) {
-  const content = rows
-    .map((row) =>
-      row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","),
-    )
-    .join("\n");
+  const content = csvDocument(rows);
   const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" }));
   const link = document.createElement("a");
   link.href = url;

@@ -17,21 +17,28 @@ broad CIDRs, and wide port ranges.
 
 ## Primary workflows
 
-1. An administrator configures a read-only S3 evidence source.
-2. Gatewatch validates role assumption, prefix listing, object reading, and KMS access.
-3. A historical backfill and continuous object ingestion populate normalized state.
-4. Config items confirm current security-group rules and resource relationships.
-5. CloudTrail events attribute successful changes to actors and delivery channels.
-6. Analysts review findings, record decisions, and export evidence.
-7. Analysts acknowledge understood exposure with a durable explanatory note or
+1. A central collector discovers selected organization OUs and distributes one
+   isolated worker per account with bounded Region fan-out.
+2. Successful account/Region scans write immutable, checksummed evidence shards;
+   failed targets remain explicit in the run manifest and Coverage view.
+3. An administrator configures additional read-only CloudTrail and Config sources.
+4. Gatewatch validates role assumption, prefix listing, bounded object reading,
+   and KMS access.
+5. Continuous events and historical backfills populate normalized Aurora state.
+6. Live APIs confirm current security groups, rules, attachments, routes, NACLs,
+   and public addresses.
+7. Config items provide history and CloudTrail attributes successful changes to
+   actors and delivery channels.
+8. Analysts confirm collection coverage, review findings, and export evidence.
+9. Analysts acknowledge understood exposure with a durable explanatory note or
    assign an owner and due date for follow-up.
-8. Administrators approve time-bound accepted risk with compensating controls,
+10. Administrators approve time-bound accepted risk with compensating controls,
    ticket linkage, and expiration.
-9. Stable finding fingerprints preserve history when a finding resolves or reopens.
-10. Gatewatch proposes least-privilege rules and explains their simulated impact.
-11. Owners accept SLA-bound queues or request independently approved exceptions.
-12. CI evaluates proposed IaC changes before AWS deployment.
-13. Administrators monitor lag, retries, quarantine, retention, access, and audit history.
+11. Stable finding fingerprints preserve history when a finding resolves or reopens.
+12. Gatewatch proposes least-privilege rules and explains their simulated impact.
+13. Owners accept SLA-bound queues or request independently approved exceptions.
+14. CI evaluates proposed IaC changes before AWS deployment.
+15. Administrators monitor lag, retries, quarantine, retention, access, and audit history.
 
 ## Main views
 
@@ -48,11 +55,16 @@ broad CIDRs, and wide port ranges.
 - Reviews, applications, policies, campaigns, and remediation
 - CloudTrail local import
 - Coverage and confidence boundaries
+- Organization run health with searchable account status, Region failure counts,
+  freshness, evidence lineage, and explicit partial collection
 - Admin overview, data sources, ingestion runs, access, retention, and audit
 
 ## Key data models
 
 `ingestion_sources`, `ingestion_runs`, `ingested_objects`, `cloudtrail_events`,
+`organization_collection_runs`, `organization_collection_targets`,
+`inventory_shard_objects`, `security_group_observations`,
+`security_group_rule_observations`,
 `config_items`, `aws_resources`, `security_group_rule_versions`, `findings`,
 `exposure_verdicts`, `rule_recommendations`, `exposure_drift_events`,
 `ownership_assignments`, `exception_requests`, `control_evaluations`,
@@ -66,6 +78,10 @@ broad CIDRs, and wide port ranges.
 ## Important edge cases
 
 - S3 deliveries are duplicated, delayed, and out of event-time order.
+- Organization manifests and their shard events can arrive in either order.
+- One account can fail role assumption while every other account succeeds.
+- Region opt-in differs by account; an unavailable Region must remain an explicit
+  coverage gap rather than being interpreted as a clean scan.
 - A successful CloudTrail request may precede Config confirmation.
 - Failed CloudTrail API calls must not update current state.
 - Config configuration may be a JSON-encoded string.
@@ -91,6 +107,8 @@ broad CIDRs, and wide port ranges.
 - Raw evidence remains in a customer-controlled S3 bucket.
 - AWS access uses STS and dedicated read-only roles; long-lived access keys are prohibited.
 - Aurora PostgreSQL is the AWS production system of record for normalized data.
+- Collection uses Step Functions Distributed Map, one worker per account,
+  bounded per-account Region concurrency, and immutable S3 account/Region shards.
 - The current D1 implementation remains a local/Sites compatibility adapter.
 - Authentication is provided by the hosting identity layer now and Cognito or
   IAM Identity Center in the future AWS deployment.
@@ -98,6 +116,12 @@ broad CIDRs, and wide port ranges.
 ## Done for this version
 
 - Complete local Admin workflow and durable configuration schema
+- Organization discovery, service-managed member read-role StackSet, distributed
+  account workers, per-Region shards, DynamoDB coverage state, and run manifests
+- Authenticated Coverage API and a searchable/paginated 500-account operator view
+- Aurora shard/run/target observation schema and duplicate-safe atomic normalization
+- Structured JSON cross-account CloudFormation generation, formula-safe CSV,
+  snapshot checksum verification, and version/checksum-pinned web artifacts
 - Real AWS-capable connection test with a safe configuration-only local state
 - Least-privilege cross-account IAM template generation
 - Config parser and CloudTrail/Config correlation library

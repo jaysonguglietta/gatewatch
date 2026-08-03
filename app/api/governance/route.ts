@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { findingCatalogForGroups } from "../../../lib/daily-findings";
 import { loadAwsInventory } from "../../../lib/aws-inventory";
-import { ensureAdminSchema, requireAdmin } from "../../../lib/server-admin";
+import { ensureAdminSchema, requireAdmin, requirePermission } from "../../../lib/server-admin";
 
 type GovernanceInput = {
   kind?: unknown;
@@ -159,6 +159,10 @@ export async function POST(request: Request) {
     const user = authenticatedUser(request);
     if (!user) return json({ error: "Authentication is required." }, 401);
     if (!sameOrigin(request)) return json({ error: "Origin is not allowed." }, 403);
+    const permission = await requirePermission(request, "governance.write");
+    if (!permission.allowed) {
+      return json({ error: "Analyst or reviewer access is required to change governance records." }, 403);
+    }
 
     const contentLength = Number(request.headers.get("content-length") ?? "0");
     if (contentLength > 30_000) {

@@ -47,10 +47,28 @@ Parameters:
     Description: >
       Optional AWS Organizations ID. When supplied, EventBridge forwarding
       roles in that organization may send to the central ingestion queue.
+  OrganizationEvidenceBucketName:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+    Description: >
+      Optional EvidenceBucketName output from gatewatch-organization-collector.
+      When supplied, inventory shards are routed to the ingestion queue.
+  OrganizationEvidenceKeyArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:[a-z0-9-]+:kms:[a-z0-9-]+-[0-9]:[0-9]{12}:key/[a-fA-F0-9-]{36}$"
+    Description: EvidenceKeyArn output from gatewatch-organization-collector.
 
 Conditions:
   HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, ""]]
   HasOrganization: !Not [!Equals [!Ref OrganizationId, ""]]
+  HasOrganizationEvidence: !And
+    - !Not [!Equals [!Ref OrganizationEvidenceBucketName, ""]]
+    - !Not [!Equals [!Ref OrganizationEvidenceKeyArn, ""]]
+  HasQueueIngress: !Or
+    - !Condition HasOrganization
+    - !Condition HasOrganizationEvidence
 
 Resources:
   PlatformKey:
@@ -174,23 +192,63 @@ Resources:
 
   OrganizationQueuePolicy:
     Type: AWS::SQS::QueuePolicy
-    Condition: HasOrganization
+    Condition: HasQueueIngress
     Properties:
       Queues:
         - !Ref IngestionQueue
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: OrganizationEventForwardingRoles
-            Effect: Allow
-            Principal: "*"
-            Action: sqs:SendMessage
-            Resource: !GetAtt IngestionQueue.Arn
-            Condition:
-              StringEquals:
-                aws:PrincipalOrgID: !Ref OrganizationId
-              ArnLike:
-                aws:PrincipalArn: !Sub arn:${AWS::Partition}:iam::*:role/GatewatchEventForwardingRole-*
+          - !If
+            - HasOrganization
+            - Sid: OrganizationEventForwardingRoles
+              Effect: Allow
+              Principal: "*"
+              Action: sqs:SendMessage
+              Resource: !GetAtt IngestionQueue.Arn
+              Condition:
+                StringEquals:
+                  aws:PrincipalOrgID: !Ref OrganizationId
+                ArnLike:
+                  aws:PrincipalArn: !Sub arn:${AWS::Partition}:iam::*:role/GatewatchEventForwardingRole-*
+            - !Ref AWS::NoValue
+          - !If
+            - HasOrganizationEvidence
+            - Sid: OrganizationEvidenceEventBridge
+              Effect: Allow
+              Principal:
+                Service: events.amazonaws.com
+              Action: sqs:SendMessage
+              Resource: !GetAtt IngestionQueue.Arn
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: !GetAtt OrganizationEvidenceRule.Arn
+                StringEquals:
+                  aws:SourceAccount: !Ref AWS::AccountId
+            - !Ref AWS::NoValue
+
+  OrganizationEvidenceRule:
+    Type: AWS::Events::Rule
+    Condition: HasOrganizationEvidence
+    Properties:
+      Description: Routes immutable Gatewatch organization inventory shards to normalization.
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - Object Created
+        detail:
+          bucket:
+            name:
+              - !Ref OrganizationEvidenceBucketName
+          object:
+            key:
+              - wildcard: runs/*/shards/account=*/region=*/inventory.json.gz
+              - wildcard: runs/*/manifest.json
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt IngestionQueue.Arn
+          Id: GatewatchOrganizationEvidenceQueue
 
   IngestionRole:
     Type: AWS::IAM::Role
@@ -247,6 +305,26 @@ Resources:
                 Effect: Allow
                 Action: sts:AssumeRole
                 Resource: !Sub arn:${AWS::Partition}:iam::*:role/GatewatchLogReadRole*
+              - !If
+                - HasOrganizationEvidence
+                - Sid: ReadOrganizationEvidence
+                  Effect: Allow
+                  Action:
+                    - s3:GetObject
+                    - s3:GetObjectVersion
+                  Resource:
+                    - !Sub arn:${AWS::Partition}:s3:::${OrganizationEvidenceBucketName}/runs/*/shards/*
+                    - !Sub arn:${AWS::Partition}:s3:::${OrganizationEvidenceBucketName}/runs/*/manifest.json
+                - !Ref AWS::NoValue
+              - !If
+                - HasOrganizationEvidence
+                - Sid: DecryptOrganizationEvidence
+                  Effect: Allow
+                  Action:
+                    - kms:Decrypt
+                    - kms:DescribeKey
+                  Resource: !Ref OrganizationEvidenceKeyArn
+                - !Ref AWS::NoValue
 
   IngestionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -278,6 +356,7 @@ Resources:
           DATABASE_NAME: !Ref DatabaseName
           DB_CLUSTER_ARN: !GetAtt DatabaseCluster.DBClusterArn
           DB_SECRET_ARN: !Ref DatabaseSecret
+          ORGANIZATION_EVIDENCE_BUCKET: !Ref OrganizationEvidenceBucketName
       KmsKeyArn: !GetAtt PlatformKey.Arn
       TracingConfig:
         Mode: Active
@@ -466,3 +545,6 @@ Outputs:
     Value: !Ref BackfillStateMachine
   DeadLetterQueueUrl:
     Value: !Ref DeadLetterQueue
+  OrganizationEvidenceRuleArn:
+    Condition: HasOrganizationEvidence
+    Value: !GetAtt OrganizationEvidenceRule.Arn

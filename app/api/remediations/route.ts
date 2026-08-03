@@ -9,6 +9,7 @@ import {
   queueNotification,
   requestUser,
   requireAdmin,
+  requirePermission,
   safeJson,
   sameOrigin,
 } from "../../../lib/server-admin";
@@ -60,6 +61,10 @@ export async function POST(request: Request) {
   const user = requestUser(request);
   if (!user) return apiJson({ error: "Authentication is required." }, 401);
   if (!sameOrigin(request)) return apiJson({ error: "Origin is not allowed." }, 403);
+  const permission = await requirePermission(request, "remediation.write");
+  if (!permission.allowed) {
+    return apiJson({ error: "Analyst access is required to change remediation records." }, 403);
+  }
   if (!acceptsJson(request, 40_000)) {
     return apiJson({ error: "Send an application/json payload under 40 KB." }, 415);
   }

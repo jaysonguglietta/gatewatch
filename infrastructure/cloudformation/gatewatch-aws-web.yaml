@@ -17,16 +17,39 @@ Parameters:
     Type: String
     MinLength: 1
     MaxLength: 1024
+  ArtifactVersionId:
+    Type: String
+    MinLength: 1
+    MaxLength: 1024
+    AllowedPattern: "^[A-Za-z0-9._-]+$"
+    Description: Immutable S3 VersionId for the release artifact.
+  ArtifactSha256:
+    Type: String
+    AllowedPattern: "^[a-f0-9]{64}$"
+    Description: Expected SHA-256 digest for the exact release artifact bytes.
   SnapshotBucket:
     Type: String
     AllowedPattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
   SnapshotKey:
     Type: String
     Default: exports/latest.json
+  SnapshotManifestKey:
+    Type: String
+    Default: manifests/latest.json
+    AllowedPattern: "^[A-Za-z0-9!_.*'()/=-]{1,1024}$"
   SnapshotRegion:
     Type: String
     Default: us-east-1
     AllowedPattern: "^[a-z0-9-]+-[0-9]$"
+  OrganizationEvidenceBucket:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+    Description: Optional EvidenceBucketName output from the organization collector.
+  OrganizationManifestKey:
+    Type: String
+    Default: manifests/latest.json
+    AllowedPattern: "^[A-Za-z0-9!_.*'()/=-]{1,1024}$"
   CloudFrontOriginPrefixListId:
     Type: String
     AllowedPattern: "^pl-[a-z0-9]+$"
@@ -39,6 +62,9 @@ Parameters:
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+
+Conditions:
+  HasOrganizationEvidence: !Not [!Equals [!Ref OrganizationEvidenceBucket, ""]]
 
 Resources:
   WebVpc:
@@ -185,7 +211,16 @@ Resources:
               - Sid: ReadSecurityGroupSnapshot
                 Effect: Allow
                 Action: s3:GetObject
-                Resource: !Sub arn:${AWS::Partition}:s3:::${SnapshotBucket}/${SnapshotKey}
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${SnapshotBucket}/${SnapshotKey}
+                  - !Sub arn:${AWS::Partition}:s3:::${SnapshotBucket}/${SnapshotManifestKey}
+              - !If
+                - HasOrganizationEvidence
+                - Sid: ReadOrganizationCoverageManifest
+                  Effect: Allow
+                  Action: s3:GetObject
+                  Resource: !Sub arn:${AWS::Partition}:s3:::${OrganizationEvidenceBucket}/${OrganizationManifestKey}
+                - !Ref AWS::NoValue
               - Sid: DecryptS3Objects
                 Effect: Allow
                 Action:
@@ -354,7 +389,13 @@ Resources:
               done
               test -f /var/lib/gatewatch-bootstrap-ready
               rm -rf /opt/gatewatch-release /tmp/gatewatch-release.zip
-              aws s3 cp 's3://${ArtifactBucket}/${ArtifactKey}' /tmp/gatewatch-release.zip --region '${AWS::Region}' --no-progress
+              aws s3api get-object \
+                --bucket '${ArtifactBucket}' \
+                --key '${ArtifactKey}' \
+                --version-id '${ArtifactVersionId}' \
+                --region '${AWS::Region}' \
+                /tmp/gatewatch-release.zip >/dev/null
+              printf '%s  %s\n' '${ArtifactSha256}' /tmp/gatewatch-release.zip | sha256sum -c -
               mkdir -p /opt/gatewatch-release
               unzip -q /tmp/gatewatch-release.zip -d /opt/gatewatch-release
               cd /opt/gatewatch-release
@@ -367,7 +408,10 @@ Resources:
                 '${JiraIntegrationSecret}' \
                 '${SnapshotBucket}' \
                 '${SnapshotKey}' \
+                '${SnapshotManifestKey}' \
                 '${SnapshotRegion}' \
+                '${OrganizationEvidenceBucket}' \
+                '${OrganizationManifestKey}' \
                 '${ApplicationLogGroup}' \
                 "$RELEASE_ID"
 

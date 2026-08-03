@@ -4,6 +4,11 @@
 **Goal:** Make Gatewatch safe to operate as an authoritative daily security-group
 governance service across hundreds of AWS accounts
 
+**Implementation update (August 3, 2026):** GW-03 and GW-04 have code-level
+fixes; GW-02, GW-05, GW-09, GW-10, and GW-14 have material code-level mitigations.
+None are closed until the target-environment and independent-validation criteria
+below pass. See [SECURITY_UPDATE_2026-08-03.md](SECURITY_UPDATE_2026-08-03.md).
+
 ## Status model
 
 - **Open:** No effective fix has been merged and deployed.
@@ -251,4 +256,3 @@ Every release should include:
 - IAM Access Analyzer, WAF, dependency, container, or IaC scan result as relevant;
 - independent reviewer and review date;
 - residual risk, owner, and expiration if the finding is accepted rather than remediated.
-
