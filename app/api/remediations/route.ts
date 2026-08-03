@@ -120,8 +120,8 @@ export async function POST(request: Request) {
         `UPDATE remediation_requests
          SET status = 'approved', approved_by = ?, updated_at = CURRENT_TIMESTAMP
          WHERE id = ? AND workspace_id = 'default' AND status = 'draft'`,
-      ).bind(user, id).run();
-      if (!result.meta.changes) return apiJson({ error: "A draft remediation was not found." }, 409);
+      ).bind(user, id).run() as { meta?: { changes?: number } };
+      if (!result.meta?.changes) return apiJson({ error: "A draft remediation was not found." }, 409);
       await audit(user, "remediation.approved", "remediation", id, `Approved remediation ${id}.`);
       await queueNotification("remediation.approved", id, "high", { actor: user });
       return apiJson({ record: { id, status: "approved", approvedBy: user } });

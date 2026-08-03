@@ -32,13 +32,15 @@ test("makes the daily findings inbox the default organization-scale workflow", a
     "Notes & history",
     "Bulk findings actions",
     "Create Jira tickets",
+    "Security-operations workspace refresh",
   ]) {
-    assert.match(inbox, new RegExp(capability));
+    assert.match(`${inbox}\n${await source("app/globals.css")}`, new RegExp(capability));
   }
   assert.match(catalog, /findingFingerprint/);
   assert.match(catalog, /organizationalUnit/);
   assert.match(catalog, /accounts: 324/);
-  assert.doesNotMatch(inbox, /localStorage|sessionStorage/);
+  assert.match(inbox, /gatewatch\.findings-density/);
+  assert.doesNotMatch(inbox, /localStorage\.(?:getItem|setItem)\(["'][^"']*(?:note|ticket|workflow)/i);
 });
 
 test("links findings to Jira without creating duplicate tickets", async () => {
@@ -69,17 +71,56 @@ test("persists notes, bulk triage, accepted risk, history, and saved views safel
   assert.match(route, /sameOrigin/);
   assert.match(route, /TextEncoder/);
   assert.match(route, /requireAdmin/);
-  assert.match(route, /Explain why the finding is acceptable/);
+  assert.match(route, /Acknowledgement requires a reason, explanation, and future review date/);
   assert.match(route, /compensating controls/);
   assert.match(route, /finding_events/);
   assert.match(route, /saved_finding_views/);
+  assert.match(route, /finding_undo_snapshots/);
+  assert.match(route, /finding_workflow_details/);
+  assert.match(route, /Refresh or complete evidence/);
   assert.match(route, /audit\(/);
   assert.match(schema, /findingWorkflows/);
   assert.match(schema, /findingEvents/);
   assert.match(schema, /savedFindingViews/);
+  assert.match(schema, /findingUndoSnapshots/);
   assert.match(migration, /CREATE TABLE `finding_workflows`/);
   assert.match(migration, /CREATE TABLE `finding_events`/);
   assert.match(migration, /CREATE TABLE `saved_finding_views`/);
+});
+
+test("supports fast, explainable, and guarded analyst decisions", async () => {
+  const [dashboard, inbox, route, catalog, migration] = await Promise.all([
+    source("app/security-dashboard.tsx"),
+    source("app/daily-findings-view.tsx"),
+    source("app/api/findings/route.ts"),
+    source("lib/daily-findings.ts"),
+    source("drizzle/0009_heavy_ted_forrester.sql"),
+  ]);
+
+  for (const workspace of ["Findings", "Inventory", "Governance", "Reports", "Administration"]) {
+    assert.match(dashboard, new RegExp(`label: "${workspace}"`));
+  }
+  for (const capability of [
+    "triage-workspace",
+    "security-groups",
+    "J/K to review",
+    "Decision summary",
+    "Why risk is",
+    "Exact configuration change",
+    "Config timeline",
+    "Create a Jira ticket after saving",
+    "Remediation evidence",
+    "Security team",
+  ]) {
+    assert.match(inbox, new RegExp(capability));
+  }
+  assert.match(route, /action === "undo"/);
+  assert.match(route, /evidence\.confidence < 70/);
+  assert.match(route, /visibility = 'team'/);
+  assert.match(catalog, /riskFactors/);
+  assert.match(catalog, /changeBefore/);
+  assert.match(migration, /CREATE TABLE `finding_undo_snapshots`/);
+  assert.match(migration, /CREATE TABLE `saved_finding_view_visibility`/);
 });
 
 test("includes the daily workflow in the future Aurora model", async () => {

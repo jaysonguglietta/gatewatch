@@ -29,6 +29,25 @@ evidence and independent validation under the roadmap acceptance criteria.
   targets, and database batches.
 - Transactional observation/target writes and duplicate-safe object ledgers.
 
+## New analyst-workflow controls
+
+- Structured disposition reasons are server allowlisted by outcome; arbitrary
+  client reason strings are rejected.
+- Acknowledgement, accepted risk, and resolution require current observed
+  evidence at or above the confidence threshold. Live evidence must also be
+  complete and no more than 24 hours old.
+- Accepted risk remains administrator-only, time-bound, ticket-linked, and
+  protected by compensating controls. Expired decisions return to the reopened queue.
+- Resolution requires explicit remediation evidence and automatically reopens
+  when a later organization observation detects the finding again.
+- Bulk sizes, dates, notes, fingerprints, and saved-view filters are bounded and
+  revalidated by the API. Jira writes require the findings-triage permission and
+  remain duplicate safe.
+- Team saved views are owner controlled; a shared view cannot become another
+  user's default or be deleted by a non-owner.
+- Undo restores only an actor-bound server snapshot through an opaque token.
+  Snapshots expire after five minutes and expired rows are cleaned during triage.
+
 ## Production blockers that remain
 
 1. GW-01: replace shared Basic Auth with individual OIDC identities, MFA, expiry,

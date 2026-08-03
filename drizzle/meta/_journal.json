@@ -64,6 +64,13 @@
       "when": 1785780502784,
       "tag": "0008_perpetual_thor",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1785789857226,
+      "tag": "0009_heavy_ted_forrester",
+      "breakpoints": true
     }
   ]
 }

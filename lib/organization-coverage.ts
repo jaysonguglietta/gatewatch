@@ -97,13 +97,14 @@ function normalizeCoverage(value: unknown): OrganizationCoverage {
     securityGroupRuleCount: boundedInteger(rawSummary.securityGroupRuleCount),
     networkInterfaceCount: boundedInteger(rawSummary.networkInterfaceCount),
   };
+  const runStates = ["succeeded", "partial", "failed"] as const;
   const accountStates = ["succeeded", "partial", "failed", "incomplete"] as const;
   const targetStates = ["succeeded", "failed", "incomplete"] as const;
   return {
     schemaVersion: "2.0",
     evidenceType: "organization-collection-manifest",
     runId: boundedText(manifest.runId, 64),
-    status: status(manifest.status, accountStates, "failed"),
+    status: status(manifest.status, runStates, "failed"),
     complete: manifest.complete === true,
     startedAt: boundedText(manifest.startedAt, 64),
     completedAt: boundedText(manifest.completedAt, 64),

@@ -1,6 +1,7 @@
 import {
   securityGroups,
   type ResourceAttachment,
+  type RiskFactor,
   type SecurityGroup,
   type Severity,
 } from "./security-data";
@@ -49,6 +50,20 @@ export type FindingCatalogItem = {
   changeSummary: string;
   attachments: ResourceAttachment[];
   recommendation: string;
+  vpcId: string;
+  approvedIntent: string;
+  intentTicket: string;
+  policyName: string;
+  policyControl: string;
+  riskFactors: RiskFactor[];
+  projectedRisk: number;
+  changeEventId: string;
+  changeActor: string;
+  changeChannel: string;
+  changeTime: string;
+  changeBefore: string;
+  changeAfter: string;
+  changeApproved: boolean;
   evidenceSnapshot: string;
   evidence: EvidenceDescriptor;
 };
@@ -63,6 +78,10 @@ export type FindingWorkflowState = {
   compensatingControls: string[];
   reviewer: string;
   updatedAt: string;
+  reasonCode: string;
+  nextReviewAt: string;
+  approver: string;
+  resolutionEvidence: string;
   jiraIssueKey?: string;
   jiraIssueUrl?: string;
   jiraRemoteStatus?: string;
@@ -126,6 +145,25 @@ function primaryRule(group: SecurityGroup, findingIndex: number) {
   return findingRules[findingIndex % Math.max(findingRules.length, 1)] ?? group.rules[0];
 }
 
+function policyFor(group: SecurityGroup, rule: SecurityGroup["rules"][number] | undefined) {
+  if (rule?.source === "0.0.0.0/0" || rule?.source === "::/0") {
+    return {
+      name: "Restrict unrestricted network access",
+      control: "GW-SG-001 · CIS AWS 5.2",
+    };
+  }
+  if (group.intent.status === "broader-than-intent") {
+    return {
+      name: "Deployed access must match approved intent",
+      control: "GW-SG-004 · NIST AC-4",
+    };
+  }
+  return {
+    name: "Security groups must follow least privilege",
+    control: "GW-SG-007 · NIST AC-6",
+  };
+}
+
 function catalogItem(
   group: SecurityGroup,
   groupIndex: number,
@@ -159,6 +197,7 @@ function catalogItem(
     : rawObservedAt;
   const evidence = evidenceForGroup(group, options.snapshotId, observedAt);
   const riskScore = Math.max(22, group.riskScore - findingIndex * 7);
+  const policy = policyFor(group, rule);
 
   return {
     fingerprint: canonicalFindingFingerprint(group, title),
@@ -193,6 +232,20 @@ function catalogItem(
     changeSummary: `${group.change.eventName} by ${group.change.actor} through ${group.change.channel} · ${group.change.time}`,
     attachments: group.attachments,
     recommendation: group.recommendation,
+    vpcId: group.vpc,
+    approvedIntent: group.intent.approvedAccess,
+    intentTicket: group.intent.ticket,
+    policyName: policy.name,
+    policyControl: policy.control,
+    riskFactors: group.riskFactors,
+    projectedRisk: Math.min(riskScore, group.projectedRisk),
+    changeEventId: group.change.eventId,
+    changeActor: group.change.actor,
+    changeChannel: group.change.channel,
+    changeTime: group.change.time,
+    changeBefore: group.change.before,
+    changeAfter: group.change.after,
+    changeApproved: group.change.approved,
     evidenceSnapshot: evidenceSnapshotJson(group, evidence, riskScore),
     evidence,
   };

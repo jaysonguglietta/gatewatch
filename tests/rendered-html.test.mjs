@@ -65,14 +65,14 @@ test("ships the Gatewatch product shell and production metadata", async () => {
   assert.match(sampleGenerator, /const recordCount = 50_000/);
   assert.match(sampleGenerator, /AuthorizeSecurityGroupIngress/);
   assert.match(layout, /Gatewatch — AWS Network Access Governance/);
-  assert.match(layout, /\/og-evidence\.png/);
+  assert.match(layout, /\/og-gatewatch\.png/);
   assert.match(hosting, /"d1": "DB"/);
   assert.match(packageJson, /"name": "gatewatch-security-posture"/);
   assert.doesNotMatch(
     `${page}\n${dashboard}\n${layout}`,
     /codex-preview|react-loading-skeleton/i,
   );
-  await access(new URL("public/og-evidence.png", root));
+  await access(new URL("public/og-gatewatch.png", root));
   await access(new URL("drizzle/0000_glamorous_amazoness.sql", root));
   await access(new URL("drizzle/0001_nosy_queen_noir.sql", root));
   await access(new URL("drizzle/0002_dashing_exodus.sql", root));

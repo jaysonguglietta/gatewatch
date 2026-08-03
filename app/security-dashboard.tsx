@@ -523,36 +523,63 @@ export default function SecurityDashboard() {
     void refreshInventory(true, true);
   }
 
-  const investigateNav = [
-    { id: "inventory" as View, label: "Daily findings", icon: ShieldAlert },
-    { id: "overview" as View, label: "Broad access", icon: Gauge },
-    { id: "exposure" as View, label: "Exposure intelligence", icon: Zap },
-    { id: "access" as View, label: "Access explorer", icon: Search },
-    { id: "connectivity" as View, label: "Path evidence", icon: Route },
-    { id: "activity" as View, label: "Connectivity history", icon: History },
-  ];
-  const governNav = [
-    { id: "applications" as View, label: "Applications", icon: Crown },
-    { id: "ownership" as View, label: "Owner governance", icon: Users },
-    { id: "policies" as View, label: "Access policies", icon: BookOpenCheck },
+  const navigationGroups = [
     {
-      id: "reviews" as View,
-      label: "Review queue",
-      icon: FileCheck2,
-      count: reviewQueue.length,
+      id: "findings",
+      label: "Findings",
+      icon: ShieldAlert,
+      items: [
+        { id: "inventory" as View, label: "Daily findings", icon: FileCheck2 },
+        { id: "overview" as View, label: "Broad access", icon: Gauge },
+        { id: "exposure" as View, label: "Exposure intelligence", icon: Zap },
+        { id: "drift" as View, label: "Drift inbox", icon: AlertTriangle },
+        { id: "recommendations" as View, label: "Recommendations", icon: Sparkles },
+      ],
     },
-    { id: "campaigns" as View, label: "Campaigns", icon: CalendarCheck2 },
+    {
+      id: "inventory",
+      label: "Inventory",
+      icon: Database,
+      items: [
+        { id: "access" as View, label: "Access explorer", icon: Search },
+        { id: "connectivity" as View, label: "Path evidence", icon: Route },
+        { id: "activity" as View, label: "Connectivity history", icon: History },
+        { id: "sources" as View, label: "Organization coverage", icon: CloudCog },
+      ],
+    },
+    {
+      id: "governance",
+      label: "Governance",
+      icon: BookOpenCheck,
+      items: [
+        { id: "applications" as View, label: "Applications", icon: Crown },
+        { id: "ownership" as View, label: "Owner governance", icon: Users },
+        { id: "policies" as View, label: "Access policies", icon: BookOpenCheck },
+        { id: "reviews" as View, label: "Review queue", icon: FileCheck2, count: reviewQueue.length },
+        { id: "campaigns" as View, label: "Campaigns", icon: CalendarCheck2 },
+        { id: "remediation" as View, label: "Remediation", icon: Target },
+      ],
+    },
+    {
+      id: "reports",
+      label: "Reports",
+      icon: FileBarChart,
+      items: [
+        { id: "metrics" as View, label: "Detailed reports", icon: FileBarChart },
+        { id: "cloudtrail" as View, label: "CloudTrail imports", icon: UploadCloud },
+        { id: "handoffs" as View, label: "AWS handoffs", icon: FileCode2 },
+      ],
+    },
+    {
+      id: "administration",
+      label: "Administration",
+      icon: Settings,
+      items: [{ id: "admin" as View, label: "Admin configuration", icon: Settings }],
+    },
   ];
-  const operateNav = [
-    { id: "recommendations" as View, label: "Recommendations", icon: Sparkles },
-    { id: "drift" as View, label: "Drift inbox", icon: AlertTriangle },
-    { id: "remediation" as View, label: "Remediation", icon: Target },
-    { id: "metrics" as View, label: "Detailed reports", icon: FileBarChart },
-    { id: "cloudtrail" as View, label: "Import CloudTrail", icon: UploadCloud },
-    { id: "handoffs" as View, label: "AWS handoffs", icon: FileCode2 },
-    { id: "sources" as View, label: "Coverage", icon: CloudCog },
-    { id: "admin" as View, label: "Admin config", icon: Settings },
-  ];
+  const activeNavigationGroup = navigationGroups.find((group) =>
+    group.items.some((item) => item.id === view),
+  ) ?? navigationGroups[0];
 
   return (
     <div className="app-shell">
@@ -571,47 +598,19 @@ export default function SecurityDashboard() {
         </div>
 
         <nav className="primary-nav">
-          <p className="nav-label">Investigate</p>
-          {investigateNav.map((item) => {
-            const Icon = item.icon;
+          <p className="nav-label">Workspace</p>
+          {navigationGroups.map((group) => {
+            const Icon = group.icon;
             return (
-              <button
-                key={item.id}
-                className={view === item.id ? "active" : ""}
-                onClick={() => navigate(item.id)}
-              >
-                <Icon size={18} />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
-          <p className="nav-label nav-label-spaced">Govern</p>
-          {governNav.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.id}
-                className={view === item.id ? "active" : ""}
-                onClick={() => navigate(item.id)}
-              >
-                <Icon size={18} />
-                <span>{item.label}</span>
-                {item.count ? <em>{item.count}</em> : null}
-              </button>
-            );
-          })}
-          <p className="nav-label nav-label-spaced">Operate</p>
-          {operateNav.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.id}
-                className={view === item.id ? "active" : ""}
-                onClick={() => navigate(item.id)}
-              >
-                <Icon size={18} />
-                <span>{item.label}</span>
-              </button>
+              <div className="nav-workspace-group" key={group.id}>
+                <button className={activeNavigationGroup.id === group.id ? "active workspace-active" : ""} onClick={() => navigate(group.items[0].id)} aria-expanded={activeNavigationGroup.id === group.id}>
+                  <Icon size={18} /><span>{group.label}</span><ChevronRight size={14} />
+                </button>
+                {activeNavigationGroup.id === group.id ? <div className="nav-context-items">{group.items.map((item) => {
+                  const ItemIcon = item.icon;
+                  return <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => navigate(item.id)}><ItemIcon size={15} /><span>{item.label}</span>{"count" in item && item.count ? <em>{item.count}</em> : null}</button>;
+                })}</div> : null}
+              </div>
             );
           })}
         </nav>

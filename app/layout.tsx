@@ -36,7 +36,7 @@ export async function generateMetadata(): Promise<Metadata> {
       description,
       images: [
         {
-          url: "/og-evidence.png",
+          url: "/og-gatewatch.png",
           width: 1200,
           height: 630,
           alt: "Gatewatch evidence-backed AWS security group posture",
@@ -47,7 +47,7 @@ export async function generateMetadata(): Promise<Metadata> {
       card: "summary_large_image",
       title,
       description,
-      images: ["/og-evidence.png"],
+      images: ["/og-gatewatch.png"],
     },
   };
 }

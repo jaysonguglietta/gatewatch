@@ -601,6 +601,10 @@ CREATE TABLE finding_workflows (
   due_at timestamptz,
   expires_at timestamptz,
   compensating_controls jsonb NOT NULL DEFAULT '[]',
+  reason_code text NOT NULL DEFAULT '',
+  next_review_at timestamptz,
+  approver text NOT NULL DEFAULT '',
+  resolution_evidence text NOT NULL DEFAULT '',
   evidence_snapshot jsonb NOT NULL DEFAULT '{}',
   reviewer text NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now(),
@@ -627,6 +631,10 @@ CREATE TABLE finding_events (
   due_at timestamptz,
   expires_at timestamptz,
   compensating_controls jsonb NOT NULL DEFAULT '[]',
+  reason_code text NOT NULL DEFAULT '',
+  next_review_at timestamptz,
+  approver text NOT NULL DEFAULT '',
+  resolution_evidence text NOT NULL DEFAULT '',
   evidence_snapshot jsonb NOT NULL DEFAULT '{}',
   created_at timestamptz NOT NULL DEFAULT now(),
   FOREIGN KEY (workspace_id, fingerprint)
@@ -642,6 +650,8 @@ CREATE TABLE saved_finding_views (
   owner text NOT NULL,
   name text NOT NULL,
   filters jsonb NOT NULL DEFAULT '{}',
+  visibility text NOT NULL DEFAULT 'personal'
+    CHECK (visibility IN ('personal', 'team')),
   is_default boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
@@ -651,6 +661,20 @@ CREATE TABLE saved_finding_views (
 CREATE UNIQUE INDEX saved_finding_views_one_default_idx
   ON saved_finding_views (workspace_id, owner)
   WHERE is_default = true;
+
+-- Short-lived, actor-bound snapshots make high-throughput keyboard triage
+-- reversible without trusting state returned by a client.
+CREATE TABLE finding_undo_snapshots (
+  token uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id uuid NOT NULL REFERENCES workspaces(id),
+  actor text NOT NULL,
+  state jsonb NOT NULL,
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX finding_undo_snapshots_expiry_idx
+  ON finding_undo_snapshots (workspace_id, actor, expires_at);
 
 -- Canonical review identity prevents identically named security groups in
 -- different accounts, regions, or VPCs from sharing workflow state.

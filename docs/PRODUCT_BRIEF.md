@@ -30,8 +30,8 @@ broad CIDRs, and wide port ranges.
 7. Config items provide history and CloudTrail attributes successful changes to
    actors and delivery channels.
 8. Analysts confirm collection coverage, review findings, and export evidence.
-9. Analysts acknowledge understood exposure with a durable explanatory note or
-   assign an owner and due date for follow-up.
+9. Analysts work a keyboard-driven split queue, review correlated evidence,
+   assign follow-up, acknowledge understood exposure, or resolve remediated rules.
 10. Administrators approve time-bound accepted risk with compensating controls,
    ticket linkage, and expiration.
 11. Stable finding fingerprints preserve history when a finding resolves or reopens.
@@ -43,9 +43,13 @@ broad CIDRs, and wide port ranges.
 ## Main views
 
 - Broad access and explainable findings
-- Default daily findings inbox with bulk triage and server pagination
+- Default split-pane daily review workspace with keyboard navigation,
+  auto-advance, undo, bulk triage, and server pagination
+- Finding and security-group-cluster queue modes with density and field controls
 - Organization, OU, account, region, owner, and saved-view scoping
-- Finding investigation drawer with notes and append-only decision history
+- Persistent finding investigation pane with risk factors, exact before/after
+  configuration, attached resources, AWS deep links, and decision history
+- Five top-level workspaces: Findings, Inventory, Governance, Reports, and Administration
 - Effective exposure and attack-path intelligence
 - Least-privilege recommendations, hygiene, and IaC guardrails
 - Exposure drift inbox with CloudTrail provenance
@@ -69,7 +73,9 @@ broad CIDRs, and wide port ranges.
 `exposure_verdicts`, `rule_recommendations`, `exposure_drift_events`,
 `ownership_assignments`, `exception_requests`, `control_evaluations`,
 `hygiene_findings`, `iac_guardrail_evaluations`, `program_metric_snapshots`,
-`finding_workflows`, `finding_events`, `saved_finding_views`,
+`finding_workflows`, `finding_workflow_details`, `finding_events`,
+`finding_decision_details`, `finding_undo_snapshots`, `saved_finding_views`,
+`saved_finding_view_visibility`,
 `finding_observations`, `resource_reviews`, `resource_review_events`,
 `access_policy_versions`, `campaign_items`, `remediation_requests`,
 `integration_deliveries`, `verification_runs`, `finding_jira_links`,
@@ -101,6 +107,13 @@ broad CIDRs, and wide port ranges.
 - Bulk actions are capped and must produce one auditable event per finding.
 - Acknowledgement documents analyst judgment but does not suppress monitoring.
 - Accepted risk requires justification, a ticket, compensating controls, and expiration.
+- Acknowledgement and resolution are blocked when evidence is stale, incomplete,
+  inferred, or below the confidence threshold; follow-up remains available.
+- Mixed bulk selections inherit the strictest evidence and approval constraint.
+- Shared team views cannot become another analyst's personal default or be deleted
+  by a non-owner.
+- Undo snapshots are actor-bound, expire after five minutes, and are never trusted
+  from client-supplied workflow state.
 
 ## Assumptions
 
@@ -134,8 +147,14 @@ broad CIDRs, and wide port ranges.
 - Owner SLA queues and independently governed, expiring exceptions
 - Native control mapping, IaC pre-change decisions, and program outcome reporting
 - Aurora domain tables for intelligence, governance, guardrails, and metrics
-- Daily inbox, organization scope, shareable filters, and saved views
-- Finding-level notes, bulk follow-up, acknowledgement, accepted risk, and history
+- Daily split-pane inbox, organization scope, personal queue, shareable URL
+  filters, and personal or team saved views
+- Finding-level structured reasons, notes, bulk follow-up, acknowledgement,
+  accepted risk, resolution, evidence gates, server-backed undo, and history
+- Explainable risk factors, projected reduction, policy mapping, exact change
+  comparison, attached-resource context, and direct AWS evidence links
+- Security-group clustering, compact/comfortable density, selectable queue fields,
+  keyboard shortcuts, auto-advance, and review-session progress
 - Stable finding identity and reopening-ready workflow state
 - Live route, subnet, public-address, and NACL evidence from the AWS collector
 - Durable policy previews and activation, evidence-backed campaign decisions,

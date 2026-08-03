@@ -147,6 +147,61 @@ export const findingEvents = sqliteTable(
   ],
 );
 
+export const findingWorkflowDetails = sqliteTable(
+  "finding_workflow_details",
+  {
+    fingerprint: text("fingerprint").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default("default"),
+    reasonCode: text("reason_code").notNull().default(""),
+    nextReviewAt: text("next_review_at").notNull().default(""),
+    approver: text("approver").notNull().default(""),
+    resolutionEvidence: text("resolution_evidence").notNull().default(""),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("finding_workflow_details_workspace_idx").on(
+      table.workspaceId,
+      table.updatedAt,
+    ),
+  ],
+);
+
+export const findingDecisionDetails = sqliteTable(
+  "finding_decision_details",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    fingerprint: text("fingerprint").notNull(),
+    workspaceId: text("workspace_id").notNull().default("default"),
+    status: text("status").notNull(),
+    reasonCode: text("reason_code").notNull().default(""),
+    nextReviewAt: text("next_review_at").notNull().default(""),
+    approver: text("approver").notNull().default(""),
+    resolutionEvidence: text("resolution_evidence").notNull().default(""),
+    actor: text("actor").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("finding_decision_details_history_idx").on(
+      table.workspaceId,
+      table.fingerprint,
+      table.createdAt,
+    ),
+  ],
+);
+
+export const findingUndoSnapshots = sqliteTable(
+  "finding_undo_snapshots",
+  {
+    token: text("token").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default("default"),
+    actor: text("actor").notNull(),
+    state: text("state").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("finding_undo_snapshots_expiry_idx").on(table.expiresAt)],
+);
+
 export const savedFindingViews = sqliteTable(
   "saved_finding_views",
   {
@@ -164,6 +219,23 @@ export const savedFindingViews = sqliteTable(
       table.workspaceId,
       table.owner,
       table.updatedAt,
+    ),
+  ],
+);
+
+export const savedFindingViewVisibility = sqliteTable(
+  "saved_finding_view_visibility",
+  {
+    viewId: text("view_id").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default("default"),
+    visibility: text("visibility").notNull().default("personal"),
+    createdBy: text("created_by").notNull(),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("saved_finding_view_visibility_idx").on(
+      table.workspaceId,
+      table.visibility,
     ),
   ],
 );

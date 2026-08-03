@@ -374,8 +374,8 @@ export async function POST(request: Request) {
          SET status = ?, decision = ?, note = ?, decided_by = ?,
              decided_at = CURRENT_TIMESTAMP
          WHERE id = ? AND workspace_id = 'default'`,
-      ).bind(status, decision, note, user, itemId).run();
-      if (!result.meta.changes) return json({ error: "The campaign item was not found." }, 404);
+      ).bind(status, decision, note, user, itemId).run() as { meta?: { changes?: number } };
+      if (!result.meta?.changes) return json({ error: "The campaign item was not found." }, 404);
       return json({ record: { itemId, status, decision, decidedBy: user } });
     }
 

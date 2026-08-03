@@ -9,18 +9,21 @@ resources, and vulnerability context.
 
 ## Product surfaces
 
-- A server-paginated **Daily Findings Inbox** that is now the default operating
-  surface, with new-today, awaiting-action, overdue follow-up, expiring
-  exception, reopened-finding, and stale-account workload counters
+- A server-paginated, split-pane **Daily Findings Workspace** with keyboard
+  triage, auto-advance, server-backed undo, session progress, clustering, and
+  new/overdue/expiring/reopened workload counters
 - Organization, OU, account, region, environment, owner, severity, and workflow
   scoping designed for hundreds of AWS accounts, plus shareable URL filters and
-  user-owned saved views
-- Finding-level follow-up, acknowledgement, and accepted-risk workflows with
-  bulk actions, mandatory rationale, owners, due dates, tickets, compensating
-  controls, expiration, evidence snapshots, and append-only history
-- A finding investigation drawer that preserves inbox position while exposing
-  effective rules, reachability, traffic, CloudTrail provenance, remediation
-  guidance, notes, and the complete decision timeline
+  personal queues, shareable URL filters, and personal or team saved views
+- Finding-level follow-up, acknowledgement, accepted-risk, and resolution
+  workflows with structured reasons, evidence freshness gates, bulk guardrails,
+  mandatory rationale, owners, review dates, tickets, compensating controls,
+  expiration, evidence snapshots, and append-only history
+- A persistent investigation pane with effective rules, explainable risk,
+  policy mapping, exact before/after change, attached resources, AWS deep links,
+  remediation guidance, notes, and the complete decision timeline
+- Five task-oriented workspaces—Findings, Inventory, Governance, Reports, and
+  Administration—with contextual navigation to every existing capability
 - Rule-level broad-access overview with search, direction/category filters, and
   CSV export
 - Effective-exposure verdicts that distinguish a syntactically broad rule from
@@ -105,6 +108,9 @@ npm run build
 npm run lint
 node --test tests/rendered-html.test.mjs
 ```
+
+The analyst workflow and decision controls are documented in
+[`docs/SECURITY_ANALYST_WORKSPACE.md`](docs/SECURITY_ANALYST_WORKSPACE.md).
 
 Review decisions are persisted through the configured Cloudflare D1 `DB`
 binding. Stable finding fingerprints, current analyst workflow, append-only
