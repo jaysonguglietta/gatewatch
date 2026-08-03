@@ -73,11 +73,11 @@ Parameters:
 
   OrganizationTargetIds:
     Type: CommaDelimitedList
-    Default: ""
+    Default: r-none
     Description: >
-      Required for organization scope. Comma-separated root or OU IDs, such as
-      r-abcd or ou-abcd-12345678. The collector only scans accounts beneath
-      these targets.
+      Ignored for single-account scope. For organization scope, replace the
+      placeholder with comma-separated root or OU IDs, such as r-abcd or
+      ou-abcd-12345678. The collector only scans accounts beneath these targets.
 
   ExcludedAccountIds:
     Type: String

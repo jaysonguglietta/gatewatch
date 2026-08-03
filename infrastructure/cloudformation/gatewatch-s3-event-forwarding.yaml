@@ -11,8 +11,6 @@ Parameters:
     Default: AWSLogs/
   GatewatchIngestionQueueArn:
     Type: String
-  GatewatchIngestionQueueUrl:
-    Type: String
 
 Resources:
   ForwardingRole:

@@ -370,7 +370,6 @@ Resources:
     Type: AWS::SSM::Association
     DependsOn:
       - WebFileSystemMountTarget
-      - ApplicationLogGroup
     Properties:
       Name: AWS-RunShellScript
       AssociationName: !Sub gatewatch-${EnvironmentName}-web-deployment
