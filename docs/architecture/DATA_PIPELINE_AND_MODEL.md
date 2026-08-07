@@ -3,15 +3,20 @@
 ## Canonical identities
 
 Never identify a resource with only `sg-...`. Security-group identifiers are
-unique only within an account/Region context. Gatewatch uses:
+unique only within an account/Region context. The canonical external identity
+is the full AWS ARN:
 
 ```text
-aws:<account-id>:<region>:<vpc-id>:<security-group-id>
+arn:<partition>:ec2:<region>:<account-id>:security-group/<security-group-id>
 ```
 
-An observation is additionally scoped by `workspace_id` and `run_id`. Finding
-fingerprints include the canonical resource identity plus the normalized rule or
-policy signature so state survives repeated observations and reopens.
+The partition is preserved from observed AWS evidence (`aws`, `aws-us-gov`, or
+`aws-cn`). Gatewatch synthesizes an ARN only when a validated 12-digit account,
+Region, and security-group ID are all present; otherwise it marks the ARN as
+unresolved. VPC is retained as separate configuration context. An observation
+is additionally scoped by `workspace_id` and `run_id`. Finding fingerprints
+include the canonical resource identity plus the normalized rule or policy
+signature so state survives repeated observations and reopens.
 
 ## Shard contract
 
@@ -122,8 +127,9 @@ erDiagram
   identical file twice in one session. Stable normalized-record fingerprints
   suppress repeated evidence across files; Config history and snapshot records
   share one fingerprint family so the same configuration item is counted once.
-- Consolidated findings use `account_id + region + security_group_id` as the
-  canonical key. Direct security-group references, Config relationships, and
+- Consolidated findings use the full security-group ARN as the canonical key
+  when resolvable and retain `account_id + region + security_group_id` as the
+  explicit unresolved fallback. Direct security-group references, Config relationships, and
   known inventory attachments are the only accepted correlation paths.
   Unmatched records remain visible and do not affect a group's risk score.
 

@@ -60,7 +60,9 @@ resources, and vulnerability context.
 - Mixed-batch drag-and-drop import for AWS JSON, JSON.GZ, JSONL, and text logs.
   Gatewatch auto-detects 16 AWS evidence types, suppresses duplicate files and
   records, correlates inventory and Config relationships, and produces one
-  consolidated finding per account, Region, and security group
+  ARN-identified consolidated finding per account, Region, and security group,
+  with field-aware search, account/Region/source filters, grouping, sorting,
+  pagination, and filtered CSV export for organization-scale review
 - Dry-run handoffs for Network Access Analyzer, Reachability Analyzer, Firewall
   Manager, Security Hub, and Terraform
 - Durable review decisions, ticket references, evidence snapshots, and

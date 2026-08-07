@@ -56,7 +56,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   policyChecks,
   securityGroups,
@@ -101,6 +101,12 @@ import {
   type BatchEvidenceFile,
   type ConsolidatedSecurityGroupFinding,
 } from "../lib/aws-evidence-batch";
+import {
+  filterAndSortFindings,
+  groupConsolidatedFindings,
+  type FindingGroup,
+  type FindingSort,
+} from "../lib/aws-evidence-finding-view";
 import {
   sourceTypeDefinition,
   sourceTypeDefinitions,
@@ -4023,28 +4029,53 @@ function AwsEvidenceBatchImportView({
   const [processing, setProcessing] = useState(false);
   const [batchError, setBatchError] = useState("");
   const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
+  const [accountFilter, setAccountFilter] = useState("");
+  const [regionFilter, setRegionFilter] = useState("");
+  const [severityFilter, setSeverityFilter] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("");
+  const [evidenceClassFilter, setEvidenceClassFilter] = useState("");
+  const [groupBy, setGroupBy] = useState<FindingGroup>("account-region");
+  const [sortBy, setSortBy] = useState<FindingSort>("risk-desc");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const [selectedKey, setSelectedKey] = useState("");
   const batch = useMemo(() => consolidateAwsEvidence(files, securityGroups), [files]);
-  const visibleFindings = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return batch.findings;
-    return batch.findings.filter((finding) => [
-      finding.securityGroupId,
-      finding.name,
-      finding.accountId,
-      finding.region,
-      finding.sources.join(" "),
-      finding.evidenceClasses.join(" "),
-      finding.summary,
-    ].join(" ").toLowerCase().includes(normalized));
-  }, [batch.findings, query]);
-  const selectedFinding = batch.findings.find((finding) => finding.key === selectedKey)
-    ?? visibleFindings[0]
+  const accounts = useMemo(() => [...new Set(batch.findings.map((finding) => finding.accountId).filter(Boolean))].sort(), [batch.findings]);
+  const regions = useMemo(() => [...new Set(batch.findings.map((finding) => finding.region).filter(Boolean))].sort(), [batch.findings]);
+  const sources = useMemo(() => [...new Set(batch.findings.flatMap((finding) => finding.sources))].sort(), [batch.findings]);
+  const evidenceClasses = useMemo(() => [...new Set(batch.findings.flatMap((finding) => finding.evidenceClasses))].sort(), [batch.findings]);
+  const filteredFindings = useMemo(() => filterAndSortFindings(batch.findings, {
+    query: deferredQuery,
+    accountId: accountFilter,
+    region: regionFilter,
+    severity: severityFilter,
+    source: sourceFilter,
+    evidenceClass: evidenceClassFilter,
+    sort: sortBy,
+  }), [accountFilter, batch.findings, deferredQuery, evidenceClassFilter, regionFilter, severityFilter, sortBy, sourceFilter]);
+  const pageCount = Math.max(1, Math.ceil(filteredFindings.length / pageSize));
+  const currentPage = Math.min(page, pageCount);
+  const pageFindings = filteredFindings.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const groupedFindings = useMemo(() => groupConsolidatedFindings(pageFindings, groupBy), [groupBy, pageFindings]);
+  const selectedFinding = pageFindings.find((finding) => finding.key === selectedKey)
+    ?? pageFindings[0]
     ?? null;
   const importedFiles = files.filter((file) => file.status === "imported");
   const duplicateFiles = files.filter((file) => file.status === "duplicate").length;
   const rejectedFiles = files.filter((file) => file.status === "rejected").length;
   const sourceCount = new Set(importedFiles.map((file) => file.sourceType)).size;
+  const activeFilterCount = [query, accountFilter, regionFilter, severityFilter, sourceFilter, evidenceClassFilter].filter(Boolean).length;
+
+  function clearFindingFilters() {
+    setQuery("");
+    setAccountFilter("");
+    setRegionFilter("");
+    setSeverityFilter("");
+    setSourceFilter("");
+    setEvidenceClassFilter("");
+    setPage(1);
+  }
 
   async function processFiles(selected: File[]) {
     setBatchError("");
@@ -4122,8 +4153,9 @@ function AwsEvidenceBatchImportView({
 
   function exportFindings() {
     const rows = [
-      ["Security group", "Name", "Account", "Region", "Severity", "Risk score", "AWS source types", "Unique evidence", "Direct evidence", "Related evidence", "First observed", "Last observed", "Summary"],
-      ...visibleFindings.map((finding) => [
+      ["Security group ARN", "Security group ID", "Name", "Account", "Region", "Severity", "Risk score", "AWS source types", "Evidence classes", "Unique evidence", "Direct evidence", "Related evidence", "First observed", "Last observed", "Summary"],
+      ...filteredFindings.map((finding) => [
+        finding.securityGroupArn || "Unresolved ARN",
         finding.securityGroupId,
         finding.name,
         finding.accountId,
@@ -4131,6 +4163,7 @@ function AwsEvidenceBatchImportView({
         finding.severity,
         finding.riskScore,
         finding.sources.join("; "),
+        finding.evidenceClasses.join("; "),
         finding.evidence.length,
         finding.directEvidenceCount,
         finding.relatedEvidenceCount,
@@ -4140,7 +4173,7 @@ function AwsEvidenceBatchImportView({
       ]),
     ];
     downloadText(`gatewatch-consolidated-findings-${new Date().toISOString().slice(0, 10)}.csv`, csvDocument(rows), "text/csv;charset=utf-8");
-    onToast(`Exported ${visibleFindings.length.toLocaleString()} consolidated security-group findings.`);
+    onToast(`Exported ${filteredFindings.length.toLocaleString()} consolidated security-group findings with canonical ARNs.`);
   }
 
   return (
@@ -4150,8 +4183,8 @@ function AwsEvidenceBatchImportView({
         title="Drop the evidence. Gatewatch sorts it out."
         description="Import mixed AWS logs in one batch, suppress duplicate files and records, and consolidate all attributable evidence into one finding per security group."
         actions={files.length ? <>
-          <button className="button button-secondary" onClick={exportFindings} disabled={!visibleFindings.length}><Download size={16} /> Export consolidated findings</button>
-          <button className="button button-secondary button-danger-subtle" onClick={() => { if (!window.confirm("Clear every imported file and consolidated finding from this browser session?")) return; setFiles([]); setSelectedKey(""); setQuery(""); setBatchError(""); onToast("AWS evidence session cleared."); }}><Trash2 size={16} /> Clear session</button>
+          <button className="button button-secondary" onClick={exportFindings} disabled={!filteredFindings.length}><Download size={16} /> Export filtered findings</button>
+          <button className="button button-secondary button-danger-subtle" onClick={() => { if (!window.confirm("Clear every imported file and consolidated finding from this browser session?")) return; setFiles([]); setSelectedKey(""); clearFindingFilters(); setBatchError(""); onToast("AWS evidence session cleared."); }}><Trash2 size={16} /> Clear session</button>
         </> : undefined}
       />
 
@@ -4203,12 +4236,31 @@ function AwsEvidenceBatchImportView({
 
         <div className="batch-findings-layout">
           <section className="panel imported-events-panel batch-findings-panel">
-            <div className="imported-events-header"><div><h2>Consolidated security-group findings</h2><p>One row per account, Region, and security group—never one row per source record</p></div><label className="table-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search group, account, Region, source…" aria-label="Search consolidated findings" /></label></div>
-            <div className="import-results-count">Showing <strong>{visibleFindings.length.toLocaleString()}</strong> of <strong>{batch.findings.length.toLocaleString()}</strong> consolidated findings</div>
-            {visibleFindings.length ? <div className="table-wrap consolidated-findings-table"><table><thead><tr><th>Security group</th><th>Risk</th><th>Evidence</th><th>AWS sources</th><th>Last observed</th><th><span className="sr-only">Open</span></th></tr></thead><tbody>{visibleFindings.map((finding) => <tr key={finding.key} className={selectedFinding?.key === finding.key ? "selected" : ""} onClick={() => setSelectedKey(finding.key)}><td><strong>{finding.name}</strong><small>{finding.securityGroupId} · {finding.accountId || "Unknown account"} · {finding.region || "Unknown Region"}</small></td><td><SeverityBadge severity={finding.severity} /><small>{finding.riskScore}/100</small></td><td><strong>{finding.evidence.length} unique</strong><small>{finding.directEvidenceCount} direct · {finding.relatedEvidenceCount} related</small></td><td><div className="source-chip-list">{finding.sources.slice(0, 3).map((source) => <span key={source}>{source}</span>)}{finding.sources.length > 3 ? <span>+{finding.sources.length - 3}</span> : null}</div></td><td><strong>{finding.lastObservedAt ? findingDate(finding.lastObservedAt) : "Unavailable"}</strong><small>{finding.evidenceClasses.join(" · ")}</small></td><td><button className="icon-button" aria-label={`Inspect ${finding.name}`} onClick={(event) => { event.stopPropagation(); setSelectedKey(finding.key); }}><ChevronRight size={15} /></button></td></tr>)}</tbody></table></div> : <div className="empty-state"><div><Search size={24} /></div><h3>No consolidated findings match</h3><p>Clear the search or inspect unmatched evidence below.</p><button className="button button-secondary" onClick={() => setQuery("")}>Clear search</button></div>}
+            <div className="imported-events-header"><div><h2>Consolidated security-group findings</h2><p>ARN-first identity across every account and Region—never one row per source record</p></div><span className="version-chip">{accounts.length.toLocaleString()} accounts · {regions.length} Regions</span></div>
+            <section className="advanced-finding-controls" aria-label="Advanced finding search and grouping">
+              <div className="finding-query-row">
+                <label className="table-search finding-query"><Search size={15} /><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder={'Search or use account:, region:, severity:, source:, arn:, risk:>=80…'} aria-label="Advanced search consolidated findings" /></label>
+                {activeFilterCount ? <button className="button button-secondary" onClick={clearFindingFilters}><X size={14} /> Clear {activeFilterCount}</button> : null}
+              </div>
+              <p className="finding-query-help">Field search supports quoted values and AND matching, for example <code>account:428196730552 severity:critical source:&quot;Security Hub&quot;</code>.</p>
+              <div className="finding-filter-grid">
+                <label><span>Account</span><input list="evidence-account-options" value={accountFilter} onChange={(event) => { setAccountFilter(event.target.value.trim()); setPage(1); }} placeholder="All accounts" aria-label="Filter by AWS account" /><datalist id="evidence-account-options">{accounts.map((account) => <option key={account} value={account} />)}</datalist></label>
+                <label><span>Region</span><select value={regionFilter} onChange={(event) => { setRegionFilter(event.target.value); setPage(1); }}><option value="">All Regions</option>{regions.map((region) => <option key={region} value={region}>{region}</option>)}</select></label>
+                <label><span>Severity</span><select value={severityFilter} onChange={(event) => { setSeverityFilter(event.target.value); setPage(1); }}><option value="">All severities</option>{["critical", "high", "medium", "low"].map((severity) => <option key={severity} value={severity}>{severity}</option>)}</select></label>
+                <label><span>AWS source</span><select value={sourceFilter} onChange={(event) => { setSourceFilter(event.target.value); setPage(1); }}><option value="">All source types</option>{sources.map((source) => <option key={source} value={source}>{source}</option>)}</select></label>
+                <label><span>Evidence class</span><select value={evidenceClassFilter} onChange={(event) => { setEvidenceClassFilter(event.target.value); setPage(1); }}><option value="">All evidence classes</option>{evidenceClasses.map((evidenceClass) => <option key={evidenceClass} value={evidenceClass}>{evidenceClass.replaceAll("-", " ")}</option>)}</select></label>
+                <label><span>Group by</span><select value={groupBy} onChange={(event) => { setGroupBy(event.target.value as FindingGroup); setPage(1); }}><option value="none">No grouping</option><option value="account">AWS account</option><option value="account-region">Account / Region</option><option value="region">Region</option><option value="severity">Severity</option><option value="coverage">Source coverage</option></select></label>
+                <label><span>Sort</span><select value={sortBy} onChange={(event) => { setSortBy(event.target.value as FindingSort); setPage(1); }}><option value="risk-desc">Highest risk</option><option value="evidence-desc">Most evidence</option><option value="recent-desc">Most recent</option><option value="account-asc">Account / Region</option><option value="arn-asc">Security-group ARN</option></select></label>
+              </div>
+            </section>
+            <div className="import-results-count finding-results-count"><span>Showing <strong>{pageFindings.length.toLocaleString()}</strong> of <strong>{filteredFindings.length.toLocaleString()}</strong> matching · <strong>{batch.findings.length.toLocaleString()}</strong> total</span><span>{groupBy === "none" ? "Ungrouped" : `${groupedFindings.length} group${groupedFindings.length === 1 ? "" : "s"} on this page`}</span></div>
+            {filteredFindings.length ? <>
+              <div className="table-wrap consolidated-findings-table"><table><thead><tr><th>Security group ARN</th><th>Risk</th><th>Evidence</th><th>AWS sources</th><th>Last observed</th><th><span className="sr-only">Open</span></th></tr></thead>{groupedFindings.map((group) => <tbody key={group.key}>{groupBy !== "none" ? <tr className="finding-group-row"><td colSpan={6}><div><strong>{group.label}</strong><span>{group.findings.length} finding{group.findings.length === 1 ? "" : "s"} · {group.evidenceCount.toLocaleString()} evidence · {group.highRiskCount} high risk · average {group.averageRisk}/100</span></div></td></tr> : null}{group.findings.map((finding) => <ConsolidatedFindingRow key={finding.key} finding={finding} selected={selectedFinding?.key === finding.key} onSelect={() => setSelectedKey(finding.key)} />)}</tbody>)}</table></div>
+              <div className="finding-pagination"><p>Page <strong>{currentPage}</strong> of <strong>{pageCount}</strong></p><label>Rows <select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>{[25, 50, 100, 250].map((size) => <option key={size} value={size}>{size}</option>)}</select></label><div><button className="icon-button" onClick={() => setPage(1)} disabled={currentPage === 1} aria-label="First findings page">«</button><button className="icon-button" onClick={() => setPage(Math.max(1, currentPage - 1))} disabled={currentPage === 1} aria-label="Previous findings page">‹</button><button className="icon-button" onClick={() => setPage(Math.min(pageCount, currentPage + 1))} disabled={currentPage === pageCount} aria-label="Next findings page">›</button><button className="icon-button" onClick={() => setPage(pageCount)} disabled={currentPage === pageCount} aria-label="Last findings page">»</button></div></div>
+            </> : <div className="empty-state"><div><Search size={24} /></div><h3>No consolidated findings match</h3><p>Clear the search and filters, or inspect unmatched evidence below.</p><button className="button button-secondary" onClick={clearFindingFilters}>Clear all filters</button></div>}
           </section>
 
-          <FindingEvidencePanel finding={selectedFinding} onSelect={onSelect} />
+          <FindingEvidencePanel finding={selectedFinding} onSelect={onSelect} onToast={onToast} />
         </div>
 
         {batch.unmatchedRecords.length ? <details className="panel unmatched-evidence"><summary><span><AlertTriangle size={15} /> {batch.unmatchedRecords.length.toLocaleString()} unique records could not be tied to a security group</span><ChevronRight size={15} /></summary><p>These records are retained instead of being guessed into a finding. Add AWS Config network-interface relationships or a current Gatewatch inventory snapshot to improve attribution.</p><div>{batch.unmatchedRecords.slice(0, 100).map((item) => <article key={item.fingerprint}><strong>{item.sourceLabel}</strong><span>{item.record.event || item.record.summary}</span><small>{item.record.resource || `${item.record.source} → ${item.record.destination}`}</small></article>)}</div></details> : null}
@@ -4219,18 +4271,40 @@ function AwsEvidenceBatchImportView({
   );
 }
 
+function ConsolidatedFindingRow({
+  finding,
+  selected,
+  onSelect,
+}: {
+  finding: ConsolidatedSecurityGroupFinding;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return <tr className={selected ? "selected" : ""} onClick={onSelect}>
+    <td><strong>{finding.securityGroupArn || "ARN unavailable"}</strong><small>{finding.name} · {finding.securityGroupId}</small><small>{finding.accountId || "Unknown account"} · {finding.region || "Unknown Region"}</small></td>
+    <td><SeverityBadge severity={finding.severity} /><small>{finding.riskScore}/100</small></td>
+    <td><strong>{finding.evidence.length} unique</strong><small>{finding.directEvidenceCount} direct · {finding.relatedEvidenceCount} related</small></td>
+    <td><div className="source-chip-list">{finding.sources.slice(0, 3).map((source) => <span key={source}>{source}</span>)}{finding.sources.length > 3 ? <span>+{finding.sources.length - 3}</span> : null}</div></td>
+    <td><strong>{finding.lastObservedAt ? findingDate(finding.lastObservedAt) : "Unavailable"}</strong><small>{finding.evidenceClasses.join(" · ")}</small></td>
+    <td><button className="icon-button" aria-label={`Inspect ${finding.securityGroupArn || finding.securityGroupId}`} onClick={(event) => { event.stopPropagation(); onSelect(); }}><ChevronRight size={15} /></button></td>
+  </tr>;
+}
+
 function FindingEvidencePanel({
   finding,
   onSelect,
+  onToast,
 }: {
   finding: ConsolidatedSecurityGroupFinding | null;
   onSelect: (group: SecurityGroup) => void;
+  onToast: (message: string) => void;
 }) {
   if (!finding) {
     return <aside className="panel finding-evidence-panel batch-no-selection"><ShieldCheck size={24} /><h2>No attributable security-group evidence yet</h2><p>Successfully parsed AWS records that cannot be attributed remain in the unmatched evidence section.</p></aside>;
   }
   return <aside className="panel finding-evidence-panel">
-    <div className="finding-evidence-heading"><div><span>Consolidated finding</span><h2>{finding.name}</h2><p>{finding.securityGroupId} · {finding.accountId || "Unknown account"} · {finding.region || "Unknown Region"}</p></div><RiskScore score={finding.riskScore} /></div>
+    <div className="finding-evidence-heading"><div><span>Consolidated finding</span><h2>{finding.name}</h2><p>{finding.accountId || "Unknown account"} · {finding.region || "Unknown Region"}</p></div><RiskScore score={finding.riskScore} /></div>
+    <div className={`finding-arn-block ${finding.securityGroupArn ? "" : "finding-arn-unresolved"}`}><code>{finding.securityGroupArn || `ARN unresolved · ${finding.securityGroupId}`}</code>{finding.securityGroupArn ? <button className="icon-button" aria-label="Copy security-group ARN" onClick={() => { void navigator.clipboard.writeText(finding.securityGroupArn).then(() => onToast("Security-group ARN copied.")).catch(() => onToast("The browser could not copy the ARN. Select it manually.")); }}><Copy size={13} /></button> : null}</div>
     <p className="finding-evidence-summary">{finding.summary}</p>
     <dl className="finding-evidence-stats"><div><dt>Direct evidence</dt><dd>{finding.directEvidenceCount}</dd></div><div><dt>Related evidence</dt><dd>{finding.relatedEvidenceCount}</dd></div><div><dt>Source types</dt><dd>{finding.sources.length}</dd></div></dl>
     <div className="finding-source-chips">{finding.sources.map((source) => <span key={source}>{source}</span>)}</div>

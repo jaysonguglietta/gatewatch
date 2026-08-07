@@ -59,7 +59,11 @@ broad CIDRs, and wide port ranges.
 - Access explorer and path evidence
 - Reviews, applications, policies, campaigns, and remediation
 - Mixed AWS evidence batch import with automatic source detection, duplicate
-  suppression, and one consolidated finding per account/Region/security group
+  suppression, and one ARN-first consolidated finding per
+  account/Region/security group
+- Organization-scale evidence review with field-aware query clauses, exact
+  account/Region/severity/source filters, account and coverage grouping,
+  deterministic sorting, pagination, and filtered ARN-based CSV exports
 - Coverage and confidence boundaries
 - Organization run health with searchable account status, Region failure counts,
   freshness, evidence lineage, and explicit partial collection
@@ -99,7 +103,8 @@ broad CIDRs, and wide port ranges.
 - Prefixes can contain multiple accounts, regions, and delivery formats.
 - Relationship data can be incomplete or indirect.
 - Security-group IDs can be reused across accounts and regions; workflow keys
-  must include account, region, VPC, and resource identity.
+  must use the full security-group ARN when account and Region are known, while
+  VPC remains separate configuration context.
 - A paused or unverified source cannot start a backfill.
 - Broad rules can be unreachable because routing or public-address evidence is absent.
 - Stale evidence must lower confidence instead of silently producing a definitive verdict.

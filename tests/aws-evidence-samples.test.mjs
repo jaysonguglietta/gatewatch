@@ -65,6 +65,8 @@ test("the sample pack consolidates without repeating intentional duplicates", ()
   assert.equal(batch.duplicateRecords, manifest.intentionalDuplicateRecords);
   assert.ok(appFinding, "expected the primary application security-group finding");
   assert.ok(edgeFinding, "expected the edge security-group finding");
+  assert.equal(appFinding.securityGroupArn, "arn:aws:ec2:us-east-1:428196730552:security-group/sg-0a41f2e91b71");
+  assert.equal(edgeFinding.securityGroupArn, "arn:aws:ec2:us-east-1:428196730552:security-group/sg-0d3c99118aae");
   assert.ok(appFinding.sources.includes("AWS CloudTrail"));
   assert.ok(appFinding.sources.includes("VPC Flow Logs"));
   assert.ok(appFinding.sources.includes("Reachability Analyzer"));

@@ -7,6 +7,9 @@ import { sourceTypes, type EvidenceClass, type SourceType } from "./admin-source
 import type { SecurityGroup, Severity } from "./security-data.ts";
 
 const SECURITY_GROUP_PATTERN = /\bsg-[a-zA-Z0-9-]{3,64}\b/g;
+const SECURITY_GROUP_ID_PATTERN = /^sg-[a-zA-Z0-9-]{3,64}$/;
+const SECURITY_GROUP_ARN_PATTERN = /\barn:(aws|aws-us-gov|aws-cn):ec2:([a-z0-9-]+):(\d{12}):security-group\/(sg-[a-zA-Z0-9-]{3,64})\b/g;
+const AWS_ARN_PARTITION_PATTERN = /\barn:(aws|aws-us-gov|aws-cn):/g;
 const SYNTHETIC_ID_PATTERN = /^(?:imported|[a-z-]+)-\d+$/;
 
 export type BatchEvidenceFile = {
@@ -35,6 +38,7 @@ export type ConsolidatedEvidenceItem = {
 
 export type ConsolidatedSecurityGroupFinding = {
   key: string;
+  securityGroupArn: string;
   securityGroupId: string;
   name: string;
   accountId: string;
@@ -99,6 +103,59 @@ function securityGroupIds(value: unknown) {
   };
   visit(value);
   return [...ids];
+}
+
+function stringsIn(value: unknown) {
+  const values: string[] = [];
+  const visit = (child: unknown, depth = 0) => {
+    if (depth > 8 || child === null || child === undefined) return;
+    if (typeof child === "string") {
+      values.push(child);
+      return;
+    }
+    if (Array.isArray(child)) {
+      for (const item of child.slice(0, 10_000)) visit(item, depth + 1);
+      return;
+    }
+    if (typeof child === "object") {
+      for (const item of Object.values(child as Record<string, unknown>)) visit(item, depth + 1);
+    }
+  };
+  visit(value);
+  return values;
+}
+
+export function canonicalSecurityGroupArn(
+  accountId: string,
+  region: string,
+  securityGroupId: string,
+  evidence: ConsolidatedEvidenceItem[] = [],
+) {
+  const strings = evidence.flatMap((item) => stringsIn({
+    resource: item.record.resource,
+    destination: item.record.destination,
+    raw: item.record.raw,
+  }));
+  for (const value of strings) {
+    for (const match of value.matchAll(SECURITY_GROUP_ARN_PATTERN)) {
+      if (
+        match[4] === securityGroupId
+        && (!accountId || match[3] === accountId)
+        && (!region || match[2] === region)
+      ) return match[0];
+    }
+  }
+  if (!/^\d{12}$/.test(accountId) || !/^[a-z]{2}(-gov)?-[a-z]+-\d$/.test(region) || !SECURITY_GROUP_ID_PATTERN.test(securityGroupId)) return "";
+  let partition = "aws";
+  for (const value of strings) {
+    const match = AWS_ARN_PARTITION_PATTERN.exec(value);
+    AWS_ARN_PARTITION_PATTERN.lastIndex = 0;
+    if (match) {
+      partition = match[1];
+      break;
+    }
+  }
+  return `arn:${partition}:ec2:${region}:${accountId}:security-group/${securityGroupId}`;
 }
 
 function filenameHints(filename: string) {
@@ -401,8 +458,15 @@ export function consolidateAwsEvidence(files: BatchEvidenceFile[], inventory: Se
     const evidenceClasses = unique(evidence.map((item) => item.evidenceClass)) as EvidenceClass[];
     const range = observedRange(evidence);
     const directEvidenceCount = evidence.filter((item) => item.correlation === "direct").length;
+    const securityGroupArn = canonicalSecurityGroupArn(
+      value.match.group.accountId,
+      value.match.group.region,
+      value.match.group.id,
+      evidence,
+    );
     return {
-      key,
+      key: securityGroupArn || key,
+      securityGroupArn,
       securityGroupId: value.match.group.id,
       name: value.match.group.name,
       accountId: value.match.group.accountId,
