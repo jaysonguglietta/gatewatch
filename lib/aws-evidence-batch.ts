@@ -210,7 +210,6 @@ function buildInventoryIndex(groups: SecurityGroup[]) {
   for (const group of groups) {
     add(group, group.id);
     add(group, group.name);
-    add(group, group.vpc);
     for (const attachment of group.attachments) {
       for (const identifier of [
         attachment.id,
@@ -254,7 +253,18 @@ function resolveInventory(index: Map<string, SecurityGroup[]>, accountId: string
 
 function directMatches(item: ConsolidatedEvidenceItem, inventory: SecurityGroup[]) {
   const record = item.record;
-  const ids = securityGroupIds(record.resource);
+  const nestedSecurityGroupSources: SourceType[] = [
+    "reachability-analyzer",
+    "network-access-analyzer",
+    "guardduty",
+    "security-hub",
+    "inspector",
+  ];
+  const ids = securityGroupIds(
+    nestedSecurityGroupSources.includes(item.sourceType)
+      ? { resource: record.resource, raw: record.raw }
+      : record.resource,
+  );
   return ids.map((id) => {
     const existing = inventory.find((group) =>
       group.id === id

@@ -258,5 +258,12 @@ A deterministic 50,000-record synthetic CloudTrail log is included at
 `samples/cloudtrail-security-groups-50000.json.gz`. Regenerate it with
 `npm run sample:cloudtrail`.
 
+The ready-to-upload mixed evidence pack at `samples/aws-evidence-batch/`
+contains 14 synthetic AWS files spanning Config, CloudTrail, VPC Flow Logs,
+network analysis, service access, GuardDuty, and Security Hub. Upload the 14
+numbered files together; `manifest.json` documents checksums and expected
+consolidation behavior. Regenerate and verify the pack with
+`npm run sample:aws-evidence`.
+
 The detailed workflows, trust boundaries, edge cases, and completion criteria
 for the AWS ingestion round are documented in `docs/PRODUCT_BRIEF.md`.

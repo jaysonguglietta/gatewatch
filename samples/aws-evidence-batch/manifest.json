@@ -1,0 +1,123 @@
+{
+  "generatedAt": "2026-08-07T12:30:00.000Z",
+  "synthetic": true,
+  "scenario": "A public SSH rule was added to the production payments API. AWS configuration, change, traffic, reachability, service-access, and managed-security evidence describe the resulting activity.",
+  "accountId": "428196730552",
+  "region": "us-east-1",
+  "securityGroups": [
+    {
+      "id": "sg-0a41f2e91b71",
+      "name": "prod-payments-api",
+      "expectedRole": "Primary consolidated application finding"
+    },
+    {
+      "id": "sg-0d3c99118aae",
+      "name": "prod-public-alb",
+      "expectedRole": "Consolidated edge-service finding"
+    }
+  ],
+  "intentionalDuplicateRecords": 2,
+  "expectedUnmatchedSourceTypes": [
+    "network-firewall"
+  ],
+  "files": [
+    {
+      "name": "01-config-snapshot.json",
+      "sourceType": "config-snapshot",
+      "bytes": 9737,
+      "sha256": "ccff827cacd2a8d77bb80e922cc12b23787a4d1db556c8e7bbb6156288798b15",
+      "notes": "Current security groups and resource relationships used to correlate the other files."
+    },
+    {
+      "name": "02-config-history.json",
+      "sourceType": "config-history",
+      "bytes": 3644,
+      "sha256": "f9485a8beede7dd756b212e2df9c37d6c67046ff0f7b40c64892e2e8fd0cf00f",
+      "notes": "Contains the same current item as the snapshot plus the preceding state; one cross-file duplicate is intentional."
+    },
+    {
+      "name": "03-cloudtrail.json.gz",
+      "sourceType": "cloudtrail",
+      "bytes": 948,
+      "sha256": "eabdc860779f1434c824fc2dc993258cd0132e743cef7ed60d567a359f5ebdfd",
+      "notes": "One successful ingress change, an exact duplicate, one failed request, and one unrelated management event."
+    },
+    {
+      "name": "04-vpc-flow.log",
+      "sourceType": "vpc-flow-logs",
+      "bytes": 316,
+      "sha256": "cc9f0f252a55847f1dddc6318314ce05028c1fa0dcc0b0da6ae023ee656ef81b",
+      "notes": "Default-format accepted SSH traffic and a rejected RDP probe on the Config-related ENI."
+    },
+    {
+      "name": "05-reachability-analyzer.json",
+      "sourceType": "reachability-analyzer",
+      "bytes": 1391,
+      "sha256": "1db32c7ad448cfd84b3c6df638284342dd3b7c3658bec5d24411160dfb47b647",
+      "notes": "A successful configuration-based path from the internet to SSH through the application security group."
+    },
+    {
+      "name": "06-network-access-analyzer.json",
+      "sourceType": "network-access-analyzer",
+      "bytes": 911,
+      "sha256": "8ab6aa872c5a07da536deeff6ba3e8eb12c66227ca05de8472ccd01cf1c81091",
+      "notes": "A Network Access Scope finding for the same public administrative path."
+    },
+    {
+      "name": "07-elb-access.log",
+      "sourceType": "elastic-load-balancing",
+      "bytes": 600,
+      "sha256": "67b268e6c97a5fdbb2833f9e3c44450b7f316106b1d30e3bd62b6139796518d2",
+      "notes": "A standard ALB HTTPS request correlated to the edge security group through Config."
+    },
+    {
+      "name": "08-waf.jsonl",
+      "sourceType": "waf",
+      "bytes": 1470,
+      "sha256": "835ddcb6c86dfff4d938f1b3772b851309fe878ab3c447bd47aede99b5ab6cfe",
+      "notes": "One blocked SQL injection pattern and one allowed health check associated with the ALB Web ACL."
+    },
+    {
+      "name": "09-cloudfront.tsv",
+      "sourceType": "cloudfront",
+      "bytes": 440,
+      "sha256": "ac22fd5a82480d7edad6b393e877a0a8a9182c4facd40024a38b8cabd342f44a",
+      "notes": "Legacy standard CloudFront TSV records whose origin hostname maps to the inventory ALB attachment."
+    },
+    {
+      "name": "10-api-gateway.jsonl",
+      "sourceType": "api-gateway",
+      "bytes": 746,
+      "sha256": "de3a00a7fadbd8686b4a83b5fe28bf05afe20f8a1d50429bdd77b53777f46711",
+      "notes": "Structured API Gateway access logs for a successful request and a throttled request through a Config-related private API."
+    },
+    {
+      "name": "11-route53-resolver.jsonl",
+      "sourceType": "route53-resolver",
+      "bytes": 847,
+      "sha256": "1f69f97bf15eab5bf97c6070d0379418da06a3e7631273deda843bd41a92717c",
+      "notes": "One normal internal lookup and one DNS Firewall-blocked domain from the attached application instance."
+    },
+    {
+      "name": "12-network-firewall.jsonl",
+      "sourceType": "network-firewall",
+      "bytes": 998,
+      "sha256": "490439548bd83eb3ea2297a54acb07e4ffdb6caae50f39f8a8f549f01307f171",
+      "notes": "A blocked alert and an allowed TLS flow. These remain unmatched unless firewall-to-workload context is supplied."
+    },
+    {
+      "name": "13-guardduty.json",
+      "sourceType": "guardduty",
+      "bytes": 3169,
+      "sha256": "6eca94cd8211553a31b6f0b07f5f2df29062c06ed4dc3f7bb9af3ea8a36da768",
+      "notes": "A GuardDuty instance finding with a nested network interface and security-group association."
+    },
+    {
+      "name": "14-security-hub.json",
+      "sourceType": "security-hub",
+      "bytes": 2196,
+      "sha256": "ba3a05f33949a0da55cdb47a961dd39484661472b2f658f806a2abb8b3873982",
+      "notes": "An active ASFF control finding directly identifying the application security group."
+    }
+  ]
+}

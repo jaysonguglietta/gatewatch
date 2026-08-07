@@ -13,7 +13,8 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
     "sample:cloudtrail": "node scripts/generate-sample-cloudtrail.mjs",
-    "sample:cloudtrail:detailed": "node scripts/generate-detailed-cloudtrail.mjs"
+    "sample:cloudtrail:detailed": "node scripts/generate-detailed-cloudtrail.mjs",
+    "sample:aws-evidence": "node scripts/generate-sample-aws-evidence.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1099.0",

@@ -100,7 +100,7 @@ function jsonRecords(text: string, sourceType: SourceType) {
       : sourceType === "reachability-analyzer"
         ? [root.NetworkInsightsAnalyses, root.NetworkInsightsPaths, root.NetworkInsightsAnalysis ? [root.NetworkInsightsAnalysis] : undefined]
         : sourceType === "network-access-analyzer"
-          ? [root.NetworkInsightsAccessScopeAnalyses, root.Findings, root.NetworkInsightsAccessScopeAnalysis ? [root.NetworkInsightsAccessScopeAnalysis] : undefined]
+          ? [root.NetworkInsightsAccessScopeAnalyses, root.AnalysisFindings, root.Findings, root.NetworkInsightsAccessScopeAnalysis ? [root.NetworkInsightsAccessScopeAnalysis] : undefined]
           : [root.Records, root.records, root.logEvents, root.events];
   const found = candidates.find(Array.isArray);
   return found ? (found as unknown[]).map(object) : [root];
@@ -226,26 +226,34 @@ function resourceIdentity(record: JsonObject) {
       ? record.resources
       : [];
   const firstResource = object(resources[0]);
+  const sourceIds = object(record.srcids);
   const direct = first(record, [
     "resourceId", "resourceArn", "ResourceId", "Arn", "Id", "interface-id",
     "tgw-id", "tgw-attachment-id", "firewall_name", "webaclId", "resource",
   ], 800);
-  return first(firstResource, ["Id", "id", "arn", "resourceArn"], 800) || direct;
+  return first(firstResource, ["Id", "id", "arn", "resourceArn"], 800)
+    || direct
+    || first(record, ["apiId", "distributionId"], 800)
+    || first(sourceIds, ["instance", "resolver_endpoint", "resolver_network_interface"], 800);
 }
 
 function normalizeGeneric(record: JsonObject, index: number, sourceType: SourceType) {
   const resourceObject = object(record.Resource ?? record.resource);
   const service = object(record.service);
   const httpRequest = object(record.httpRequest ?? record.http);
+  const networkEvent = object(record.event);
+  const networkAlert = object(networkEvent.alert);
+  const networkVerdict = object(networkEvent.verdict);
   const rawObservedAt = first(record, [
     "eventTime", "timestamp", "time", "updatedAt", "UpdatedAt", "createdAt",
     "CreatedAt", "start", "date", "datetime", "@timestamp",
   ], 100);
-  const observedAt = /^\d{10}$/.test(rawObservedAt)
-    ? new Date(Number(rawObservedAt) * 1000).toISOString()
-    : /^\d{13}$/.test(rawObservedAt)
-      ? new Date(Number(rawObservedAt)).toISOString()
-      : rawObservedAt;
+  const eventObservedAt = rawObservedAt || first(networkEvent, ["timestamp"], 100);
+  const observedAt = /^\d{10}$/.test(eventObservedAt)
+    ? new Date(Number(eventObservedAt) * 1000).toISOString()
+    : /^\d{13}$/.test(eventObservedAt)
+      ? new Date(Number(eventObservedAt)).toISOString()
+      : eventObservedAt;
   const accountId = first(record, ["accountId", "account-id", "AwsAccountId", "awsAccountId", "recipientAccountId"], 20)
     || first(resourceObject, ["accountId"], 20);
   const region = first(record, ["region", "awsRegion", "Region", "aws_region"], 50)
@@ -255,19 +263,19 @@ function normalizeGeneric(record: JsonObject, index: number, sourceType: SourceT
   const event = first(record, [
     "eventName", "eventType", "event_type", "Type", "type", "action",
     "findingStatus", "Status", "query_type", "routeKey", "httpMethod",
-  ], 240) || sourceTypeDefinition(sourceType).label;
+  ], 240) || first(networkEvent, ["event_type"], 240) || sourceTypeDefinition(sourceType).label;
   const disposition = first(record, [
     "action", "Action", "status", "Status", "log-status", "statusCode",
     "responseStatus", "workflowStatus", "RecordState", "findingStatus",
-  ], 160);
+  ], 160) || first(networkAlert, ["action"], 160) || first(networkVerdict, ["action"], 160);
   const source = first(record, [
     "srcaddr", "pkt-srcaddr", "sourceIPAddress", "client", "clientIp",
     "sourceAddress", "source_ip", "c-ip", "x-edge-location",
-  ], 500) || first(httpRequest, ["clientIp", "country"], 500);
+  ], 500) || first(httpRequest, ["clientIp", "country"], 500) || first(networkEvent, ["src_ip"], 500);
   const destination = first(record, [
     "dstaddr", "pkt-dstaddr", "target", "destinationAddress", "destination_ip",
-    "cs-host", "host", "query_name", "resourcePath",
-  ], 500) || first(httpRequest, ["uri"], 500);
+    "x-host-header", "cs-host", "host", "query_name", "resourcePath",
+  ], 500) || first(httpRequest, ["uri"], 500) || first(networkEvent, ["dest_ip"], 500);
   const title = first(record, ["Title", "title", "Description", "description", "message", "Message"], 800);
   const summaryParts = [event, resource, source && destination ? `${source} → ${destination}` : source || destination, disposition]
     .filter(Boolean);

@@ -1,4 +1,40 @@
-# Gatewatch CloudTrail samples
+# Gatewatch AWS evidence samples
+
+## Mixed AWS evidence batch
+
+`aws-evidence-batch/` is a deterministic, entirely synthetic investigation
+pack designed to be uploaded as one mixed selection in **Reports → AWS log
+imports**. It contains 14 source files covering:
+
+- AWS Config snapshot and history
+- AWS CloudTrail, including an exact duplicate event and a failed request
+- VPC Flow Logs
+- Reachability Analyzer and Network Access Analyzer
+- ALB, WAF, CloudFront, API Gateway, Route 53 Resolver, and Network Firewall logs
+- GuardDuty and Security Hub findings
+
+Every file follows an AWS-native shape and shares a coherent payments-service
+scenario. Config relationships and nested AWS resource context provide the
+correlation paths. Two records are duplicated intentionally to validate
+suppression. Network Firewall evidence is intentionally left unmatched because
+the sample does not invent a direct firewall-to-security-group relationship.
+
+Upload every numbered file together; `manifest.json` is documentation and
+should not be uploaded. The expected outcome is one consolidated finding for
+`sg-0a41f2e91b71`, one for `sg-0d3c99118aae`, two suppressed records, and an
+explicit unmatched Network Firewall record set.
+
+Regenerate the pack from the repository root with:
+
+```bash
+npm run sample:aws-evidence
+```
+
+All account IDs, resource IDs, addresses, events, principals, requests, and
+findings are synthetic. Documentation-only IPv4 ranges are used for external
+addresses, and the pack contains no credentials or customer data.
+
+## CloudTrail volume sample
 
 `cloudtrail-security-groups-50000.json.gz` is a deterministic synthetic
 CloudTrail management-event log containing exactly 50,000 records.

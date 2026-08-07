@@ -1,0 +1,310 @@
+{
+  "fileVersion": "1.0",
+  "configurationItems": [
+    {
+      "relatedEvents": [],
+      "relationships": [],
+      "configuration": {
+        "groupName": "prod-payments-api",
+        "groupId": "sg-0a41f2e91b71",
+        "description": "Synthetic payments API security group",
+        "vpcId": "vpc-prod-core",
+        "ipPermissions": [
+          {
+            "ipProtocol": "tcp",
+            "fromPort": 22,
+            "toPort": 22,
+            "ipRanges": [
+              {
+                "cidrIp": "0.0.0.0/0",
+                "description": "Synthetic risky rule"
+              }
+            ],
+            "ipv6Ranges": [],
+            "userIdGroupPairs": [],
+            "prefixListIds": []
+          },
+          {
+            "ipProtocol": "tcp",
+            "fromPort": 8443,
+            "toPort": 8443,
+            "ipRanges": [],
+            "ipv6Ranges": [],
+            "userIdGroupPairs": [
+              {
+                "groupId": "sg-0d3c99118aae",
+                "userId": "428196730552",
+                "description": "ALB to API"
+              }
+            ],
+            "prefixListIds": []
+          }
+        ],
+        "ipPermissionsEgress": [
+          {
+            "ipProtocol": "-1",
+            "ipRanges": [
+              {
+                "cidrIp": "0.0.0.0/0"
+              }
+            ],
+            "ipv6Ranges": [],
+            "userIdGroupPairs": [],
+            "prefixListIds": []
+          }
+        ]
+      },
+      "supplementaryConfiguration": {},
+      "tags": {
+        "Environment": "Production",
+        "Synthetic": "true"
+      },
+      "configurationItemVersion": "1.3",
+      "configurationItemCaptureTime": "2026-08-07T12:10:30.000Z",
+      "configurationStateId": "1700000000001",
+      "awsAccountId": "428196730552",
+      "configurationItemStatus": "OK",
+      "resourceType": "AWS::EC2::SecurityGroup",
+      "resourceId": "sg-0a41f2e91b71",
+      "resourceName": "sg-0a41f2e91b71",
+      "ARN": "arn:aws:ec2:us-east-1:428196730552:security-group/sg-0a41f2e91b71",
+      "awsRegion": "us-east-1",
+      "availabilityZone": "us-east-1a",
+      "configurationStateMd5Hash": "",
+      "resourceCreationTime": "2025-01-15T10:00:00.000Z"
+    },
+    {
+      "relatedEvents": [],
+      "relationships": [],
+      "configuration": {
+        "groupName": "prod-public-alb",
+        "groupId": "sg-0d3c99118aae",
+        "description": "Synthetic public ALB security group",
+        "vpcId": "vpc-prod-core",
+        "ipPermissions": [
+          {
+            "ipProtocol": "tcp",
+            "fromPort": 443,
+            "toPort": 443,
+            "ipRanges": [
+              {
+                "cidrIp": "0.0.0.0/0"
+              }
+            ],
+            "ipv6Ranges": [
+              {
+                "cidrIpv6": "::/0"
+              }
+            ],
+            "userIdGroupPairs": [],
+            "prefixListIds": []
+          }
+        ],
+        "ipPermissionsEgress": [
+          {
+            "ipProtocol": "tcp",
+            "fromPort": 8443,
+            "toPort": 8443,
+            "ipRanges": [],
+            "ipv6Ranges": [],
+            "userIdGroupPairs": [
+              {
+                "groupId": "sg-0a41f2e91b71",
+                "userId": "428196730552"
+              }
+            ],
+            "prefixListIds": []
+          }
+        ]
+      },
+      "supplementaryConfiguration": {},
+      "tags": {
+        "Environment": "Production",
+        "Synthetic": "true"
+      },
+      "configurationItemVersion": "1.3",
+      "configurationItemCaptureTime": "2026-08-07T12:10:31.000Z",
+      "configurationStateId": "1700000000002",
+      "awsAccountId": "428196730552",
+      "configurationItemStatus": "OK",
+      "resourceType": "AWS::EC2::SecurityGroup",
+      "resourceId": "sg-0d3c99118aae",
+      "resourceName": "sg-0d3c99118aae",
+      "ARN": "arn:aws:ec2:us-east-1:428196730552:security-group/sg-0d3c99118aae",
+      "awsRegion": "us-east-1",
+      "availabilityZone": "us-east-1a",
+      "configurationStateMd5Hash": "",
+      "resourceCreationTime": "2025-01-15T10:00:00.000Z"
+    },
+    {
+      "relatedEvents": [],
+      "relationships": [
+        {
+          "resourceType": "AWS::EC2::SecurityGroup",
+          "resourceId": "sg-0a41f2e91b71",
+          "name": "Is associated with SecurityGroup"
+        }
+      ],
+      "configuration": {
+        "networkInterfaceId": "eni-0a41f2e91b71",
+        "privateIpAddress": "10.20.1.10",
+        "vpcId": "vpc-prod-core",
+        "subnetId": "subnet-payments-a"
+      },
+      "supplementaryConfiguration": {},
+      "tags": {
+        "Environment": "Production",
+        "Synthetic": "true"
+      },
+      "configurationItemVersion": "1.3",
+      "configurationItemCaptureTime": "2026-08-07T12:10:32.000Z",
+      "configurationStateId": "1700000000003",
+      "awsAccountId": "428196730552",
+      "configurationItemStatus": "OK",
+      "resourceType": "AWS::EC2::NetworkInterface",
+      "resourceId": "eni-0a41f2e91b71",
+      "resourceName": "eni-0a41f2e91b71",
+      "ARN": "",
+      "awsRegion": "us-east-1",
+      "availabilityZone": "us-east-1a",
+      "configurationStateMd5Hash": "",
+      "resourceCreationTime": "2025-01-15T10:00:00.000Z"
+    },
+    {
+      "relatedEvents": [],
+      "relationships": [
+        {
+          "resourceType": "AWS::EC2::SecurityGroup",
+          "resourceId": "sg-0a41f2e91b71",
+          "name": "Is associated with SecurityGroup"
+        }
+      ],
+      "configuration": {
+        "instanceId": "i-02aa9e6f3",
+        "privateIpAddress": "10.20.1.10",
+        "state": {
+          "name": "running"
+        },
+        "vpcId": "vpc-prod-core"
+      },
+      "supplementaryConfiguration": {},
+      "tags": {
+        "Environment": "Production",
+        "Synthetic": "true"
+      },
+      "configurationItemVersion": "1.3",
+      "configurationItemCaptureTime": "2026-08-07T12:10:33.000Z",
+      "configurationStateId": "1700000000004",
+      "awsAccountId": "428196730552",
+      "configurationItemStatus": "OK",
+      "resourceType": "AWS::EC2::Instance",
+      "resourceId": "i-02aa9e6f3",
+      "resourceName": "i-02aa9e6f3",
+      "ARN": "",
+      "awsRegion": "us-east-1",
+      "availabilityZone": "us-east-1a",
+      "configurationStateMd5Hash": "",
+      "resourceCreationTime": "2025-01-15T10:00:00.000Z"
+    },
+    {
+      "relatedEvents": [],
+      "relationships": [
+        {
+          "resourceType": "AWS::EC2::SecurityGroup",
+          "resourceId": "sg-0d3c99118aae",
+          "name": "Is associated with SecurityGroup"
+        }
+      ],
+      "configuration": {
+        "scheme": "internet-facing",
+        "type": "application",
+        "dnsName": "dualstack.payments.example.com"
+      },
+      "supplementaryConfiguration": {},
+      "tags": {
+        "Environment": "Production",
+        "Synthetic": "true"
+      },
+      "configurationItemVersion": "1.3",
+      "configurationItemCaptureTime": "2026-08-07T12:10:34.000Z",
+      "configurationStateId": "1700000000005",
+      "awsAccountId": "428196730552",
+      "configurationItemStatus": "OK",
+      "resourceType": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "resourceId": "app/prod-payments-alb/50dc6c495c0c9188",
+      "resourceName": "app/prod-payments-alb/50dc6c495c0c9188",
+      "ARN": "",
+      "awsRegion": "us-east-1",
+      "availabilityZone": "us-east-1a",
+      "configurationStateMd5Hash": "",
+      "resourceCreationTime": "2025-01-15T10:00:00.000Z"
+    },
+    {
+      "relatedEvents": [],
+      "relationships": [
+        {
+          "resourceType": "AWS::EC2::SecurityGroup",
+          "resourceId": "sg-0d3c99118aae",
+          "name": "Protects an ALB associated with SecurityGroup"
+        }
+      ],
+      "configuration": {
+        "name": "payments-edge",
+        "scope": "REGIONAL",
+        "defaultAction": {
+          "allow": {}
+        }
+      },
+      "supplementaryConfiguration": {},
+      "tags": {
+        "Environment": "Production",
+        "Synthetic": "true"
+      },
+      "configurationItemVersion": "1.3",
+      "configurationItemCaptureTime": "2026-08-07T12:10:35.000Z",
+      "configurationStateId": "1700000000006",
+      "awsAccountId": "428196730552",
+      "configurationItemStatus": "OK",
+      "resourceType": "AWS::WAFv2::WebACL",
+      "resourceId": "arn:aws:wafv2:us-east-1:428196730552:regional/webacl/payments-edge/11111111-2222-3333-4444-555555555555",
+      "resourceName": "arn:aws:wafv2:us-east-1:428196730552:regional/webacl/payments-edge/11111111-2222-3333-4444-555555555555",
+      "ARN": "",
+      "awsRegion": "us-east-1",
+      "availabilityZone": "us-east-1a",
+      "configurationStateMd5Hash": "",
+      "resourceCreationTime": "2025-01-15T10:00:00.000Z"
+    },
+    {
+      "relatedEvents": [],
+      "relationships": [
+        {
+          "resourceType": "AWS::EC2::SecurityGroup",
+          "resourceId": "sg-0a41f2e91b71",
+          "name": "Uses a VPC link associated with SecurityGroup"
+        }
+      ],
+      "configuration": {
+        "name": "payments-private-api",
+        "protocolType": "HTTP"
+      },
+      "supplementaryConfiguration": {},
+      "tags": {
+        "Environment": "Production",
+        "Synthetic": "true"
+      },
+      "configurationItemVersion": "1.3",
+      "configurationItemCaptureTime": "2026-08-07T12:10:36.000Z",
+      "configurationStateId": "1700000000007",
+      "awsAccountId": "428196730552",
+      "configurationItemStatus": "OK",
+      "resourceType": "AWS::ApiGatewayV2::Api",
+      "resourceId": "a1b2c3d4e5",
+      "resourceName": "a1b2c3d4e5",
+      "ARN": "",
+      "awsRegion": "us-east-1",
+      "availabilityZone": "us-east-1a",
+      "configurationStateMd5Hash": "",
+      "resourceCreationTime": "2025-01-15T10:00:00.000Z"
+    }
+  ]
+}
