@@ -365,7 +365,10 @@ def scan_region(account, region, credentials, observed_at):
         attachments = []
         subnet_ids = sorted({item.get("SubnetId") for item in group_interfaces if item.get("SubnetId")})
         route_ids = set()
-        has_igw_route = False
+        has_ipv4_igw_route = False
+        has_ipv6_igw_route = False
+        direct_ipv4_path_count = 0
+        direct_ipv6_path_count = 0
         for interface in group_interfaces:
             instance_id = interface.get("Attachment", {}).get("InstanceId")
             instance = instances.get(instance_id, {})
@@ -391,11 +394,34 @@ def scan_region(account, region, credentials, observed_at):
             if not route_table:
                 continue
             route_ids.add(route_table["RouteTableId"])
-            has_igw_route = has_igw_route or any(
+            subnet_has_ipv4_igw_route = any(
                 route.get("State") == "active"
                 and route.get("GatewayId") in igw_ids
-                and (route.get("DestinationCidrBlock") == "0.0.0.0/0" or route.get("DestinationIpv6CidrBlock") == "::/0")
+                and route.get("DestinationCidrBlock") == "0.0.0.0/0"
                 for route in route_table.get("Routes", [])
+            )
+            subnet_has_ipv6_igw_route = any(
+                route.get("State") == "active"
+                and route.get("GatewayId") in igw_ids
+                and route.get("DestinationIpv6CidrBlock") == "::/0"
+                for route in route_table.get("Routes", [])
+            )
+            subnet_nacl_allows = broad_nacl_ingress(nacls_by_subnet, subnet_id)
+            has_ipv4_igw_route = has_ipv4_igw_route or subnet_has_ipv4_igw_route
+            has_ipv6_igw_route = has_ipv6_igw_route or subnet_has_ipv6_igw_route
+            direct_ipv4_path_count += sum(
+                1 for item in group_interfaces
+                if item.get("SubnetId") == subnet_id
+                and (item.get("Association") or {}).get("PublicIp")
+                and subnet_has_ipv4_igw_route
+                and subnet_nacl_allows
+            )
+            direct_ipv6_path_count += sum(
+                1 for item in group_interfaces
+                if item.get("SubnetId") == subnet_id
+                and item.get("Ipv6Addresses")
+                and subnet_has_ipv6_igw_route
+                and subnet_nacl_allows
             )
 
         public_ingress = sum(
@@ -435,6 +461,7 @@ def scan_region(account, region, credentials, observed_at):
                 ),
                 "resourceAttachments": attachments,
                 "networkEvidence": {
+                    "evidenceVersion": 2,
                     "subnetIds": subnet_ids,
                     "routeTableIds": sorted(route_ids),
                     "networkAclIds": sorted(
@@ -446,9 +473,26 @@ def scan_region(account, region, credentials, observed_at):
                         } - {None}
                     ),
                     "publicAddressCount": sum(1 for item in attachments if item.get("publicIpAddress")),
-                    "internetGatewayRoute": has_igw_route,
+                    "publicIpv6AddressCount": sum(
+                        len(item.get("Ipv6Addresses", [])) for item in group_interfaces
+                    ),
+                    "directIpv4InternetPathCount": direct_ipv4_path_count,
+                    "directIpv6InternetPathCount": direct_ipv6_path_count,
+                    "internetGatewayRoute": has_ipv4_igw_route or has_ipv6_igw_route,
+                    "ipv4InternetGatewayRoute": has_ipv4_igw_route,
+                    "ipv6InternetGatewayRoute": has_ipv6_igw_route,
                     "networkAclAllowsInternetIngress": any(broad_nacl_ingress(nacls_by_subnet, subnet_id) for subnet_id in subnet_ids),
-                    "state": "configured-internet-path" if has_igw_route else "blocked" if subnet_ids and route_ids else "incomplete",
+                    "state": (
+                        "configured-internet-path"
+                        if (
+                            direct_ipv4_path_count > 0
+                        ) or (direct_ipv6_path_count > 0)
+                        else "blocked"
+                        if subnet_ids and route_ids and any(
+                            subnet_id in nacls_by_subnet for subnet_id in subnet_ids
+                        )
+                        else "incomplete"
+                    ),
                 },
                 "observedAt": observed_at,
                 "rules": [

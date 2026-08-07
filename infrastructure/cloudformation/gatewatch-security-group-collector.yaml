@@ -971,7 +971,7 @@ Resources:
                       ec2,
                       "describe_route_tables",
                       "RouteTables",
-                      PaginationConfig={"PageSize": 1000},
+                      PaginationConfig={"PageSize": 100},
                   )
               )
               network_acls = list(
@@ -979,7 +979,7 @@ Resources:
                       ec2,
                       "describe_network_acls",
                       "NetworkAcls",
-                      PaginationConfig={"PageSize": 1000},
+                      PaginationConfig={"PageSize": 100},
                   )
               )
               route_by_subnet = {}
@@ -998,11 +998,17 @@ Resources:
 
               result = defaultdict(
                   lambda: {
+                      "evidenceVersion": 2,
                       "subnetIds": set(),
                       "routeTableIds": set(),
                       "networkAclIds": set(),
                       "publicAddressCount": 0,
+                      "publicIpv6AddressCount": 0,
+                      "directIpv4InternetPathCount": 0,
+                      "directIpv6InternetPathCount": 0,
                       "internetGatewayRoute": False,
+                      "ipv4InternetGatewayRoute": False,
+                      "ipv6InternetGatewayRoute": False,
                       "networkAclAllowsInternetIngress": False,
                   }
               )
@@ -1011,15 +1017,21 @@ Resources:
                   vpc_id = interface.get("VpcId")
                   table = route_by_subnet.get(subnet_id) or main_route_by_vpc.get(vpc_id)
                   acl = acl_by_subnet.get(subnet_id)
-                  has_public_route = bool(
+                  has_ipv4_public_route = bool(
                       table
                       and any(
                           route.get("State", "active") == "active"
                           and str(route.get("GatewayId", "")).startswith("igw-")
-                          and (
-                              route.get("DestinationCidrBlock") == "0.0.0.0/0"
-                              or route.get("DestinationIpv6CidrBlock") == "::/0"
-                          )
+                          and route.get("DestinationCidrBlock") == "0.0.0.0/0"
+                          for route in table.get("Routes", [])
+                      )
+                  )
+                  has_ipv6_public_route = bool(
+                      table
+                      and any(
+                          route.get("State", "active") == "active"
+                          and str(route.get("GatewayId", "")).startswith("igw-")
+                          and route.get("DestinationIpv6CidrBlock") == "::/0"
                           for route in table.get("Routes", [])
                       )
                   )
@@ -1050,7 +1062,24 @@ Resources:
                       context["publicAddressCount"] += int(
                           bool((interface.get("Association") or {}).get("PublicIp"))
                       )
-                      context["internetGatewayRoute"] |= has_public_route
+                      context["publicIpv6AddressCount"] += len(
+                          interface.get("Ipv6Addresses", [])
+                      )
+                      context["directIpv4InternetPathCount"] += int(
+                          bool((interface.get("Association") or {}).get("PublicIp"))
+                          and has_ipv4_public_route
+                          and acl_allows
+                      )
+                      context["directIpv6InternetPathCount"] += int(
+                          bool(interface.get("Ipv6Addresses"))
+                          and has_ipv6_public_route
+                          and acl_allows
+                      )
+                      context["ipv4InternetGatewayRoute"] |= has_ipv4_public_route
+                      context["ipv6InternetGatewayRoute"] |= has_ipv6_public_route
+                      context["internetGatewayRoute"] |= (
+                          has_ipv4_public_route or has_ipv6_public_route
+                      )
                       context["networkAclAllowsInternetIngress"] |= acl_allows
               return {
                   group_id: {
@@ -1060,12 +1089,14 @@ Resources:
                       "networkAclIds": sorted(context["networkAclIds"]),
                       "state": (
                           "configured-internet-path"
-                          if context["internetGatewayRoute"]
-                          and context["publicAddressCount"] > 0
-                          and context["networkAclAllowsInternetIngress"]
+                          if (
+                              context["directIpv4InternetPathCount"] > 0
+                          ) or (
+                              context["directIpv6InternetPathCount"] > 0
+                          )
                           else "blocked"
                           if context["routeTableIds"]
-                          and not context["internetGatewayRoute"]
+                          and context["networkAclIds"]
                           else "incomplete"
                       ),
                   }
@@ -1119,7 +1150,7 @@ Resources:
                       ec2,
                       "describe_security_groups",
                       "SecurityGroups",
-                      PaginationConfig={"PageSize": 1000},
+                      PaginationConfig={"PageSize": 100},
                   )
               )
               raw_rules = list(
@@ -1127,7 +1158,7 @@ Resources:
                       ec2,
                       "describe_security_group_rules",
                       "SecurityGroupRules",
-                      PaginationConfig={"PageSize": 1000},
+                      PaginationConfig={"PageSize": 100},
                   )
               )
 
@@ -1147,7 +1178,7 @@ Resources:
                           ec2,
                           "describe_network_interfaces",
                           "NetworkInterfaces",
-                          PaginationConfig={"PageSize": 1000},
+                          PaginationConfig={"PageSize": 100},
                       )
                   )
                   resource_attachments = collect_network_attachments(
@@ -1216,11 +1247,17 @@ Resources:
                       "networkEvidence": network_context.get(
                           group_id,
                           {
+                              "evidenceVersion": 2,
                               "subnetIds": [],
                               "routeTableIds": [],
                               "networkAclIds": [],
                               "publicAddressCount": 0,
+                              "publicIpv6AddressCount": 0,
+                              "directIpv4InternetPathCount": 0,
+                              "directIpv6InternetPathCount": 0,
                               "internetGatewayRoute": False,
+                              "ipv4InternetGatewayRoute": False,
+                              "ipv6InternetGatewayRoute": False,
                               "networkAclAllowsInternetIngress": False,
                               "state": "incomplete",
                           },

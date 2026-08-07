@@ -72,6 +72,21 @@ flowchart LR
 Gatewatch preserves these semantics separately. “Configured,” “reachable,”
 “observed,” “attributed,” “authorized,” and “complete” are not interchangeable.
 
+### Effective internet exposure
+
+An internet-wide security-group source is a permission, not proof of exposure.
+For a direct path, Gatewatch requires the same attached network interface to
+have a public address, an address-family-specific default route to an attached
+internet gateway, and an NACL that permits internet ingress. Evidence is
+correlated per ENI so a public address in one subnet cannot be combined with a
+route from another subnet.
+
+Gatewatch reports configured direct exposure, blocked/latent exposure, and
+incomplete evidence separately. Managed services such as internet-facing load
+balancers can expose private targets without a public address on the target;
+until the service-level public-access setting is collected, those cases remain
+`Evidence incomplete` rather than being declared reachable or internal-only.
+
 ## Collection plane
 
 ### Discovery

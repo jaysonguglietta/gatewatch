@@ -27,6 +27,11 @@ test("organization collector isolates accounts and stores immutable evidence sha
   assert.match(worker, /security-group-inventory-shard/);
   assert.match(worker, /canonical-sha256/);
   assert.match(worker, /ThreadPoolExecutor/);
+  assert.match(worker, /"evidenceVersion": 2/);
+  assert.match(worker, /has_ipv4_igw_route/);
+  assert.match(worker, /publicIpv6AddressCount/);
+  assert.match(worker, /direct_ipv4_path_count/);
+  assert.match(worker, /item\.get\("SubnetId"\) == subnet_id/);
   assert.doesNotMatch(worker, /authorize_security_group|revoke_security_group|modify_security_group/);
 });
 

@@ -33,6 +33,10 @@ Top-level inventory shard fields:
 | `securityGroups` | Normalized groups, rules, attachments, tags, and network evidence |
 
 The raw shard is authoritative. Normalized rows can be rebuilt from S3.
+Network evidence version 2 records IPv4 and IPv6 IGW routes separately, public
+address counts, NACL evidence, and per-ENI direct-path counts. Consumers must
+derive exposure from these raw prerequisites and must not trust the legacy
+aggregate `state` field by itself.
 
 ## Data flow
 

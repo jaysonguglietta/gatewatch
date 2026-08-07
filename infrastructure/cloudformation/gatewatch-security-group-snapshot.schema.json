@@ -503,6 +503,12 @@
         "publicAddressCount": { "type": "integer", "minimum": 0 },
         "internetGatewayRoute": { "type": "boolean" },
         "networkAclAllowsInternetIngress": { "type": "boolean" },
+        "evidenceVersion": { "type": "integer", "minimum": 2 },
+        "publicIpv6AddressCount": { "type": "integer", "minimum": 0 },
+        "directIpv4InternetPathCount": { "type": "integer", "minimum": 0 },
+        "directIpv6InternetPathCount": { "type": "integer", "minimum": 0 },
+        "ipv4InternetGatewayRoute": { "type": "boolean" },
+        "ipv6InternetGatewayRoute": { "type": "boolean" },
         "state": {
           "enum": ["configured-internet-path", "blocked", "incomplete"]
         }

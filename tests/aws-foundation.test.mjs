@@ -102,6 +102,11 @@ test("collects resource-level security-group attachment evidence", async () => {
   assert.match(collector, /AWS::EC2::Instance/);
   assert.match(collector, /AWS::RDS::DBInstance/);
   assert.match(collector, /AWS::EFS::FileSystem/);
+  assert.match(
+    collector,
+    /"describe_security_group_rules",[\s\S]{0,120}PaginationConfig=\{"PageSize": 100\}/,
+  );
+  assert.doesNotMatch(collector, /PaginationConfig=\{"PageSize": 1000\}/);
   assert.match(snapshotSchema, /"resourceAttachment"/);
   assert.match(snapshotSchema, /"networkInterfaceId"/);
   assert.match(inventoryMapper, /normalizedAttachmentType/);
