@@ -23,7 +23,8 @@ all existing capabilities without presenting nineteen equal-priority choices.
 
 1. Open **Findings → Daily findings**. The highest-risk finding is selected.
 2. Choose a personal/team saved view or narrow organization, OU, account, Region,
-   owner, environment, status, or severity.
+   owner, environment, status, severity, or effective internet exposure. Internet,
+   no-internet, and incomplete-evidence findings remain separate filter states.
 3. Review the compact queue or group findings by canonical security-group identity.
 4. Inspect the selected finding's decision summary, risk factors, policy mapping,
    exact change, attached resources, and evidence confidence.

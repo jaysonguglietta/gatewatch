@@ -9,10 +9,11 @@ async function source(path) {
 }
 
 test("makes the daily findings inbox the default organization-scale workflow", async () => {
-  const [dashboard, inbox, catalog] = await Promise.all([
+  const [dashboard, inbox, catalog, findingsRoute] = await Promise.all([
     source("app/security-dashboard.tsx"),
     source("app/daily-findings-view.tsx"),
     source("lib/daily-findings.ts"),
+    source("app/api/findings/route.ts"),
   ]);
 
   assert.match(dashboard, /useState<View>\("inventory"\)/);
@@ -38,6 +39,10 @@ test("makes the daily findings inbox the default organization-scale workflow", a
   }
   assert.match(catalog, /findingFingerprint/);
   assert.match(catalog, /organizationalUnit/);
+  assert.match(inbox, /Filter findings by effective internet exposure/);
+  assert.match(inbox, /Exposure: internet first/);
+  assert.match(inbox, /Exposure: no internet first/);
+  assert.match(findingsRoute, /internetExposureForVerdict/);
   assert.match(catalog, /accounts: 324/);
   assert.match(inbox, /gatewatch\.findings-density/);
   assert.doesNotMatch(inbox, /localStorage\.(?:getItem|setItem)\(["'][^"']*(?:note|ticket|workflow)/i);

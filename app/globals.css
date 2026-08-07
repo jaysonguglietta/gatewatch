@@ -4935,7 +4935,7 @@ td small {
   border-bottom: 1px solid var(--line);
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(250px, 1.8fr) repeat(5, minmax(125px, 0.8fr));
+  grid-template-columns: minmax(250px, 1.8fr) repeat(6, minmax(125px, 0.8fr));
   padding: 12px 14px;
 }
 

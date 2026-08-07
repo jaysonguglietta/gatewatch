@@ -17,9 +17,10 @@ resources, and vulnerability context.
 - A server-paginated, split-pane **Daily Findings Workspace** with keyboard
   triage, auto-advance, server-backed undo, session progress, clustering, and
   new/overdue/expiring/reopened workload counters
-- Organization, OU, account, region, environment, owner, severity, and workflow
+- Organization, OU, account, region, environment, owner, severity, workflow, and
+  effective-internet exposure
   scoping designed for hundreds of AWS accounts, plus shareable URL filters and
-  personal queues, shareable URL filters, and personal or team saved views
+  internet/no-internet sorting, personal queues, and personal or team saved views
 - Finding-level follow-up, acknowledgement, accepted-risk, and resolution
   workflows with structured reasons, evidence freshness gates, bulk guardrails,
   mandatory rationale, owners, review dates, tickets, compensating controls,

@@ -56,6 +56,7 @@ type Filters = {
   region: string;
   owner: string;
   environment: string;
+  internet: string;
   sort: string;
   mine: string;
 };
@@ -137,6 +138,7 @@ const defaultFilters: Filters = {
   region: "",
   owner: "",
   environment: "",
+  internet: "",
   sort: "risk",
   mine: "",
 };
@@ -152,6 +154,12 @@ const systemViews: SavedView[] = [
     id: "system-daily",
     name: "Daily critical review",
     filters: { severity: "critical", status: "open", sort: "risk" },
+    isDefault: false,
+  },
+  {
+    id: "system-internet",
+    name: "Internet reachable",
+    filters: { internet: "internet", status: "open", sort: "risk" },
     isDefault: false,
   },
   {
@@ -195,6 +203,7 @@ function initialFilters() {
     region: params.get("region") ?? "",
     owner: params.get("owner") ?? "",
     environment: params.get("environment") ?? "",
+    internet: params.get("internet") ?? "",
     sort: params.get("sort") ?? "risk",
     mine: params.get("mine") ?? "",
   };
@@ -755,6 +764,19 @@ export default function DailyFindingsView({
             </select>
           </label>
           <label className="filter-select">
+            <Network size={14} />
+            <select
+              value={filters.internet}
+              onChange={(event) => updateFilter("internet", event.target.value)}
+              aria-label="Filter findings by effective internet exposure"
+            >
+              <option value="">All internet states</option>
+              <option value="internet">Internet path confirmed</option>
+              <option value="no-internet">No internet path confirmed</option>
+              <option value="unknown">Evidence incomplete</option>
+            </select>
+          </label>
+          <label className="filter-select">
             <Filter size={14} />
             <select
               value={filters.environment}
@@ -775,6 +797,8 @@ export default function DailyFindingsView({
               aria-label="Sort daily findings"
             >
               <option value="risk">Risk: high to low</option>
+              <option value="internet-first">Exposure: internet first</option>
+              <option value="no-internet-first">Exposure: no internet first</option>
               <option value="age">Oldest first</option>
               <option value="updated">Recently reviewed</option>
               <option value="account">Account name</option>

@@ -165,9 +165,10 @@ views select the newest observation from successful or partial completed runs.
 ## Query and application plane
 
 The target production API queries Aurora with account, Region, finding status,
-severity, owner, and pagination filters. It does not return the entire inventory
-by default. The current `/api/aws-inventory` aggregate endpoint remains for the
-legacy single-account snapshot during migration.
+severity, owner, effective-internet verdict, deterministic exposure sorting, and
+pagination filters. It does not return the entire inventory by default. The
+current `/api/aws-inventory` aggregate endpoint remains for the legacy
+single-account snapshot during migration.
 
 `/api/coverage` is a separate authenticated endpoint. This separation prevents
 inventory availability from suppressing collection-health warnings.

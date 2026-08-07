@@ -9,6 +9,10 @@ import {
   type FindingWorkflowStatus,
 } from "../../../lib/daily-findings";
 import {
+  compareInternetExposure,
+  internetExposureForVerdict,
+} from "../../../lib/finding-exposure";
+import {
   configuredAwsInventory,
   loadAwsInventory,
 } from "../../../lib/aws-inventory";
@@ -42,7 +46,7 @@ const decisionReasons: Partial<Record<FindingWorkflowStatus, ReadonlySet<string>
 const savedViewFilterLimits = new Map<string, number>([
   ["q", 160], ["severity", 20], ["status", 30], ["ou", 120],
   ["account", 20], ["region", 30], ["owner", 120],
-  ["environment", 30], ["sort", 30], ["mine", 1],
+  ["environment", 30], ["internet", 20], ["sort", 30], ["mine", 1],
 ]);
 
 type WorkflowRow = {
@@ -713,6 +717,12 @@ export async function GET(request: Request) {
     const region = cleanText(url.searchParams.get("region"), 30);
     const owner = cleanText(url.searchParams.get("owner"), 120);
     const environment = cleanText(url.searchParams.get("environment"), 30);
+    const requestedInternet = cleanText(url.searchParams.get("internet"), 20);
+    const internet = new Set(["internet", "no-internet", "unknown"]).has(
+      requestedInternet,
+    )
+      ? requestedInternet
+      : "";
     const mine = url.searchParams.get("mine") === "1";
     const sort = cleanText(url.searchParams.get("sort"), 30) || "risk";
 
@@ -763,6 +773,7 @@ export async function GET(request: Request) {
       return (
         (!query || searchText.includes(query)) &&
         (!severity || finding.severity === severity) &&
+        (!internet || internetExposureForVerdict(finding.verdict) === internet) &&
         (!status ||
           (status === "open"
             ? finding.status !== "resolved"
@@ -770,6 +781,12 @@ export async function GET(request: Request) {
       );
     });
     filtered.sort((a, b) => {
+      if (sort === "internet-first") {
+        return compareInternetExposure(a, b, "internet");
+      }
+      if (sort === "no-internet-first") {
+        return compareInternetExposure(a, b, "no-internet");
+      }
       if (sort === "age") return b.ageDays - a.ageDays;
       if (sort === "account") return a.accountName.localeCompare(b.accountName);
       if (sort === "updated") {
