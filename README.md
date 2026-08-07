@@ -9,6 +9,11 @@ resources, and vulnerability context.
 
 ## Product surfaces
 
+- An **Organization Operations** plane for AWS Organizations account metadata,
+  regional evidence-health heatmaps, temporal finding state, reversible evidence
+  correlation, recurring monitors, governed exports, retention, legal holds, and
+  versioned risk scoring
+
 - A server-paginated, split-pane **Daily Findings Workspace** with keyboard
   triage, auto-advance, server-backed undo, session progress, clustering, and
   new/overdue/expiring/reopened workload counters

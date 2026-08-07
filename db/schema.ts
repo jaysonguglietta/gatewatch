@@ -732,3 +732,173 @@ export const programMetricSnapshots = sqliteTable(
     ),
   ],
 );
+
+export const awsAccountCatalog = sqliteTable(
+  "aws_account_catalog",
+  {
+    accountId: text("account_id").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default("default"),
+    accountName: text("account_name").notNull(),
+    organizationalUnit: text("organizational_unit").notNull().default("Unassigned"),
+    environment: text("environment").notNull().default("Shared"),
+    businessUnit: text("business_unit").notNull().default("Unassigned"),
+    owner: text("owner").notNull().default("Unassigned"),
+    tags: text("tags").notNull().default("{}"),
+    status: text("status").notNull().default("active"),
+    lastSeenAt: text("last_seen_at").notNull().default(""),
+    updatedBy: text("updated_by").notNull(),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("aws_account_catalog_context_idx").on(
+      table.workspaceId,
+      table.organizationalUnit,
+      table.environment,
+    ),
+  ],
+);
+
+export const evidenceCorrelationMappings = sqliteTable(
+  "evidence_correlation_mappings",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default("default"),
+    sourceIdentifier: text("source_identifier").notNull(),
+    securityGroupArn: text("security_group_arn").notNull(),
+    confidence: integer("confidence").notNull().default(100),
+    reason: text("reason").notNull(),
+    status: text("status").notNull().default("active"),
+    createdBy: text("created_by").notNull(),
+    revokedBy: text("revoked_by").notNull().default(""),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("evidence_correlation_source_idx").on(table.workspaceId, table.sourceIdentifier, table.status),
+    index("evidence_correlation_group_idx").on(table.workspaceId, table.securityGroupArn, table.status),
+  ],
+);
+
+export const evidenceMonitors = sqliteTable(
+  "evidence_monitors",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default("default"),
+    name: text("name").notNull(),
+    query: text("query").notNull().default(""),
+    filters: text("filters").notNull().default("{}"),
+    groupBy: text("group_by").notNull().default("account"),
+    schedule: text("schedule").notNull().default("daily"),
+    triggerMode: text("trigger_mode").notNull().default("enters"),
+    destinations: text("destinations").notNull().default("[]"),
+    visibility: text("visibility").notNull().default("personal"),
+    owner: text("owner").notNull(),
+    status: text("status").notNull().default("active"),
+    lastRunAt: text("last_run_at").notNull().default(""),
+    nextRunAt: text("next_run_at").notNull().default(""),
+    lastMatchCount: integer("last_match_count").notNull().default(0),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("evidence_monitors_schedule_idx").on(table.workspaceId, table.status, table.nextRunAt)],
+);
+
+export const evidenceMonitorRuns = sqliteTable(
+  "evidence_monitor_runs",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default("default"),
+    monitorId: text("monitor_id").notNull(),
+    status: text("status").notNull(),
+    matchCount: integer("match_count").notNull().default(0),
+    enteredCount: integer("entered_count").notNull().default(0),
+    exitedCount: integer("exited_count").notNull().default(0),
+    summary: text("summary").notNull().default("{}"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("evidence_monitor_runs_monitor_idx").on(table.workspaceId, table.monitorId, table.createdAt)],
+);
+
+export const evidenceExportJobs = sqliteTable(
+  "evidence_export_jobs",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default("default"),
+    name: text("name").notNull(),
+    format: text("format").notNull(),
+    scope: text("scope").notNull().default("{}"),
+    schedule: text("schedule").notNull().default("once"),
+    status: text("status").notNull().default("queued"),
+    rowCount: integer("row_count").notNull().default(0),
+    checksum: text("checksum").notNull().default(""),
+    requestedBy: text("requested_by").notNull(),
+    expiresAt: text("expires_at").notNull().default(""),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    completedAt: text("completed_at").notNull().default(""),
+  },
+  (table) => [index("evidence_export_jobs_queue_idx").on(table.workspaceId, table.status, table.createdAt)],
+);
+
+export const evidenceRetentionPolicies = sqliteTable("evidence_retention_policies", {
+  workspaceId: text("workspace_id").primaryKey().default("default"),
+  rawEvidenceDays: integer("raw_evidence_days").notNull().default(400),
+  normalizedEvidenceDays: integer("normalized_evidence_days").notNull().default(365),
+  auditDays: integer("audit_days").notNull().default(2555),
+  exportDays: integer("export_days").notNull().default(30),
+  updatedBy: text("updated_by").notNull(),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const evidenceLegalHolds = sqliteTable(
+  "evidence_legal_holds",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default("default"),
+    name: text("name").notNull(),
+    scopeType: text("scope_type").notNull(),
+    scopeValue: text("scope_value").notNull(),
+    reason: text("reason").notNull(),
+    status: text("status").notNull().default("active"),
+    requestedBy: text("requested_by").notNull(),
+    releasedBy: text("released_by").notNull().default(""),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    releasedAt: text("released_at").notNull().default(""),
+  },
+  (table) => [index("evidence_legal_holds_status_idx").on(table.workspaceId, table.status, table.createdAt)],
+);
+
+export const riskScorePolicies = sqliteTable(
+  "risk_score_policies",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default("default"),
+    name: text("name").notNull(),
+    status: text("status").notNull().default("draft"),
+    weights: text("weights").notNull().default("{}"),
+    thresholds: text("thresholds").notNull().default("{}"),
+    createdBy: text("created_by").notNull(),
+    updatedBy: text("updated_by").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("risk_score_policies_status_idx").on(table.workspaceId, table.status, table.updatedAt)],
+);
+
+export const semanticEvidenceEvents = sqliteTable(
+  "semantic_evidence_events",
+  {
+    fingerprint: text("fingerprint").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default("default"),
+    canonicalEventId: text("canonical_event_id").notNull(),
+    providerId: text("provider_id").notNull().default(""),
+    sourceType: text("source_type").notNull(),
+    securityGroupArn: text("security_group_arn").notNull(),
+    observedAt: text("observed_at").notNull(),
+    provenance: text("provenance").notNull().default("[]"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("semantic_evidence_canonical_idx").on(table.workspaceId, table.canonicalEventId),
+    index("semantic_evidence_group_time_idx").on(table.workspaceId, table.securityGroupArn, table.observedAt),
+  ],
+);

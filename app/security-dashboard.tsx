@@ -116,6 +116,7 @@ import { csvDocument } from "../lib/csv";
 import AdminView from "./admin-view";
 import DailyFindingsView from "./daily-findings-view";
 import ReportingView from "./reporting-view";
+import OrganizationOperationsView from "./organization-operations-view";
 import OrganizationCoveragePanel from "./organization-coverage-panel";
 import {
   DriftInboxView,
@@ -143,7 +144,8 @@ type View =
   | "recommendations"
   | "drift"
   | "ownership"
-  | "metrics";
+  | "metrics"
+  | "operations";
 
 type DrawerTab = "evidence" | "connectivity" | "change" | "risk";
 
@@ -586,6 +588,7 @@ export default function SecurityDashboard() {
       label: "Reports",
       icon: FileBarChart,
       items: [
+        { id: "operations" as View, label: "Organization operations", icon: CloudCog },
         { id: "metrics" as View, label: "Detailed reports", icon: FileBarChart },
         { id: "cloudtrail" as View, label: "AWS log imports", icon: UploadCloud },
         { id: "handoffs" as View, label: "AWS handoffs", icon: FileCode2 },
@@ -824,6 +827,9 @@ export default function SecurityDashboard() {
           ) : null}
           {view === "metrics" ? (
             <ReportingView onToast={setToast} />
+          ) : null}
+          {view === "operations" ? (
+            <OrganizationOperationsView onToast={setToast} />
           ) : null}
         </div>
       </main>

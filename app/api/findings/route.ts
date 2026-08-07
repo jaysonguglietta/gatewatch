@@ -23,6 +23,7 @@ import {
   sameOrigin,
 } from "../../../lib/server-admin";
 import { cleanText } from "../../../lib/admin-sources";
+import { defaultRiskWeights, scoreRisk, type RiskWeights } from "../../../lib/organization-operations";
 
 const userStatuses = new Set<FindingWorkflowStatus>([
   "follow-up",
@@ -514,6 +515,60 @@ async function currentCatalog() {
   };
 }
 
+async function applyActiveRiskPolicy(catalog: FindingCatalogItem[]) {
+  try {
+    const row = await env.DB.prepare(
+      `SELECT weights FROM risk_score_policies
+       WHERE workspace_id = 'default' AND status = 'active'
+       ORDER BY updated_at DESC LIMIT 1`,
+    ).first<{ weights: string }>();
+    const weights = safeJson<RiskWeights | null>(row?.weights, null);
+    if (!weights) return catalog;
+    return catalog.map((finding) => {
+      const text = [finding.title, finding.ruleSummary, ...finding.riskFactors.map((factor) => `${factor.key} ${factor.label}`)].join(" ").toLowerCase();
+      const riskScore = scoreRisk({
+        publicIngress: /public|internet/.test(text),
+        administrativePorts: /administrative|ssh|rdp|database/.test(text),
+        widePorts: /wide|all port|port range/.test(text),
+        unrestrictedEgress: /egress|destination restriction/.test(text),
+        attachedWorkload: finding.attachments.length > 0,
+        staleEvidence: /stale|coverage gap|incomplete/.test(text),
+      }, { ...defaultRiskWeights, ...weights });
+      return {
+        ...finding,
+        riskScore,
+        severity: riskScore >= 85 ? "critical" as const : riskScore >= 70 ? "high" as const : riskScore >= 45 ? "medium" as const : "low" as const,
+      };
+    });
+  } catch {
+    return catalog;
+  }
+}
+
+async function applyAccountCatalog(catalog: FindingCatalogItem[]) {
+  try {
+    const result = await env.DB.prepare(
+      `SELECT account_id AS accountId, account_name AS accountName,
+              organizational_unit AS organizationalUnit, environment, owner
+       FROM aws_account_catalog
+       WHERE workspace_id = 'default' AND status = 'active'`,
+    ).all<{ accountId: string; accountName: string; organizationalUnit: string; environment: string; owner: string }>();
+    const accounts = new Map(result.results.map((account) => [account.accountId, account]));
+    return catalog.map((finding) => {
+      const account = accounts.get(finding.accountId);
+      return account ? {
+        ...finding,
+        accountName: account.accountName,
+        organizationalUnit: account.organizationalUnit,
+        environment: account.environment,
+        owner: account.owner,
+      } : finding;
+    });
+  } catch {
+    return catalog;
+  }
+}
+
 async function parseBoundedJson(request: Request) {
   const contentType = request.headers.get("content-type") ?? "";
   if (!contentType.startsWith("application/json")) {
@@ -546,7 +601,7 @@ export async function GET(request: Request) {
     await ensureSchema();
     await reopenExpiredExceptions();
     const current = await currentCatalog();
-    const catalog = current.catalog;
+    const catalog = await applyActiveRiskPolicy(await applyAccountCatalog(current.catalog));
     if (current.live) {
       await syncObservations(
         catalog,

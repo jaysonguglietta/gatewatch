@@ -34,6 +34,7 @@ export type ConsolidatedEvidenceItem = {
   fileName: string;
   record: NormalizedAwsEvidenceRecord;
   correlation: "direct" | "resource relationship" | "inventory attachment";
+  provenance: Array<{ sourceType: SourceType; sourceLabel: string; fileName: string }>;
 };
 
 export type ConsolidatedSecurityGroupFinding = {
@@ -224,6 +225,21 @@ export function detectAwsEvidenceText(text: string, filename = "aws-evidence") {
 }
 
 export function recordFingerprint(sourceType: SourceType, record: NormalizedAwsEvidenceRecord) {
+  const raw = object(record.raw);
+  const productArn = String(raw.ProductArn ?? raw.productArn ?? "");
+  const rawId = String(raw.Id ?? raw.id ?? record.id ?? "");
+  const guardDutyMirror = sourceType === "security-hub" && /guardduty/i.test(productArn);
+  const providerId = sourceType === "guardduty" || guardDutyMirror
+    ? rawId.split("/").at(-1)?.toLowerCase() ?? ""
+    : "";
+  if (providerId) {
+    return JSON.stringify(stableValue({
+      sourceType: "guardduty-provider-finding",
+      providerId,
+      accountId: record.accountId,
+      region: record.region,
+    }));
+  }
   const stableId = record.id && !SYNTHETIC_ID_PATTERN.test(record.id) ? record.id : "";
   const sourceFamily = sourceType === "config-history" || sourceType === "config-snapshot"
     ? "aws-config"
@@ -405,18 +421,21 @@ function observedRange(evidence: ConsolidatedEvidenceItem[]) {
 
 export function consolidateAwsEvidence(files: BatchEvidenceFile[], inventory: SecurityGroup[]): ConsolidatedBatch {
   const uniqueItems: ConsolidatedEvidenceItem[] = [];
-  const fingerprints = new Set<string>();
+  const fingerprints = new Map<string, ConsolidatedEvidenceItem>();
   let duplicateRecords = 0;
   for (const file of files) {
     if (file.status !== "imported" || !file.result) continue;
     for (const record of file.result.records) {
       const fingerprint = recordFingerprint(file.result.sourceType, record);
-      if (fingerprints.has(fingerprint)) {
+      const existing = fingerprints.get(fingerprint);
+      if (existing) {
         duplicateRecords += 1;
+        if (!existing.provenance.some((item) => item.sourceType === file.result?.sourceType && item.fileName === file.name)) {
+          existing.provenance.push({ sourceType: file.result.sourceType, sourceLabel: file.result.sourceLabel, fileName: file.name });
+        }
         continue;
       }
-      fingerprints.add(fingerprint);
-      uniqueItems.push({
+      const item: ConsolidatedEvidenceItem = {
         fingerprint,
         sourceType: file.result.sourceType,
         sourceLabel: file.result.sourceLabel,
@@ -424,7 +443,10 @@ export function consolidateAwsEvidence(files: BatchEvidenceFile[], inventory: Se
         fileName: file.name,
         record,
         correlation: "direct",
-      });
+        provenance: [{ sourceType: file.result.sourceType, sourceLabel: file.result.sourceLabel, fileName: file.name }],
+      };
+      fingerprints.set(fingerprint, item);
+      uniqueItems.push(item);
     }
   }
 
@@ -454,7 +476,7 @@ export function consolidateAwsEvidence(files: BatchEvidenceFile[], inventory: Se
     const inventoryGroup = "riskScore" in value.match.group ? value.match.group as SecurityGroup : undefined;
     const evidence = value.evidence.sort((left, right) => right.record.observedAt.localeCompare(left.record.observedAt));
     const riskScore = findingScore(inventoryGroup, evidence);
-    const sources = unique(evidence.map((item) => item.sourceLabel)).sort();
+    const sources = unique(evidence.flatMap((item) => item.provenance.map((source) => source.sourceLabel))).sort();
     const evidenceClasses = unique(evidence.map((item) => item.evidenceClass)) as EvidenceClass[];
     const range = observedRange(evidence);
     const directEvidenceCount = evidence.filter((item) => item.correlation === "direct").length;

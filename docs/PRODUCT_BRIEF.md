@@ -1,5 +1,16 @@
 # Gatewatch AWS ingestion product brief
 
+## Organization operations release (August 2026)
+
+- **Target users:** central cloud-security teams, delegated account owners, and auditors operating across 500+ AWS accounts.
+- **Core problem:** AWS-native evidence arrives without consistent business context, temporal state, correlation, recurring detection, or governed delivery.
+- **Primary workflows:** synchronize and enrich the account catalog; investigate ARN-first consolidated findings; resolve unmatched evidence with reversible mappings; monitor saved evidence queries; create point-in-time or scheduled exports; and administer scoring, retention, and legal holds.
+- **Main views:** Daily Findings remains the investigation plane. Organization Operations is the operating plane, with overview, account catalog, correlation, monitors, exports, and data-controls sections.
+- **Key models:** AWS account context, finding observations, semantic evidence events and provenance, correlation mappings, monitor definitions and runs, export jobs, retention policy, legal holds, and versioned risk-score policies.
+- **Edge cases:** partial collection, reused group IDs across accounts and partitions, GuardDuty findings mirrored through Security Hub, stale evidence, unresolved relationships, personal monitor ownership, background export formats, and evidence protected by legal hold.
+- **Assumptions:** raw AWS logs remain in customer-owned S3; D1 persists hosted-product workflows; Aurora PostgreSQL is the AWS production system of record; scheduled and Parquet delivery is completed by the AWS export worker.
+- **Done:** mutations are authenticated, permission-checked, same-origin protected, validated, durable, and audited. Account context and active scoring policy affect the findings inbox, while monitor transitions use the existing notification-delivery queue.
+
 ## Target users
 
 - Cloud security and network-security administrators
