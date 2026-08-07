@@ -44,10 +44,11 @@ test("makes the daily findings inbox the default organization-scale workflow", a
 });
 
 test("links findings to Jira without creating duplicate tickets", async () => {
-  const [inbox, findingsRoute, jiraRoute] = await Promise.all([
+  const [inbox, findingsRoute, jiraRoute, serverAdmin] = await Promise.all([
     source("app/daily-findings-view.tsx"),
     source("app/api/findings/route.ts"),
     source("app/api/jira/issues/route.ts"),
+    source("lib/server-admin.ts"),
   ]);
 
   assert.match(inbox, /One ticket per finding/);
@@ -57,6 +58,10 @@ test("links findings to Jira without creating duplicate tickets", async () => {
   assert.match(findingsRoute, /jiraIssueUrl/);
   assert.match(jiraRoute, /finding_jira_links/);
   assert.match(jiraRoute, /existingByFingerprint/);
+  assert.match(serverAdmin, /PRAGMA table_info\(finding_jira_links\)/);
+  for (const column of ["remote_status", "remote_resolution", "remote_updated_at", "last_synced_at"]) {
+    assert.match(serverAdmin, new RegExp(`ALTER TABLE finding_jira_links ADD COLUMN ${column}`));
+  }
 });
 
 test("persists notes, bulk triage, accepted risk, history, and saved views safely", async () => {

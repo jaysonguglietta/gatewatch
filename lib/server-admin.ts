@@ -412,6 +412,34 @@ export async function ensureAdminSchema() {
        ON audit_events (workspace_id, created_at)`,
     ),
   ]);
+
+  // Runtime schema initialization must also upgrade databases created by older
+  // releases. CREATE TABLE IF NOT EXISTS preserves those tables unchanged, so
+  // add newly introduced Jira reconciliation fields explicitly and safely.
+  const jiraColumns = await env.DB.prepare(
+    "PRAGMA table_info(finding_jira_links)",
+  ).all<{ name: string }>();
+  const existingJiraColumns = new Set(
+    jiraColumns.results.map((column) => column.name),
+  );
+  const jiraColumnMigrations = [
+    ["remote_status", "ALTER TABLE finding_jira_links ADD COLUMN remote_status TEXT NOT NULL DEFAULT ''"],
+    ["remote_resolution", "ALTER TABLE finding_jira_links ADD COLUMN remote_resolution TEXT NOT NULL DEFAULT ''"],
+    ["remote_updated_at", "ALTER TABLE finding_jira_links ADD COLUMN remote_updated_at TEXT NOT NULL DEFAULT ''"],
+    ["last_synced_at", "ALTER TABLE finding_jira_links ADD COLUMN last_synced_at TEXT NOT NULL DEFAULT ''"],
+  ] as const;
+  for (const [column, statement] of jiraColumnMigrations) {
+    if (existingJiraColumns.has(column)) continue;
+    try {
+      await env.DB.prepare(statement).run();
+    } catch (error) {
+      // Concurrent cold starts may both observe the old table. Ignore only the
+      // benign race where the other request has already added this column.
+      if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) {
+        throw error;
+      }
+    }
+  }
 }
 
 export async function audit(

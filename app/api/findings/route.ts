@@ -820,7 +820,11 @@ export async function GET(request: Request) {
       currentUser: user,
       source: current.source,
     });
-  } catch {
+  } catch (error) {
+    console.error("Daily findings GET failed", {
+      name: error instanceof Error ? error.name : "UnknownError",
+      message: error instanceof Error ? error.message.slice(0, 240) : "Unknown failure",
+    });
     return apiJson({ error: "The daily findings inbox is temporarily unavailable." }, 503);
   }
 }

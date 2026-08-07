@@ -37,6 +37,13 @@ const legalHoldScopes = new Set(["workspace", "account", "security-group", "find
 async function ensureSchema() {
   await ensureAdminSchema();
   await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS aws_evidence_records (
+      fingerprint TEXT PRIMARY KEY, workspace_id TEXT NOT NULL DEFAULT 'default', source_id TEXT NOT NULL,
+      raw_object_id TEXT NOT NULL, source_type TEXT NOT NULL, evidence_class TEXT NOT NULL,
+      observed_at TEXT NOT NULL DEFAULT '', account_id TEXT NOT NULL DEFAULT '', region TEXT NOT NULL DEFAULT '',
+      resource_type TEXT NOT NULL DEFAULT '', resource_id TEXT NOT NULL DEFAULT '', event_name TEXT NOT NULL DEFAULT '',
+      disposition TEXT NOT NULL DEFAULT '', normalized_payload TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS aws_account_catalog (
       account_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL DEFAULT 'default', account_name TEXT NOT NULL,
       organizational_unit TEXT NOT NULL DEFAULT 'Unassigned', environment TEXT NOT NULL DEFAULT 'Shared',
@@ -82,6 +89,22 @@ async function ensureSchema() {
       fingerprint TEXT PRIMARY KEY, workspace_id TEXT NOT NULL DEFAULT 'default', canonical_event_id TEXT NOT NULL,
       provider_id TEXT NOT NULL DEFAULT '', source_type TEXT NOT NULL, security_group_arn TEXT NOT NULL,
       observed_at TEXT NOT NULL, provenance TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
+  ]);
+  const evidenceColumns = await env.DB.prepare(
+    "PRAGMA table_info(aws_evidence_records)",
+  ).all<{ name: string }>();
+  if (!evidenceColumns.results.some((column) => column.name === "workspace_id")) {
+    try {
+      await env.DB.prepare(
+        "ALTER TABLE aws_evidence_records ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'",
+      ).run();
+    } catch (error) {
+      if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) throw error;
+    }
+  }
+  await env.DB.batch([
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS aws_evidence_source_time_idx ON aws_evidence_records (workspace_id, source_id, observed_at)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS aws_evidence_resource_time_idx ON aws_evidence_records (workspace_id, account_id, region, resource_id, observed_at)`),
   ]);
 }
 
@@ -218,6 +241,10 @@ export async function GET(request: Request) {
       currentUser: user,
     });
   } catch (error) {
+    console.error("Organization operations GET failed", {
+      name: error instanceof Error ? error.name : "UnknownError",
+      message: error instanceof Error ? error.message.slice(0, 240) : "Unknown failure",
+    });
     return jsonError(error, "Organization operations data is temporarily unavailable.");
   }
 }

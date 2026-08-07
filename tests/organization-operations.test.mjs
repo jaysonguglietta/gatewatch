@@ -63,6 +63,8 @@ test("organization operating plane is durable, authenticated, auditable, and dep
   assert.match(route, /evidence_correlation_mappings/);
   assert.match(route, /evidence_monitor_runs/);
   assert.match(route, /evidence_export_jobs/);
+  assert.match(route, /CREATE TABLE IF NOT EXISTS aws_evidence_records/);
+  assert.match(route, /ALTER TABLE aws_evidence_records ADD COLUMN workspace_id/);
   assert.match(ui, /Account catalog/);
   assert.match(ui, /Correlation workbench/);
   assert.match(ui, /Create governed export/);

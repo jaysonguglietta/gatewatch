@@ -508,6 +508,7 @@ export const awsEvidenceRecords = sqliteTable(
   "aws_evidence_records",
   {
     fingerprint: text("fingerprint").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default("default"),
     sourceId: text("source_id").notNull(),
     rawObjectId: text("raw_object_id").notNull(),
     sourceType: text("source_type").notNull(),
@@ -524,10 +525,12 @@ export const awsEvidenceRecords = sqliteTable(
   },
   (table) => [
     index("aws_evidence_source_time_idx").on(
+      table.workspaceId,
       table.sourceId,
       table.observedAt,
     ),
     index("aws_evidence_resource_time_idx").on(
+      table.workspaceId,
       table.accountId,
       table.region,
       table.resourceId,
