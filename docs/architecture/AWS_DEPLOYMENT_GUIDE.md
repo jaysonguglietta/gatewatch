@@ -67,6 +67,9 @@ Apply the migrations in filename order through a controlled migration identity:
 2. [`0002_organization_operations.sql`](../../db/postgres/0002_organization_operations.sql)
    creates account context, correlation mappings, monitors and runs, export
    jobs, retention, legal holds, risk policies, and semantic event provenance.
+3. [`0003_finding_search.sql`](../../db/postgres/0003_finding_search.sql) adds
+   queue-ordering, observation-history, universal-evidence, resource-name,
+   tag, JSONB, and trigram indexes for bounded organization-scale search.
 
 The second migration enables row-level security on every organization-operations
 table. Each application transaction must set `app.workspace_id`; a missing or

@@ -146,7 +146,9 @@ The AWS target uses Aurora PostgreSQL rather than copying raw logs into a
 transactional database. Apply the production migrations in filename order from
 `db/postgres/`: `0001_gatewatch_aws.sql` creates the evidence base and
 `0002_organization_operations.sql` adds the organization operating plane and
-workspace isolation. Raw objects remain in the configured S3 bucket;
+workspace isolation, and `0003_finding_search.sql` adds the bounded search,
+temporal-history, and JSONB/trigram indexes used by the organization-scale
+findings workflow. Raw objects remain in the configured S3 bucket;
 normalized events, configuration items, traffic observations, network
 analyses, service access, managed findings, current rule versions, findings,
 and evidence references are stored in Aurora.
