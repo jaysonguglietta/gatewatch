@@ -4972,6 +4972,71 @@ td small {
   width: 100%;
 }
 
+.daily-search-guidance {
+  align-items: center;
+  color: var(--ink-500);
+  display: flex;
+  font-size: 10px;
+  gap: 10px;
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.daily-search-guidance > div {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 8px;
+  min-width: 0;
+}
+
+.daily-search-guidance strong {
+  color: var(--ink-700);
+}
+
+.daily-search-guidance code {
+  background: var(--surface-alt);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink-700);
+  font-size: 10px;
+  padding: 2px 4px;
+}
+
+.daily-search-guidance details {
+  margin-left: auto;
+  position: relative;
+}
+
+.daily-search-guidance summary {
+  color: var(--blue);
+  cursor: pointer;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.daily-search-guidance details p {
+  background: white;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 10px;
+  position: absolute;
+  right: 0;
+  top: 16px;
+  width: min(560px, calc(100vw - 40px));
+  z-index: 20;
+}
+
+.daily-search-guidance .daily-search-warning {
+  color: var(--red);
+  font-weight: 700;
+  margin: 0;
+}
+
 .bulk-action-bar {
   align-items: center;
   background: #102541;
@@ -5953,6 +6018,20 @@ td small {
   .shareable-view {
     flex-basis: 100%;
     margin-left: 0;
+  }
+
+  .daily-search-guidance {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .daily-search-guidance details {
+    margin-left: 0;
+  }
+
+  .daily-search-guidance details p {
+    left: 0;
+    right: auto;
   }
 
   .bulk-action-bar {

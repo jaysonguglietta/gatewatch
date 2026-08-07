@@ -123,6 +123,10 @@ type InboxResponse = {
     freshnessMinutes: number;
   };
   currentUser: string;
+  queryDiagnostics: {
+    unsupportedFields: string[];
+    unclosedQuote: boolean;
+  };
 };
 
 type TriageAction = "follow-up" | "acknowledged" | "accepted-risk" | "resolved";
@@ -250,6 +254,7 @@ function downloadCsv(items: DailyFinding[]) {
     [
       "Finding",
       "Security group",
+      "Security group ARN",
       "Account",
       "OU",
       "Region",
@@ -266,6 +271,7 @@ function downloadCsv(items: DailyFinding[]) {
     ...items.map((item) => [
       item.title,
       item.securityGroupName,
+      item.securityGroupArn,
       `${item.accountName} (${item.accountId})`,
       item.organizationalUnit,
       item.region,
@@ -715,8 +721,9 @@ export default function DailyFindingsView({
                 updateFilter("q", event.target.value);
                 onGlobalQueryChange?.(event.target.value);
               }}
-              placeholder="Search finding, security group, account, owner…"
+              placeholder="Search or use arn:, name:, account:, ingress:…"
               aria-label="Search daily findings"
+              aria-describedby="daily-search-guidance"
             />
           </label>
           <label className="filter-select">
@@ -804,6 +811,30 @@ export default function DailyFindingsView({
               <option value="account">Account name</option>
             </select>
           </label>
+          <div className="daily-search-guidance" id="daily-search-guidance">
+            <div>
+              <strong>Detailed search</strong>
+              <span>Combine clauses with spaces. Every clause must match.</span>
+              <code>account:123456789012 ingress:&quot;TCP/443&quot; source:0.0.0.0/0</code>
+            </div>
+            <details>
+              <summary>Search fields</summary>
+              <p>
+                <code>arn:</code> <code>sg:</code> <code>name:</code> <code>account:</code> <code>region:</code> <code>vpc:</code>
+                <code>ingress:</code> <code>egress:</code> <code>rule:</code> <code>port:</code> <code>protocol:</code> <code>source:</code>
+                <code>severity:</code> <code>risk:&gt;=70</code> <code>verdict:</code> <code>status:</code> <code>owner:</code> <code>assignee:</code>
+                <code>app:</code> <code>env:</code> <code>ou:</code> <code>policy:</code> <code>path:</code> <code>resource:</code> <code>tag:</code>
+                <code>actor:</code> <code>evidence:</code> <code>confidence:&gt;=70</code> <code>age:&gt;30</code>
+              </p>
+            </details>
+            {data?.queryDiagnostics.unsupportedFields.length ? (
+              <p className="daily-search-warning" role="alert">
+                Unsupported search field{data.queryDiagnostics.unsupportedFields.length === 1 ? "" : "s"}: {data.queryDiagnostics.unsupportedFields.join(", ")}.
+              </p>
+            ) : data?.queryDiagnostics.unclosedQuote ? (
+              <p className="daily-search-warning" role="alert">Close the quoted search phrase to run this query.</p>
+            ) : null}
+          </div>
         </div>
 
         {selected.size ? (
@@ -1186,6 +1217,7 @@ function FindingInvestigationPane({
                 <a href={links.config} target="_blank" rel="noreferrer">Config timeline <ExternalLink size={12} /></a>
                 <a href={links.cloudTrail} target="_blank" rel="noreferrer">CloudTrail event <ExternalLink size={12} /></a>
                 <button onClick={() => void copyValue("Security group ID", finding.securityGroupId)}><Clipboard size={12} /> SG ID</button>
+                <button onClick={() => void copyValue("Security group ARN", finding.securityGroupArn)}><Clipboard size={12} /> ARN</button>
                 <button onClick={() => void copyValue("Account ID", finding.accountId)}><Clipboard size={12} /> Account</button>
                 <button onClick={() => void copyValue("AWS CLI command", `aws ec2 describe-security-groups --region ${finding.region} --group-ids ${finding.securityGroupId}`)}><Clipboard size={12} /> AWS CLI</button>
               </section>

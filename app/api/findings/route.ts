@@ -28,6 +28,10 @@ import {
 } from "../../../lib/server-admin";
 import { cleanText } from "../../../lib/admin-sources";
 import { defaultRiskWeights, scoreRisk, type RiskWeights } from "../../../lib/organization-operations";
+import {
+  dailyFindingMatchesQuery,
+  parseDailyFindingQuery,
+} from "../../../lib/daily-finding-query";
 
 const userStatuses = new Set<FindingWorkflowStatus>([
   "follow-up",
@@ -44,7 +48,7 @@ const decisionReasons: Partial<Record<FindingWorkflowStatus, ReadonlySet<string>
 };
 
 const savedViewFilterLimits = new Map<string, number>([
-  ["q", 160], ["severity", 20], ["status", 30], ["ou", 120],
+  ["q", 500], ["severity", 20], ["status", 30], ["ou", 120],
   ["account", 20], ["region", 30], ["owner", 120],
   ["environment", 30], ["internet", 20], ["sort", 30], ["mine", 1],
 ]);
@@ -709,7 +713,8 @@ export async function GET(request: Request) {
       observationResult.results,
       !current.live,
     );
-    const query = cleanText(url.searchParams.get("q"), 160).toLowerCase();
+    const query = cleanText(url.searchParams.get("q"), 500);
+    const parsedQuery = parseDailyFindingQuery(query);
     const severity = cleanText(url.searchParams.get("severity"), 20);
     const status = cleanText(url.searchParams.get("status"), 30);
     const ou = cleanText(url.searchParams.get("ou"), 120);
@@ -757,21 +762,8 @@ export async function GET(request: Request) {
       reviewedToday: reviewedResult?.count ?? 0,
     };
     const filtered = scoped.filter((finding) => {
-      const searchText = [
-        finding.title,
-        finding.securityGroupName,
-        finding.securityGroupId,
-        finding.accountId,
-        finding.accountName,
-        finding.application,
-        finding.owner,
-        finding.assignee,
-        finding.ruleSummary,
-      ]
-        .join(" ")
-        .toLowerCase();
       return (
-        (!query || searchText.includes(query)) &&
+        (!query || dailyFindingMatchesQuery(finding, parsedQuery)) &&
         (!severity || finding.severity === severity) &&
         (!internet || internetExposureForVerdict(finding.verdict) === internet) &&
         (!status ||
@@ -836,6 +828,10 @@ export async function GET(request: Request) {
       })),
       currentUser: user,
       source: current.source,
+      queryDiagnostics: {
+        unsupportedFields: parsedQuery.unsupportedFields,
+        unclosedQuote: parsedQuery.unclosedQuote,
+      },
     });
   } catch (error) {
     console.error("Daily findings GET failed", {

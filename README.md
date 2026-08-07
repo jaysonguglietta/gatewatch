@@ -21,6 +21,10 @@ resources, and vulnerability context.
   effective-internet exposure
   scoping designed for hundreds of AWS accounts, plus shareable URL filters and
   internet/no-internet sorting, personal queues, and personal or team saved views
+- Field-aware Daily Findings search across full security-group ARN, group ID/name,
+  account ID/name, Region, VPC, ingress/egress rule, protocol, port, source CIDR,
+  ownership, attached resources and tags, evidence state, workflow, and numeric
+  risk/confidence/age comparisons
 - Finding-level follow-up, acknowledgement, accepted-risk, and resolution
   workflows with structured reasons, evidence freshness gates, bulk guardrails,
   mandatory rationale, owners, review dates, tickets, compensating controls,

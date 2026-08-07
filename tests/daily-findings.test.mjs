@@ -43,6 +43,10 @@ test("makes the daily findings inbox the default organization-scale workflow", a
   assert.match(inbox, /Exposure: internet first/);
   assert.match(inbox, /Exposure: no internet first/);
   assert.match(findingsRoute, /internetExposureForVerdict/);
+  assert.match(inbox, /Detailed search/);
+  assert.match(inbox, /Search or use arn:, name:, account:, ingress:/);
+  assert.match(findingsRoute, /dailyFindingMatchesQuery/);
+  assert.match(catalog, /securityGroupArn/);
   assert.match(catalog, /accounts: 324/);
   assert.match(inbox, /gatewatch\.findings-density/);
   assert.doesNotMatch(inbox, /localStorage\.(?:getItem|setItem)\(["'][^"']*(?:note|ticket|workflow)/i);

@@ -12,6 +12,7 @@ import {
   evidenceSnapshotJson,
   type EvidenceDescriptor,
 } from "./evidence-model";
+import { securityGroupArn } from "./organization-operations";
 
 export type FindingWorkflowStatus =
   | "new"
@@ -25,6 +26,7 @@ export type FindingCatalogItem = {
   fingerprint: string;
   legacyFingerprint: string;
   canonicalResourceKey: string;
+  securityGroupArn: string;
   findingKey: string;
   title: string;
   securityGroupId: string;
@@ -203,6 +205,7 @@ function catalogItem(
     fingerprint: canonicalFindingFingerprint(group, title),
     legacyFingerprint: findingFingerprint(group.id, title),
     canonicalResourceKey: canonicalSecurityGroupKey(group),
+    securityGroupArn: securityGroupArn(group),
     findingKey: `${group.id}/${slug(title)}`,
     title,
     securityGroupId: group.id,

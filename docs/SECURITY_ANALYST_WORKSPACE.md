@@ -25,6 +25,23 @@ all existing capabilities without presenting nineteen equal-priority choices.
 2. Choose a personal/team saved view or narrow organization, OU, account, Region,
    owner, environment, status, severity, or effective internet exposure. Internet,
    no-internet, and incomplete-evidence findings remain separate filter states.
+   The search box supports free text and field-aware clauses. Clauses are ANDed,
+   quoted values preserve spaces, and the full canonical security-group ARN is
+   searchable. For example:
+
+   ```text
+   account:123456789012 ingress:"TCP/443" source:0.0.0.0/0 risk:>=70
+   ```
+
+   Identity and scope fields are `arn:`, `sg:`/`id:`, `name:`, `account:`/`acct:`,
+   `region:`, `vpc:`, `ou:`, `app:`, and `env:`. Rule fields are `ingress:`,
+   `egress:`, `rule:`, `port:`, `protocol:`, and `source:`. Analysts can also use
+   `severity:`, `risk:`, `verdict:`, `status:`, `owner:`, `assignee:`, `policy:`,
+   `path:`, `resource:`, `tag:`, `actor:`, `evidence:`, `confidence:`, and `age:`.
+   Numeric fields support exact values, ranges, and comparisons such as
+   `risk:70-90`, `confidence:>=70`, and `age:>30`. Search is retained in the URL
+   and in saved personal or team views. Unsupported fields and unclosed quotes are
+   reported inline rather than treated as successful empty-result searches.
 3. Review the compact queue or group findings by canonical security-group identity.
 4. Inspect the selected finding's decision summary, risk factors, policy mapping,
    exact change, attached resources, and evidence confidence.
