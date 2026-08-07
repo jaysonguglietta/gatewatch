@@ -8,7 +8,7 @@
 - **Main views:** Daily Findings remains the investigation plane. Organization Operations is the operating plane, with overview, account catalog, correlation, monitors, exports, and data-controls sections.
 - **Key models:** AWS account context, finding observations, semantic evidence events and provenance, correlation mappings, monitor definitions and runs, export jobs, retention policy, legal holds, and versioned risk-score policies.
 - **Edge cases:** partial collection, reused group IDs across accounts and partitions, GuardDuty findings mirrored through Security Hub, stale evidence, unresolved relationships, personal monitor ownership, background export formats, and evidence protected by legal hold.
-- **Assumptions:** raw AWS logs remain in customer-owned S3; D1 persists hosted-product workflows; Aurora PostgreSQL is the AWS production system of record; scheduled and Parquet delivery is completed by the AWS export worker.
+- **Assumptions:** raw AWS logs remain in customer-owned S3; D1 persists hosted-product workflows; Aurora PostgreSQL is the AWS production system of record; scheduled and Parquet jobs remain queued until the production AWS export worker is connected.
 - **Done:** mutations are authenticated, permission-checked, same-origin protected, validated, durable, and audited. Account context and active scoring policy affect the findings inbox, while monitor transitions use the existing notification-delivery queue.
 
 ## Target users

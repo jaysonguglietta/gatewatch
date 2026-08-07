@@ -134,11 +134,20 @@ as well. Schema changes live in
 `db/schema.ts` and generated migrations are stored in `drizzle/`.
 
 The AWS target uses Aurora PostgreSQL rather than copying raw logs into a
-transactional database. The production schema is
-`db/postgres/0001_gatewatch_aws.sql`. Raw objects remain in the configured S3
-bucket; normalized events, configuration items, traffic observations, network
+transactional database. Apply the production migrations in filename order from
+`db/postgres/`: `0001_gatewatch_aws.sql` creates the evidence base and
+`0002_organization_operations.sql` adds the organization operating plane and
+workspace isolation. Raw objects remain in the configured S3 bucket;
+normalized events, configuration items, traffic observations, network
 analyses, service access, managed findings, current rule versions, findings,
 and evidence references are stored in Aurora.
+
+Open **Reports → Organization operations** to manage account context, inspect
+regional evidence health and finding lifecycle state, resolve evidence to a
+canonical security-group ARN, create recurring monitors and governed exports,
+and administer retention, legal holds, and versioned risk scoring. Operational
+details and role boundaries are documented in
+[`docs/architecture/ORGANIZATION_OPERATIONS.md`](docs/architecture/ORGANIZATION_OPERATIONS.md).
 
 The current-state authority is the distributed EC2 inventory collector. AWS
 Config supplies configuration history, CloudTrail supplies actor/change

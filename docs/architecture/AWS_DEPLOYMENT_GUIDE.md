@@ -60,13 +60,18 @@ Record these outputs:
 
 ## 2. Apply the PostgreSQL schema
 
-Apply [`db/postgres/0001_gatewatch_aws.sql`](../../db/postgres/0001_gatewatch_aws.sql)
-through a controlled migration identity. The Lambda runtime must not own tables
-or have schema-administration privileges.
+Apply the migrations in filename order through a controlled migration identity:
 
-For production, add a subsequent migration that creates non-owner application
-and ingestion database roles, forced row-level security, and per-transaction
-workspace context. That deployment gate remains open in the security roadmap.
+1. [`0001_gatewatch_aws.sql`](../../db/postgres/0001_gatewatch_aws.sql) creates
+   the ingestion, inventory, finding, workflow, and evidence base.
+2. [`0002_organization_operations.sql`](../../db/postgres/0002_organization_operations.sql)
+   creates account context, correlation mappings, monitors and runs, export
+   jobs, retention, legal holds, risk policies, and semantic event provenance.
+
+The second migration enables row-level security on every organization-operations
+table. Each application transaction must set `app.workspace_id`; a missing or
+incorrect workspace context therefore fails closed. The Lambda runtime must not
+own tables or have schema-administration privileges.
 
 ## 3. Deploy the data platform
 
@@ -132,6 +137,13 @@ production runtime as described in the security roadmap.
 - [ ] Snapshot checksum mismatch causes `/api/aws-inventory` to fail closed.
 - [ ] Administrator and workflow audit events identify unique users (required
   after OIDC implementation).
+- [ ] `app.workspace_id` is set on every Aurora application transaction and a
+  cross-workspace query is rejected by row-level security.
+- [ ] Account catalog changes appear in findings facets and groupings.
+- [ ] Revoked correlation mappings are excluded from reprocessing.
+- [ ] Monitor transitions create durable runs and notification outbox entries.
+- [ ] Active legal holds prevent matching evidence and export deletion.
+- [ ] Active risk-policy weights change finding scores deterministically.
 
 ## Rollback
 
