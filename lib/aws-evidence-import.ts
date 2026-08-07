@@ -237,10 +237,15 @@ function normalizeGeneric(record: JsonObject, index: number, sourceType: SourceT
   const resourceObject = object(record.Resource ?? record.resource);
   const service = object(record.service);
   const httpRequest = object(record.httpRequest ?? record.http);
-  const observedAt = first(record, [
+  const rawObservedAt = first(record, [
     "eventTime", "timestamp", "time", "updatedAt", "UpdatedAt", "createdAt",
     "CreatedAt", "start", "date", "datetime", "@timestamp",
   ], 100);
+  const observedAt = /^\d{10}$/.test(rawObservedAt)
+    ? new Date(Number(rawObservedAt) * 1000).toISOString()
+    : /^\d{13}$/.test(rawObservedAt)
+      ? new Date(Number(rawObservedAt)).toISOString()
+      : rawObservedAt;
   const accountId = first(record, ["accountId", "account-id", "AwsAccountId", "awsAccountId", "recipientAccountId"], 20)
     || first(resourceObject, ["accountId"], 20);
   const region = first(record, ["region", "awsRegion", "Region", "aws_region"], 50)
@@ -330,7 +335,14 @@ export function parseAwsEvidenceText(text: string, sourceType: SourceType): AwsE
         source: item.vpcId,
         destination: item.resourceArn,
         summary: item.groupName || item.resourceId,
-        raw: {},
+        raw: {
+          resourceType: item.resourceType,
+          resourceId: item.resourceId,
+          resourceArn: item.resourceArn,
+          vpcId: item.vpcId,
+          relationships: item.relationships,
+          rules: item.rules,
+        },
       })),
     };
   }

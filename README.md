@@ -57,9 +57,10 @@ resources, and vulnerability context.
 - Choke-point remediation ranked by paths eliminated and traffic preserved
 - Recertification campaigns with reviewer progress and evidence packages
 - Point-in-time connectivity history with path and risk diffs
-- Local drag-and-drop CloudTrail import for `.json` and `.json.gz` logs,
-  including security-group event extraction, internet-wide change detection,
-  actor attribution, inventory correlation, and normalized CSV export
+- Mixed-batch drag-and-drop import for AWS JSON, JSON.GZ, JSONL, and text logs.
+  Gatewatch auto-detects 16 AWS evidence types, suppresses duplicate files and
+  records, correlates inventory and Config relationships, and produces one
+  consolidated finding per account, Region, and security group
 - Dry-run handoffs for Network Access Analyzer, Reachability Analyzer, Firewall
   Manager, Security Hub, and Terraform
 - Durable review decisions, ticket references, evidence snapshots, and
@@ -243,10 +244,15 @@ no credentials and cannot modify AWS. The future AWS deployment should use
 scoped cross-account roles, separate analysis permissions from enforcement,
 and require explicit approval for each write integration.
 
-Imported CloudTrail files are parsed in the browser and retained only for the
-current application session. The importer rejects files over 25 MB compressed,
-caps decompressed content at 50 MB, limits each import to 50,000 records, and
-does not send or persist the original log.
+Imported AWS files are parsed in the browser and retained only for the current
+application session. A selection may contain up to 30 mixed files and a session
+up to 60 files, with a 150 MB compressed batch limit. Each file is limited to
+25 MB compressed, 50 MB decompressed, and 50,000 records. SHA-256 file hashes
+and stable record fingerprints suppress exact duplicates; AWS Config
+relationships and live inventory correlate indirect evidence. Evidence without
+a defensible security-group relationship remains in an explicit unmatched queue
+instead of being guessed into a finding. Original files are never uploaded or
+persisted.
 
 A deterministic 50,000-record synthetic CloudTrail log is included at
 `samples/cloudtrail-security-groups-50000.json.gz`. Regenerate it with

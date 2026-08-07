@@ -19,6 +19,7 @@ import {
   CircleCheck,
   Clock3,
   CloudCog,
+  Copy,
   Crown,
   Database,
   Download,
@@ -84,16 +85,22 @@ import {
   type Campaign,
 } from "../lib/governance-data";
 import {
+  readAwsEvidenceFile,
+  parseAwsEvidenceText,
+  type AwsEvidenceImportResult,
+} from "../lib/aws-evidence-import";
+import {
   parseCloudTrailText,
   readCloudTrailFile,
   type CloudTrailImportResult,
   type ImportedCloudTrailEvent,
 } from "../lib/cloudtrail-import";
 import {
-  parseAwsEvidenceText,
-  readAwsEvidenceFile,
-  type AwsEvidenceImportResult,
-} from "../lib/aws-evidence-import";
+  consolidateAwsEvidence,
+  detectAwsEvidenceText,
+  type BatchEvidenceFile,
+  type ConsolidatedSecurityGroupFinding,
+} from "../lib/aws-evidence-batch";
 import {
   sourceTypeDefinition,
   sourceTypeDefinitions,
@@ -263,8 +270,6 @@ export default function SecurityDashboard() {
   const [inventorySource, setInventorySource] =
     useState<AwsInventorySource | null>(null);
   const [, setInventoryRevision] = useState(0);
-  const [cloudTrailImport, setCloudTrailImport] =
-    useState<CloudTrailSessionImport | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -786,9 +791,7 @@ export default function SecurityDashboard() {
             />
           ) : null}
           {view === "cloudtrail" ? (
-            <CloudTrailImportView
-              imported={cloudTrailImport}
-              setImported={setCloudTrailImport}
+            <AwsEvidenceBatchImportView
               onSelect={setSelectedGroup}
               onToast={setToast}
             />
@@ -3997,6 +4000,248 @@ function RemediationView({
   );
 }
 
+async function fileSha256(file: File) {
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+function findingDate(value: string) {
+  if (!value) return "Time unavailable";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function AwsEvidenceBatchImportView({
+  onSelect,
+  onToast,
+}: {
+  onSelect: (group: SecurityGroup) => void;
+  onToast: (message: string) => void;
+}) {
+  const [files, setFiles] = useState<BatchEvidenceFile[]>([]);
+  const [dragging, setDragging] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [batchError, setBatchError] = useState("");
+  const [query, setQuery] = useState("");
+  const [selectedKey, setSelectedKey] = useState("");
+  const batch = useMemo(() => consolidateAwsEvidence(files, securityGroups), [files]);
+  const visibleFindings = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return batch.findings;
+    return batch.findings.filter((finding) => [
+      finding.securityGroupId,
+      finding.name,
+      finding.accountId,
+      finding.region,
+      finding.sources.join(" "),
+      finding.evidenceClasses.join(" "),
+      finding.summary,
+    ].join(" ").toLowerCase().includes(normalized));
+  }, [batch.findings, query]);
+  const selectedFinding = batch.findings.find((finding) => finding.key === selectedKey)
+    ?? visibleFindings[0]
+    ?? null;
+  const importedFiles = files.filter((file) => file.status === "imported");
+  const duplicateFiles = files.filter((file) => file.status === "duplicate").length;
+  const rejectedFiles = files.filter((file) => file.status === "rejected").length;
+  const sourceCount = new Set(importedFiles.map((file) => file.sourceType)).size;
+
+  async function processFiles(selected: File[]) {
+    setBatchError("");
+    if (!selected.length) return;
+    if (selected.length > 30) {
+      setBatchError("Import at most 30 AWS evidence files in one selection.");
+      return;
+    }
+    if (files.length + selected.length > 60) {
+      setBatchError("This session supports at most 60 files. Clear the session or remove files before adding more.");
+      return;
+    }
+    const totalBytes = selected.reduce((sum, file) => sum + file.size, 0);
+    if (totalBytes > 150 * 1024 * 1024) {
+      setBatchError("The selected batch is larger than 150 MB compressed. Split it into smaller batches.");
+      return;
+    }
+    setProcessing(true);
+    const knownDigests = new Set(files.map((file) => file.digest).filter(Boolean));
+    const processed: BatchEvidenceFile[] = [];
+    for (const file of selected) {
+      const id = crypto.randomUUID();
+      let digest = "";
+      try {
+        digest = await fileSha256(file);
+        if (knownDigests.has(digest)) {
+          processed.push({
+            id,
+            name: file.name.slice(0, 240),
+            size: file.size,
+            digest,
+            status: "duplicate",
+            recordCount: 0,
+            warningCount: 0,
+            error: "Exact file content already exists in this session.",
+          });
+          continue;
+        }
+        knownDigests.add(digest);
+        const text = await readAwsEvidenceFile(file);
+        const result = detectAwsEvidenceText(text, file.name);
+        processed.push({
+          id,
+          name: file.name.slice(0, 240),
+          size: file.size,
+          digest,
+          status: "imported",
+          sourceType: result.sourceType,
+          sourceLabel: result.sourceLabel,
+          recordCount: result.records.length,
+          warningCount: result.warnings.length,
+          result,
+        });
+      } catch (error) {
+        if (digest) knownDigests.delete(digest);
+        processed.push({
+          id,
+          name: file.name.slice(0, 240),
+          size: file.size,
+          digest,
+          status: "rejected",
+          recordCount: 0,
+          warningCount: 0,
+          error: error instanceof Error ? error.message : "The AWS file could not be identified.",
+        });
+      }
+    }
+    setFiles((current) => [...current, ...processed]);
+    setProcessing(false);
+    const imported = processed.filter((file) => file.status === "imported");
+    const duplicates = processed.filter((file) => file.status === "duplicate").length;
+    const rejected = processed.filter((file) => file.status === "rejected").length;
+    onToast(`Processed ${processed.length} file${processed.length === 1 ? "" : "s"}: ${imported.length} imported, ${duplicates} duplicate, ${rejected} rejected.`);
+  }
+
+  function exportFindings() {
+    const rows = [
+      ["Security group", "Name", "Account", "Region", "Severity", "Risk score", "AWS source types", "Unique evidence", "Direct evidence", "Related evidence", "First observed", "Last observed", "Summary"],
+      ...visibleFindings.map((finding) => [
+        finding.securityGroupId,
+        finding.name,
+        finding.accountId,
+        finding.region,
+        finding.severity,
+        finding.riskScore,
+        finding.sources.join("; "),
+        finding.evidence.length,
+        finding.directEvidenceCount,
+        finding.relatedEvidenceCount,
+        finding.firstObservedAt,
+        finding.lastObservedAt,
+        finding.summary,
+      ]),
+    ];
+    downloadText(`gatewatch-consolidated-findings-${new Date().toISOString().slice(0, 10)}.csv`, csvDocument(rows), "text/csv;charset=utf-8");
+    onToast(`Exported ${visibleFindings.length.toLocaleString()} consolidated security-group findings.`);
+  }
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Mixed AWS evidence import"
+        title="Drop the evidence. Gatewatch sorts it out."
+        description="Import mixed AWS logs in one batch, suppress duplicate files and records, and consolidate all attributable evidence into one finding per security group."
+        actions={files.length ? <>
+          <button className="button button-secondary" onClick={exportFindings} disabled={!visibleFindings.length}><Download size={16} /> Export consolidated findings</button>
+          <button className="button button-secondary button-danger-subtle" onClick={() => { if (!window.confirm("Clear every imported file and consolidated finding from this browser session?")) return; setFiles([]); setSelectedKey(""); setQuery(""); setBatchError(""); onToast("AWS evidence session cleared."); }}><Trash2 size={16} /> Clear session</button>
+        </> : undefined}
+      />
+
+      <section className="local-processing-banner">
+        <span><ShieldCheck size={20} /></span>
+        <div><strong>Local, AWS-only processing</strong><p>Files are fingerprinted, identified, parsed, deduplicated, and correlated in this browser tab. Original files are never uploaded or persisted.</p></div>
+        <span className="healthy-chip"><CircleCheck size={13} /> Session only</span>
+      </section>
+
+      <label
+        className={`cloudtrail-dropzone batch-dropzone ${dragging ? "cloudtrail-dropzone-active" : ""} ${processing ? "cloudtrail-dropzone-processing" : ""}`}
+        htmlFor="aws-batch-file-input"
+        onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
+        onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
+        onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
+        onDrop={(event) => { event.preventDefault(); setDragging(false); void processFiles([...event.dataTransfer.files]); }}
+      >
+        <input id="aws-batch-file-input" className="sr-only" type="file" multiple accept=".json,.json.gz,.log,.log.gz,.txt,.txt.gz,.csv,.tsv,application/json,application/gzip,text/plain,text/csv" disabled={processing} onChange={(event) => { void processFiles([...(event.target.files ?? [])]); event.target.value = ""; }} />
+        <span className="dropzone-icon">{processing ? <RefreshCw size={27} className="spin" /> : <FileArchive size={27} />}</span>
+        <div><strong>{processing ? "Fingerprinting and classifying AWS evidence…" : dragging ? "Drop the mixed AWS batch here" : files.length ? "Add more AWS evidence files" : "Drop multiple AWS log types together"}</strong><p>Auto-detects 16 AWS source types · up to 30 files per selection · 150 MB compressed per batch</p></div>
+        <span className="button button-primary"><UploadCloud size={16} /> Choose files</span>
+      </label>
+
+      {batchError ? <div className="import-error" role="alert"><CircleAlert size={17} /><div><strong>Batch import could not start</strong><p>{batchError}</p></div><button aria-label="Dismiss batch error" onClick={() => setBatchError("")}><X size={15} /></button></div> : null}
+
+      {files.length ? <>
+        <section className="batch-metrics" aria-label="Import consolidation summary">
+          {[
+            [String(importedFiles.length), "Files imported"],
+            [String(sourceCount), "AWS source types"],
+            [batch.uniqueRecords.toLocaleString(), "Unique records"],
+            [(duplicateFiles + batch.duplicateRecords).toLocaleString(), "Duplicates suppressed"],
+            [batch.findings.length.toLocaleString(), "Consolidated SG findings"],
+            [batch.unmatchedRecords.length.toLocaleString(), "Unmatched records"],
+          ].map(([value, label]) => <div key={label}><strong>{value}</strong><span>{label}</span></div>)}
+        </section>
+
+        <section className="panel batch-file-ledger">
+          <div className="panel-header"><div><h2>File processing ledger</h2><p>Every selected file remains visible, including exact duplicates and rejected formats</p></div><span className="version-chip">{files.length} files · {rejectedFiles} rejected</span></div>
+          <div className="batch-file-list">
+            {files.map((file) => <article key={file.id} className={`batch-file batch-file-${file.status}`}>
+              <span>{file.status === "imported" ? <CircleCheck size={16} /> : file.status === "duplicate" ? <Copy size={16} /> : <CircleAlert size={16} />}</span>
+              <p><strong>{file.name}</strong><small>{file.status === "imported" ? `${file.sourceLabel} · ${file.recordCount.toLocaleString()} validated record${file.recordCount === 1 ? "" : "s"}${file.warningCount ? ` · ${file.warningCount} warning${file.warningCount === 1 ? "" : "s"}` : ""}` : file.error}</small></p>
+              <em>{(file.size / 1024 / 1024).toFixed(2)} MB</em>
+              <button className="icon-button" aria-label={`Remove ${file.name}`} onClick={() => setFiles((current) => current.filter((item) => item.id !== file.id))}><X size={14} /></button>
+            </article>)}
+          </div>
+        </section>
+
+        <div className="batch-findings-layout">
+          <section className="panel imported-events-panel batch-findings-panel">
+            <div className="imported-events-header"><div><h2>Consolidated security-group findings</h2><p>One row per account, Region, and security group—never one row per source record</p></div><label className="table-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search group, account, Region, source…" aria-label="Search consolidated findings" /></label></div>
+            <div className="import-results-count">Showing <strong>{visibleFindings.length.toLocaleString()}</strong> of <strong>{batch.findings.length.toLocaleString()}</strong> consolidated findings</div>
+            {visibleFindings.length ? <div className="table-wrap consolidated-findings-table"><table><thead><tr><th>Security group</th><th>Risk</th><th>Evidence</th><th>AWS sources</th><th>Last observed</th><th><span className="sr-only">Open</span></th></tr></thead><tbody>{visibleFindings.map((finding) => <tr key={finding.key} className={selectedFinding?.key === finding.key ? "selected" : ""} onClick={() => setSelectedKey(finding.key)}><td><strong>{finding.name}</strong><small>{finding.securityGroupId} · {finding.accountId || "Unknown account"} · {finding.region || "Unknown Region"}</small></td><td><SeverityBadge severity={finding.severity} /><small>{finding.riskScore}/100</small></td><td><strong>{finding.evidence.length} unique</strong><small>{finding.directEvidenceCount} direct · {finding.relatedEvidenceCount} related</small></td><td><div className="source-chip-list">{finding.sources.slice(0, 3).map((source) => <span key={source}>{source}</span>)}{finding.sources.length > 3 ? <span>+{finding.sources.length - 3}</span> : null}</div></td><td><strong>{finding.lastObservedAt ? findingDate(finding.lastObservedAt) : "Unavailable"}</strong><small>{finding.evidenceClasses.join(" · ")}</small></td><td><button className="icon-button" aria-label={`Inspect ${finding.name}`} onClick={(event) => { event.stopPropagation(); setSelectedKey(finding.key); }}><ChevronRight size={15} /></button></td></tr>)}</tbody></table></div> : <div className="empty-state"><div><Search size={24} /></div><h3>No consolidated findings match</h3><p>Clear the search or inspect unmatched evidence below.</p><button className="button button-secondary" onClick={() => setQuery("")}>Clear search</button></div>}
+          </section>
+
+          <FindingEvidencePanel finding={selectedFinding} onSelect={onSelect} />
+        </div>
+
+        {batch.unmatchedRecords.length ? <details className="panel unmatched-evidence"><summary><span><AlertTriangle size={15} /> {batch.unmatchedRecords.length.toLocaleString()} unique records could not be tied to a security group</span><ChevronRight size={15} /></summary><p>These records are retained instead of being guessed into a finding. Add AWS Config network-interface relationships or a current Gatewatch inventory snapshot to improve attribution.</p><div>{batch.unmatchedRecords.slice(0, 100).map((item) => <article key={item.fingerprint}><strong>{item.sourceLabel}</strong><span>{item.record.event || item.record.summary}</span><small>{item.record.resource || `${item.record.source} → ${item.record.destination}`}</small></article>)}</div></details> : null}
+      </> : <div className="cloudtrail-onboarding-grid">
+        {[{ icon: FileArchive, title: "Mixed batches", copy: "Choose CloudTrail, Config, Flow Logs, access logs, and managed findings together—no manual source selection." }, { icon: Copy, title: "Duplicate suppression", copy: "Exact files and identical normalized AWS records are counted once while duplicates remain auditable." }, { icon: ShieldCheck, title: "One finding per group", copy: "Direct IDs, Config relationships, ENIs, attached resources, and addresses consolidate evidence into one security-group finding." }].map((item) => { const Icon = item.icon; return <section className="panel" key={item.title}><span className="onboarding-icon"><Icon size={20} /></span><h2>{item.title}</h2><p>{item.copy}</p></section>; })}
+      </div>}
+    </>
+  );
+}
+
+function FindingEvidencePanel({
+  finding,
+  onSelect,
+}: {
+  finding: ConsolidatedSecurityGroupFinding | null;
+  onSelect: (group: SecurityGroup) => void;
+}) {
+  if (!finding) {
+    return <aside className="panel finding-evidence-panel batch-no-selection"><ShieldCheck size={24} /><h2>No attributable security-group evidence yet</h2><p>Successfully parsed AWS records that cannot be attributed remain in the unmatched evidence section.</p></aside>;
+  }
+  return <aside className="panel finding-evidence-panel">
+    <div className="finding-evidence-heading"><div><span>Consolidated finding</span><h2>{finding.name}</h2><p>{finding.securityGroupId} · {finding.accountId || "Unknown account"} · {finding.region || "Unknown Region"}</p></div><RiskScore score={finding.riskScore} /></div>
+    <p className="finding-evidence-summary">{finding.summary}</p>
+    <dl className="finding-evidence-stats"><div><dt>Direct evidence</dt><dd>{finding.directEvidenceCount}</dd></div><div><dt>Related evidence</dt><dd>{finding.relatedEvidenceCount}</dd></div><div><dt>Source types</dt><dd>{finding.sources.length}</dd></div></dl>
+    <div className="finding-source-chips">{finding.sources.map((source) => <span key={source}>{source}</span>)}</div>
+    <div className="finding-evidence-list">
+      {finding.evidence.slice(0, 75).map((item) => <article key={item.fingerprint}><span className={`evidence-class evidence-${item.evidenceClass}`} /> <p><strong>{item.record.event || item.sourceLabel}</strong><small>{item.record.summary || item.record.resource || "AWS evidence record"}</small><em>{item.sourceLabel} · {item.correlation} · {findingDate(item.record.observedAt)}</em></p></article>)}
+    </div>
+    {finding.evidence.length > 75 ? <p className="finding-evidence-overflow">Showing the newest 75 of {finding.evidence.length.toLocaleString()} unique evidence records.</p> : null}
+    {finding.matchedInventoryGroup ? <button className="button button-primary" onClick={() => onSelect(finding.matchedInventoryGroup!)}>Open security group <ArrowRight size={15} /></button> : <p className="finding-evidence-boundary"><AlertTriangle size={14} /> This group is present in imported evidence but not the current Gatewatch inventory.</p>}
+  </aside>;
+}
+
 function AwsEvidenceSourcePicker({
   value,
   onChange,
@@ -4168,6 +4413,8 @@ function GenericAwsEvidenceImportView({
   );
 }
 
+// Kept as a compatibility path while saved links transition to the mixed-batch workspace.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function CloudTrailImportView({
   imported,
   setImported,

@@ -421,7 +421,7 @@ function normalizeGeneric(record, index, source, objectId) {
     "eventTime", "timestamp", "time", "updatedAt", "UpdatedAt", "createdAt",
     "CreatedAt", "start", "date", "datetime", "@timestamp",
   ], 100);
-  if (observedAt && !Number.isFinite(Date.parse(observedAt)) && !/^\d{10}$/.test(observedAt)) {
+  if (observedAt && !Number.isFinite(Date.parse(observedAt)) && !/^\d{10}(?:\d{3})?$/.test(observedAt)) {
     throw new Error("INVALID_AWS_EVIDENCE_TIMESTAMP");
   }
   const accountId = firstRecordValue(item, ["accountId", "account-id", "AwsAccountId", "awsAccountId", "recipientAccountId"], 20)
@@ -468,7 +468,9 @@ function normalizeGeneric(record, index, source, objectId) {
     evidenceClass: GENERIC_SOURCE_CLASSES.get(source.sourceType),
     observedAt: /^\d{10}$/.test(observedAt)
       ? new Date(Number(observedAt) * 1000).toISOString()
-      : observedAt,
+      : /^\d{13}$/.test(observedAt)
+        ? new Date(Number(observedAt)).toISOString()
+        : observedAt,
     accountId,
     region,
     resourceType,

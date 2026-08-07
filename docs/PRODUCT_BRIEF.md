@@ -58,7 +58,8 @@ broad CIDRs, and wide port ranges.
 - Security-program outcome metrics
 - Access explorer and path evidence
 - Reviews, applications, policies, campaigns, and remediation
-- CloudTrail local import
+- Mixed AWS evidence batch import with automatic source detection, duplicate
+  suppression, and one consolidated finding per account/Region/security group
 - Coverage and confidence boundaries
 - Organization run health with searchable account status, Region failure counts,
   freshness, evidence lineage, and explicit partial collection
@@ -142,6 +143,9 @@ broad CIDRs, and wide port ranges.
 - Config parser and CloudTrail/Config correlation library
 - AWS-native evidence catalog, local validation, and a bounded generic evidence
   ledger for Flow Logs, path analyses, service logs, and managed findings
+- Browser-local mixed-file batch correlation using file hashes, canonical
+  record fingerprints, Config relationships, and inventory attachments;
+  unattributable evidence is retained separately rather than force-matched
 - Idempotent bounded AWS ingestion worker with partial-batch failure reporting
 - Aurora production schema, SQS/DLQ, Lambda, KMS, alarms, and event forwarding IaC
 - Operational views for sources, runs, roles, retention, and audit history

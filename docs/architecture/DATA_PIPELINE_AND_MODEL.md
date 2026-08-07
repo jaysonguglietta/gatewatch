@@ -118,6 +118,14 @@ erDiagram
   failure code for each S3 key/version.
 - `ingested_objects` performs the same role for CloudTrail and Config sources.
 - Raw objects are not copied into PostgreSQL.
+- The browser batch importer uses SHA-256 file hashes to prevent importing an
+  identical file twice in one session. Stable normalized-record fingerprints
+  suppress repeated evidence across files; Config history and snapshot records
+  share one fingerprint family so the same configuration item is counted once.
+- Consolidated findings use `account_id + region + security_group_id` as the
+  canonical key. Direct security-group references, Config relationships, and
+  known inventory attachments are the only accepted correlation paths.
+  Unmatched records remain visible and do not affect a group's risk score.
 
 ### Observations and current views
 
