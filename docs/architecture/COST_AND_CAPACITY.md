@@ -64,6 +64,16 @@ Scale or optimize when:
 At very large scale, write a compact coverage summary plus paginated target
 manifests instead of increasing the 8 MB limit.
 
+Daily Findings exposes a stable `after` cursor alongside the existing numbered
+pages so the Aurora-backed runtime can use keyset pagination without changing
+the client contract. Migration `db/postgres/0003_finding_search.sql` adds queue,
+temporal, trigram, JSONB, resource-tag, and normalized-evidence indexes. Query
+input is limited to 500 characters, 40 clauses, and five nested Boolean groups;
+universal evidence evaluation reads at most 500 recent normalized records per
+request. Use query latency, rows examined, and facet-cardinality telemetry to
+decide when to route free-text predicates to OpenSearch rather than enabling
+unbounded scans.
+
 ## Cost estimation method
 
 Before production, run a representative 25-account pilot and record:

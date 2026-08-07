@@ -30,8 +30,14 @@ import { cleanText } from "../../../lib/admin-sources";
 import { defaultRiskWeights, scoreRisk, type RiskWeights } from "../../../lib/organization-operations";
 import {
   dailyFindingMatchesQuery,
+  dailyFindingMatchReasons,
+  dailyFindingQueryFields,
+  dailyFindingQueryMatches,
+  dailyFindingQueryMatchedTokens,
   parseDailyFindingQuery,
+  type DailyFindingQueryToken,
 } from "../../../lib/daily-finding-query";
+import { csvDocument } from "../../../lib/csv";
 
 const userStatuses = new Set<FindingWorkflowStatus>([
   "follow-up",
@@ -50,7 +56,7 @@ const decisionReasons: Partial<Record<FindingWorkflowStatus, ReadonlySet<string>
 const savedViewFilterLimits = new Map<string, number>([
   ["q", 500], ["severity", 20], ["status", 30], ["ou", 120],
   ["account", 20], ["region", 30], ["owner", 120],
-  ["environment", 30], ["internet", 20], ["sort", 30], ["mine", 1],
+  ["environment", 30], ["internet", 20], ["scope", 20], ["sort", 30], ["mine", 1],
 ]);
 
 type WorkflowRow = {
@@ -100,10 +106,58 @@ type ObservationRow = {
   observationCount: number;
 };
 
+type UniversalEvidenceRow = {
+  fingerprint: string;
+  sourceId: string;
+  sourceType: string;
+  evidenceClass: string;
+  observedAt: string;
+  accountId: string;
+  region: string;
+  resourceType: string;
+  resourceId: string;
+  eventName: string;
+  disposition: string;
+  normalizedPayload: string;
+};
+
 function dateOffset(days: number) {
   const value = new Date();
   value.setUTCDate(value.getUTCDate() + days);
   return value.toISOString().slice(0, 10);
+}
+
+function countFacet(values: string[], limit = 12) {
+  const counts = new Map<string, number>();
+  for (const value of values.filter(Boolean)) counts.set(value, (counts.get(value) ?? 0) + 1);
+  return [...counts.entries()]
+    .map(([value, count]) => ({ value, count }))
+    .sort((left, right) => right.count - left.count || left.value.localeCompare(right.value))
+    .slice(0, limit);
+}
+
+function evidenceSearchText(row: UniversalEvidenceRow) {
+  return [row.sourceId, row.sourceType, row.evidenceClass, row.observedAt, row.accountId,
+    row.region, row.resourceType, row.resourceId, row.eventName, row.disposition,
+    row.normalizedPayload].join(" ").toLowerCase();
+}
+
+function evidenceTokenMatches(row: UniversalEvidenceRow, token: DailyFindingQueryToken) {
+  const value = token.value.toLowerCase();
+  const includes = (candidate: unknown) => String(candidate ?? "").toLowerCase().includes(value);
+  if (!token.field) return includes(evidenceSearchText(row));
+  if (["account", "acct"].includes(token.field)) return includes(row.accountId);
+  if (token.field === "region") return includes(row.region);
+  if (["sg", "id", "resource"].includes(token.field)) return includes(`${row.resourceId} ${row.resourceType} ${row.normalizedPayload}`);
+  if (["arn", "name", "tag", "path", "policy", "application", "app", "environment", "env", "ou"].includes(token.field)) return includes(row.normalizedPayload);
+  if (token.field === "source") return includes(`${row.sourceId} ${row.sourceType} ${row.normalizedPayload}`);
+  if (token.field === "evidence") return includes(`${row.evidenceClass} ${row.sourceType} ${row.disposition}`);
+  if (["actor", "changed-by"].includes(token.field)) return includes(`${row.eventName} ${row.normalizedPayload}`);
+  if (token.field === "changed-after") return row.observedAt.slice(0, 10) >= value;
+  if (token.field === "changed-before") return row.observedAt.slice(0, 10) <= value;
+  if (["ingress", "egress", "rule", "port", "protocol"].includes(token.field)) return includes(`${row.eventName} ${row.normalizedPayload}`);
+  if (["verdict", "status", "internet", "severity"].includes(token.field)) return includes(row.disposition);
+  return false;
 }
 
 function defaultWorkflow(
@@ -293,6 +347,33 @@ async function ensureSchema() {
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`,
     ),
+    env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS aws_evidence_records (
+        fingerprint TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL DEFAULT 'default',
+        source_id TEXT NOT NULL,
+        raw_object_id TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        evidence_class TEXT NOT NULL,
+        observed_at TEXT NOT NULL DEFAULT '',
+        account_id TEXT NOT NULL DEFAULT '',
+        region TEXT NOT NULL DEFAULT '',
+        resource_type TEXT NOT NULL DEFAULT '',
+        resource_id TEXT NOT NULL DEFAULT '',
+        event_name TEXT NOT NULL DEFAULT '',
+        disposition TEXT NOT NULL DEFAULT '',
+        normalized_payload TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+    ),
+    env.DB.prepare(
+      `CREATE INDEX IF NOT EXISTS aws_evidence_universal_search_idx
+       ON aws_evidence_records (workspace_id, observed_at, account_id, region, resource_id)`,
+    ),
+    env.DB.prepare(
+      `CREATE INDEX IF NOT EXISTS finding_observations_temporal_idx
+       ON finding_observations (workspace_id, state, last_seen_at, observation_count)`,
+    ),
   ]);
 }
 
@@ -420,6 +501,9 @@ function mergeFindings(
       ...finding,
       firstSeenAt,
       ageDays,
+      lastSeenAt: observation?.lastSeenAt ?? finding.lastObserved,
+      observationCount: observation?.observationCount ?? 1,
+      observationState: observation?.state ?? "active",
       ...workflowState,
       status: expiredException ? "reopened" : workflowState.status,
       reasonCode: expiredException
@@ -715,6 +799,7 @@ export async function GET(request: Request) {
     );
     const query = cleanText(url.searchParams.get("q"), 500);
     const parsedQuery = parseDailyFindingQuery(query);
+    const searchScope = url.searchParams.get("scope") === "all" ? "all" : "findings";
     const severity = cleanText(url.searchParams.get("severity"), 20);
     const status = cleanText(url.searchParams.get("status"), 30);
     const ou = cleanText(url.searchParams.get("ou"), 120);
@@ -788,16 +873,82 @@ export async function GET(request: Request) {
       }
       return b.riskScore - a.riskScore;
     });
-    const pageSize = Math.min(
+    if (url.searchParams.get("format") === "csv") {
+      const rows = [
+        ["Finding", "Security group ARN", "Security group name", "Account ID", "Account name", "Region", "VPC", "Rule", "Severity", "Risk", "Verdict", "Status", "Owner", "Assignee", "First seen", "Last seen", "Recurrence", "Query"],
+        ...filtered.map((finding) => [finding.title, finding.securityGroupArn, finding.securityGroupName,
+          finding.accountId, finding.accountName, finding.region, finding.vpcId, finding.ruleSummary,
+          finding.severity, finding.riskScore, finding.verdict, finding.status, finding.owner,
+          finding.assignee, finding.firstSeenAt, finding.lastSeenAt, finding.observationCount, query]),
+      ];
+      return new Response(csvDocument(rows), { headers: {
+        "content-type": "text/csv; charset=utf-8",
+        "content-disposition": "attachment; filename=gatewatch-search-results.csv",
+        "cache-control": "no-store, private",
+        "x-content-type-options": "nosniff",
+      }});
+    }
+    const evidenceRows = searchScope === "all" && query && !parsedQuery.syntaxErrors.length && !parsedQuery.unsupportedFields.length && !parsedQuery.unclosedQuote
+      ? await env.DB.prepare(
+          `SELECT fingerprint, source_id AS sourceId, source_type AS sourceType,
+                  evidence_class AS evidenceClass, observed_at AS observedAt,
+                  account_id AS accountId, region, resource_type AS resourceType,
+                  resource_id AS resourceId, event_name AS eventName, disposition,
+                  normalized_payload AS normalizedPayload
+           FROM aws_evidence_records
+           WHERE workspace_id = 'default'
+           ORDER BY observed_at DESC
+           LIMIT 500`,
+        ).all<UniversalEvidenceRow>()
+      : { results: [] as UniversalEvidenceRow[] };
+    const evidenceMatches = evidenceRows.results
+      .filter((row) => dailyFindingQueryMatches(parsedQuery, (token) => evidenceTokenMatches(row, token)))
+      .slice(0, 25)
+      .map((row) => ({
+        fingerprint: row.fingerprint,
+        sourceId: row.sourceId,
+        sourceType: row.sourceType,
+        evidenceClass: row.evidenceClass,
+        observedAt: row.observedAt,
+        accountId: row.accountId,
+        region: row.region,
+        resourceType: row.resourceType,
+        resourceId: row.resourceId,
+        eventName: row.eventName,
+        disposition: row.disposition,
+        matchReasons: dailyFindingQueryMatchedTokens(parsedQuery, (token) => evidenceTokenMatches(row, token))
+          .filter((token) => token.field)
+          .map((token) => `${token.field}: ${token.value}`)
+          .slice(0, 5),
+      }));
+    const resultFacets = {
+      accounts: countFacet(filtered.map((item) => `${item.accountName} · ${item.accountId}`)),
+      regions: countFacet(filtered.map((item) => item.region)),
+      severities: countFacet(filtered.map((item) => item.severity)),
+      internet: countFacet(filtered.map((item) => internetExposureForVerdict(item.verdict))),
+      owners: countFacet(filtered.map((item) => item.owner)),
+      directions: countFacet(filtered.map((item) => item.ruleSummary.split(" ")[0] ?? "Unknown")),
+    };
+    const groupMode = url.searchParams.get("group") === "1";
+    const orderedGroupKeys = [...new Set(filtered.map((finding) => finding.canonicalResourceKey))];
+    const paginationTotal = groupMode ? orderedGroupKeys.length : filtered.length;
+    const requestedPageSize = Math.min(
       100,
       Math.max(10, Number(url.searchParams.get("pageSize") ?? 25) || 25),
     );
-    const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+    const pageSize = groupMode ? Math.min(25, requestedPageSize) : requestedPageSize;
+    const pageCount = Math.max(1, Math.ceil(paginationTotal / pageSize));
     const page = Math.min(
       pageCount,
       Math.max(1, Number(url.searchParams.get("page") ?? 1) || 1),
     );
-    const start = (page - 1) * pageSize;
+    const after = cleanText(url.searchParams.get("after"), 180);
+    const afterIndex = after ? filtered.findIndex((finding) => finding.fingerprint === after) : -1;
+    const start = after && afterIndex >= 0 ? afterIndex + 1 : (page - 1) * pageSize;
+    const pageGroupKeys = new Set(orderedGroupKeys.slice(start, start + pageSize));
+    const pageItems = groupMode
+      ? filtered.filter((finding) => pageGroupKeys.has(finding.canonicalResourceKey))
+      : filtered.slice(start, start + pageSize);
     const accounts = Array.from(
       new Map(
         catalog.map((finding) => [
@@ -808,11 +959,17 @@ export async function GET(request: Request) {
     ).sort((a, b) => a.name.localeCompare(b.name));
 
     return apiJson({
-      items: filtered.slice(start, start + pageSize),
+      items: pageItems.map((finding) => ({
+        ...finding,
+        matchReasons: query ? dailyFindingMatchReasons(finding, parsedQuery) : [],
+      })),
       total: filtered.length,
       page,
       pageSize,
       pageCount,
+      paginationMode: after ? "keyset" : "offset",
+      nextCursor: !groupMode && start + pageItems.length < filtered.length ? pageItems.at(-1)?.fingerprint ?? "" : "",
+      groupMode,
       stats,
       coverage: current.coverage,
       facets: {
@@ -820,6 +977,24 @@ export async function GET(request: Request) {
         accounts,
         regions: [...new Set(catalog.map((item) => item.region))].sort(),
         owners: [...new Set(catalog.map((item) => item.owner))].sort(),
+      },
+      resultFacets,
+      resultGroupCount: new Set(filtered.map((item) => item.canonicalResourceKey)).size,
+      evidenceMatches,
+      searchScope,
+      searchSuggestions: {
+        fields: dailyFindingQueryFields,
+        values: {
+          account: [...new Set(all.flatMap((item) => [item.accountId, item.accountName]))].sort().slice(0, 200),
+          name: [...new Set(all.map((item) => item.securityGroupName))].sort().slice(0, 200),
+          region: [...new Set(all.map((item) => item.region))].sort(),
+          vpc: [...new Set(all.map((item) => item.vpcId))].sort().slice(0, 200),
+          owner: [...new Set(all.flatMap((item) => [item.owner, item.assignee]))].sort().slice(0, 200),
+          app: [...new Set(all.map((item) => item.application))].sort().slice(0, 200),
+          protocol: [...new Set(all.map((item) => item.ruleSummary.match(/^(?:Ingress|Egress)\s+([^/]+)/)?.[1] ?? ""))].filter(Boolean).sort(),
+          port: [...new Set(all.map((item) => item.ruleSummary.match(/^[^/]+\/(.+?)\s+from\s+/)?.[1] ?? ""))].filter(Boolean).sort().slice(0, 100),
+          source: [...new Set(all.map((item) => item.ruleSummary.match(/\sfrom\s+(.+)$/)?.[1] ?? ""))].filter(Boolean).sort().slice(0, 100),
+        },
       },
       savedViews: savedViewResult.results.map((view) => ({
         ...view,
@@ -831,6 +1006,8 @@ export async function GET(request: Request) {
       queryDiagnostics: {
         unsupportedFields: parsedQuery.unsupportedFields,
         unclosedQuote: parsedQuery.unclosedQuote,
+        syntaxErrors: parsedQuery.syntaxErrors,
+        complexityExceeded: parsedQuery.complexityExceeded,
       },
     });
   } catch (error) {

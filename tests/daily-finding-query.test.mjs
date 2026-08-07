@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  dailyFindingMatchReasons,
   dailyFindingMatchesQuery,
   parseDailyFindingQuery,
   securityGroupArnForFinding,
@@ -32,6 +33,9 @@ const finding = {
   changeActor: "arn:aws:iam::123456789012:role/network-admin",
   changeSummary: "AuthorizeSecurityGroupIngress by network-admin through Terraform",
   ageDays: 42,
+  lastSeenAt: "2026-07-30T12:00:00.000Z",
+  observationCount: 4,
+  changeTime: "2026-07-21T09:30:00.000Z",
   evidence: {
     state: "observed",
     confidence: 95,
@@ -98,4 +102,35 @@ test("infers partition-correct ARNs when older records do not include one", () =
     "arn:aws-us-gov:ec2:us-gov-west-1:210987654321:security-group/sg-0123456789abcdef0",
   );
   assert.equal(matches("arn:aws-us-gov:ec2:us-gov-west-1:210987654321:security-group/sg-0123456789abcdef0", govCloudFinding), true);
+});
+
+test("supports OR, NOT, parentheses, and conventional precedence", () => {
+  assert.equal(matches("port:22 OR port:443"), true);
+  assert.equal(matches("(port:22 OR port:443) AND NOT account:staging"), true);
+  assert.equal(matches("port:443 OR port:22 AND account:staging"), true, "AND binds more tightly than OR");
+  assert.equal(matches("(port:22 OR port:80) AND account:staging"), false);
+  assert.equal(matches("NOT (internet:none OR status:resolved)"), true);
+});
+
+test("searches change history, internet state, and recurrence", () => {
+  assert.equal(matches("internet:confirmed recurrence:>=3 changed-after:2026-07-01 changed-before:2026-07-31"), true);
+  assert.equal(matches("changed-by:network-admin"), true);
+  assert.equal(matches("recurrence:>4"), false);
+});
+
+test("explains positive matched clauses without presenting excluded terms as evidence", () => {
+  const parsed = parseDailyFindingQuery("account:123456789012 AND ingress:443 AND NOT status:resolved");
+  assert.deepEqual(dailyFindingMatchReasons(finding, parsed), [
+    "Account: 123456789012",
+    "Ingress rule: 443",
+  ]);
+});
+
+test("bounds Boolean query complexity and reports syntax errors", () => {
+  const trailing = parseDailyFindingQuery("account:123456789012 OR");
+  assert.match(trailing.syntaxErrors.join(" "), /OR must be followed/);
+  assert.equal(dailyFindingMatchesQuery(finding, trailing), false);
+  const tooMany = parseDailyFindingQuery(Array.from({ length: 41 }, () => "region:us-east-1").join(" AND "));
+  assert.equal(tooMany.complexityExceeded, true);
+  assert.equal(dailyFindingMatchesQuery(finding, tooMany), false);
 });

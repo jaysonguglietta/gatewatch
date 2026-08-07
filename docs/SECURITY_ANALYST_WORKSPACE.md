@@ -42,6 +42,33 @@ all existing capabilities without presenting nineteen equal-priority choices.
    `risk:70-90`, `confidence:>=70`, and `age:>30`. Search is retained in the URL
    and in saved personal or team views. Unsupported fields and unclosed quotes are
    reported inline rather than treated as successful empty-result searches.
+
+   Boolean expressions support `AND`, `OR`, `NOT`, and parentheses, with `NOT`
+   evaluated before `AND`, and `AND` before `OR`. Queries are bounded to 500
+   characters, 40 clauses, and five nested groups. History-aware fields include
+   `changed-after:`, `changed-before:`, `changed-by:`, and `recurrence:`. Example:
+
+   ```text
+   (port:22 OR port:3389) AND internet:confirmed NOT status:accepted-risk
+   ```
+
+   Analysts can use the visual query builder or field/value autocomplete instead
+   of typing syntax. Result intelligence recalculates account, Region, severity,
+   internet, owner, and rule-direction facets for the complete matching set. Each
+   queue item explains which positive clauses matched; excluded terms are never
+   presented as supporting evidence.
+
+   Switch the search scope to **Findings + AWS evidence** to include bounded,
+   normalized Config, CloudTrail, Flow Log, network-analysis, service-access, and
+   managed-finding records. Raw records remain in the evidence ledger; only safe
+   normalized metadata is returned in the search result cards.
+
+   **Monitor search** creates a durable hourly, daily, or weekly evidence monitor
+   using the same query and filters. **Export all results** exports the complete
+   server-filtered result set with the query recorded as lineage. Page selection
+   can expand to all results only when the set contains at most 100 findings;
+   accepted-risk and Jira actions retain their 20-finding limits. The API
+   revalidates every fingerprint, permission, evidence gate, and decision field.
 3. Review the compact queue or group findings by canonical security-group identity.
 4. Inspect the selected finding's decision summary, risk factors, policy mapping,
    exact change, attached resources, and evidence confidence.

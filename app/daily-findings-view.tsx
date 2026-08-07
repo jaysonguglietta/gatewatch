@@ -26,6 +26,7 @@ import {
   Layers3,
   Network,
   NotebookPen,
+  Plus,
   RefreshCw,
   RotateCcw,
   Save,
@@ -57,6 +58,7 @@ type Filters = {
   owner: string;
   environment: string;
   internet: string;
+  scope: string;
   sort: string;
   mine: string;
 };
@@ -87,7 +89,7 @@ type FindingHistoryEvent = {
 };
 
 type InboxResponse = {
-  items: DailyFinding[];
+  items: Array<DailyFinding & { matchReasons: string[] }>;
   total: number;
   page: number;
   pageSize: number;
@@ -113,6 +115,27 @@ type InboxResponse = {
     regions: string[];
     owners: string[];
   };
+  resultFacets: Record<"accounts" | "regions" | "severities" | "internet" | "owners" | "directions", Array<{ value: string; count: number }>>;
+  resultGroupCount: number;
+  evidenceMatches: Array<{
+    fingerprint: string;
+    sourceId: string;
+    sourceType: string;
+    evidenceClass: string;
+    observedAt: string;
+    accountId: string;
+    region: string;
+    resourceType: string;
+    resourceId: string;
+    eventName: string;
+    disposition: string;
+    matchReasons: string[];
+  }>;
+  searchScope: "findings" | "all";
+  searchSuggestions: {
+    fields: string[];
+    values: Record<string, string[]>;
+  };
   savedViews: SavedView[];
   source: {
     mode: "aws" | "demonstration";
@@ -126,6 +149,8 @@ type InboxResponse = {
   queryDiagnostics: {
     unsupportedFields: string[];
     unclosedQuote: boolean;
+    syntaxErrors: string[];
+    complexityExceeded: boolean;
   };
 };
 
@@ -143,6 +168,7 @@ const defaultFilters: Filters = {
   owner: "",
   environment: "",
   internet: "",
+  scope: "findings",
   sort: "risk",
   mine: "",
 };
@@ -208,6 +234,7 @@ function initialFilters() {
     owner: params.get("owner") ?? "",
     environment: params.get("environment") ?? "",
     internet: params.get("internet") ?? "",
+    scope: params.get("scope") ?? "findings",
     sort: params.get("sort") ?? "risk",
     mine: params.get("mine") ?? "",
   };
@@ -324,6 +351,15 @@ export default function DailyFindingsView({
   const [activeViewId, setActiveViewId] = useState("");
   const [deleteViewOpen, setDeleteViewOpen] = useState(false);
   const [jiraOpen, setJiraOpen] = useState(false);
+  const [builderOpen, setBuilderOpen] = useState(false);
+  const [monitorOpen, setMonitorOpen] = useState(false);
+  const [facetsOpen, setFacetsOpen] = useState(false);
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [builderField, setBuilderField] = useState("account");
+  const [builderOperator, setBuilderOperator] = useState("contains");
+  const [builderValue, setBuilderValue] = useState("");
+  const [builderConnector, setBuilderConnector] = useState<"AND" | "OR">("AND");
+  const [builderNegated, setBuilderNegated] = useState(false);
   const [queueMode, setQueueMode] = useState<QueueMode>("findings");
   const [density, setDensity] = useState<QueueDensity>(() => {
     if (typeof window === "undefined") return "compact";
@@ -344,6 +380,28 @@ export default function DailyFindingsView({
   const requestId = useRef(0);
   const defaultViewApplied = useRef(false);
 
+  const effectiveQuery = globalQuery || filters.q;
+  const activeFragment = effectiveQuery.split(/\s+/).at(-1) ?? "";
+  const searchSuggestions = useMemo(() => {
+    if (!searchFocused || !activeFragment || !data) return [];
+    const fieldMatch = activeFragment.match(/^([a-z][a-z0-9-]*):(.*)$/i);
+    if (fieldMatch) {
+      const field = fieldMatch[1].toLowerCase();
+      const prefix = fieldMatch[2].replaceAll('"', "").toLowerCase();
+      return (data.searchSuggestions.values[field] ?? [])
+        .filter((value) => value.toLowerCase().includes(prefix))
+        .slice(0, 7)
+        .map((value) => {
+          const safeValue = value.replaceAll('"', "");
+          return { label: value, replacement: `${field}:${/\s/.test(safeValue) ? `"${safeValue}"` : safeValue}` };
+        });
+    }
+    return data.searchSuggestions.fields
+      .filter((field) => field.startsWith(activeFragment.toLowerCase()))
+      .slice(0, 8)
+      .map((field) => ({ label: `${field}:`, replacement: `${field}:` }));
+  }, [activeFragment, data, searchFocused]);
+
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams();
@@ -356,8 +414,9 @@ export default function DailyFindingsView({
     });
     params.set("page", String(page));
     params.set("pageSize", String(pageSize));
+    if (queueMode === "security-groups") params.set("group", "1");
     return params.toString();
-  }, [filters, globalQuery, page, pageSize]);
+  }, [filters, globalQuery, page, pageSize, queueMode]);
 
   useEffect(() => {
     const currentRequest = ++requestId.current;
@@ -426,6 +485,68 @@ export default function DailyFindingsView({
     setFilters((current) => ({ ...current, [key]: value }));
     setPage(1);
     setSelected(new Set());
+  }
+
+  function setDetailedQuery(value: string) {
+    updateFilter("q", value);
+    onGlobalQueryChange?.(value);
+  }
+
+  function applySearchSuggestion(replacement: string) {
+    const start = effectiveQuery.slice(0, Math.max(0, effectiveQuery.length - activeFragment.length));
+    setDetailedQuery(`${start}${replacement}`);
+    setSearchFocused(false);
+  }
+
+  function addBuilderClause() {
+    const value = builderValue.trim();
+    if (!value) return;
+    const numeric = ["risk", "confidence", "age", "recurrence"].includes(builderField);
+    const operator = numeric && builderOperator !== "contains" ? builderOperator : "";
+    const encoded = /\s/.test(value) ? `"${value.replaceAll('"', "")}"` : value;
+    const clause = `${builderNegated ? "NOT " : ""}${builderField}:${operator}${encoded}`;
+    setDetailedQuery(effectiveQuery.trim() ? `${effectiveQuery.trim()} ${builderConnector} ${clause}` : clause);
+    setBuilderValue("");
+  }
+
+  async function selectEveryResult() {
+    if (!data || data.total > 100) {
+      setError("Refine the search to 100 findings or fewer before selecting the complete result set.");
+      return;
+    }
+    const params = new URLSearchParams(queryString);
+    params.set("page", "1");
+    params.set("pageSize", "100");
+    const response = await fetch(`/api/findings?${params.toString()}`);
+    const payload = (await response.json()) as InboxResponse & { error?: string };
+    if (!response.ok) {
+      setError(payload.error ?? "The full result set could not be selected.");
+      return;
+    }
+    setPage(1);
+    setPageSize(100);
+    setData(payload);
+    setSelected(new Set(payload.items.map((item) => item.fingerprint)));
+    onToast(`${payload.total} search result${payload.total === 1 ? "" : "s"} selected.`);
+  }
+
+  async function exportEveryResult() {
+    const params = new URLSearchParams(queryString);
+    params.set("format", "csv");
+    params.delete("page");
+    params.delete("pageSize");
+    const response = await fetch(`/api/findings?${params.toString()}`);
+    if (!response.ok) {
+      setError("The complete search export could not be prepared.");
+      return;
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "gatewatch-search-results.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+    onToast("Complete search results exported with query lineage.");
   }
 
   function openAction(nextAction: TriageAction, fingerprints: string[]) {
@@ -702,6 +823,15 @@ export default function DailyFindingsView({
           <button className="button button-secondary" onClick={() => setSaveViewOpen(true)}>
             <Save size={14} /> Save current view
           </button>
+          <button className="button button-secondary" onClick={() => setBuilderOpen((value) => !value)} aria-expanded={builderOpen}>
+            <SlidersHorizontal size={14} /> Query builder
+          </button>
+          <button className="button button-secondary" disabled={!effectiveQuery.trim()} onClick={() => setMonitorOpen(true)}>
+            <BellRing size={14} /> Monitor search
+          </button>
+          <button className="button button-secondary" disabled={!data?.total} onClick={() => void exportEveryResult()}>
+            <Download size={14} /> Export all results
+          </button>
           {data && activeViewId && !activeViewId.startsWith("system-") && data.savedViews.find((view) => view.id === activeViewId)?.owner === data.currentUser ? (
             <button className="button button-secondary" onClick={() => setDeleteViewOpen(true)}>
               <X size={14} /> Delete view
@@ -713,19 +843,23 @@ export default function DailyFindingsView({
         </div>
 
         <div className="daily-filter-grid">
-          <label className="daily-search">
-            <Search size={16} />
-            <input
-              value={globalQuery || filters.q}
-              onChange={(event) => {
-                updateFilter("q", event.target.value);
-                onGlobalQueryChange?.(event.target.value);
-              }}
-              placeholder="Search or use arn:, name:, account:, ingress:…"
-              aria-label="Search daily findings"
-              aria-describedby="daily-search-guidance"
-            />
-          </label>
+          <div className="daily-search-shell">
+            <label className="daily-search">
+              <Search size={16} />
+              <input
+                value={effectiveQuery}
+                onChange={(event) => setDetailedQuery(event.target.value)}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => window.setTimeout(() => setSearchFocused(false), 150)}
+                placeholder="Search or use arn:, name:, account:, ingress:…"
+                aria-label="Search daily findings"
+                aria-describedby="daily-search-guidance"
+                aria-autocomplete="list"
+                maxLength={500}
+              />
+            </label>
+            {searchSuggestions.length ? <div className="daily-search-suggestions" role="listbox" aria-label="Search suggestions">{searchSuggestions.map((suggestion) => <button type="button" role="option" aria-selected="false" key={suggestion.replacement} onMouseDown={(event) => event.preventDefault()} onClick={() => applySearchSuggestion(suggestion.replacement)}><Search size={12} /><span>{suggestion.label}</span><code>{suggestion.replacement}</code></button>)}</div> : null}
+          </div>
           <label className="filter-select">
             <ShieldAlert size={14} />
             <select
@@ -738,6 +872,13 @@ export default function DailyFindingsView({
               <option value="high">High</option>
               <option value="medium">Medium</option>
               <option value="low">Low</option>
+            </select>
+          </label>
+          <label className="filter-select">
+            <FileCheck2 size={14} />
+            <select value={filters.scope} onChange={(event) => updateFilter("scope", event.target.value)} aria-label="Search findings or all correlated AWS evidence">
+              <option value="findings">Findings only</option>
+              <option value="all">Findings + AWS evidence</option>
             </select>
           </label>
           <label className="filter-select">
@@ -833,13 +974,36 @@ export default function DailyFindingsView({
               </p>
             ) : data?.queryDiagnostics.unclosedQuote ? (
               <p className="daily-search-warning" role="alert">Close the quoted search phrase to run this query.</p>
+            ) : data?.queryDiagnostics.syntaxErrors.length ? (
+              <p className="daily-search-warning" role="alert">{data.queryDiagnostics.syntaxErrors[0]}</p>
             ) : null}
           </div>
+          {builderOpen ? <div className="daily-query-builder" aria-label="Visual search query builder">
+            <div><strong>Build a clause</strong><span>Choose a field and Gatewatch will generate valid syntax.</span></div>
+            <label><span>Join</span><select value={builderConnector} onChange={(event) => setBuilderConnector(event.target.value as "AND" | "OR")}><option>AND</option><option>OR</option></select></label>
+            <label><span>Field</span><select value={builderField} onChange={(event) => { setBuilderField(event.target.value); setBuilderOperator("contains"); }}><optgroup label="Identity"><option value="arn">ARN</option><option value="sg">Security group ID</option><option value="name">Security group name</option><option value="account">Cloud account</option><option value="region">Region</option><option value="vpc">VPC</option></optgroup><optgroup label="Rule"><option value="ingress">Ingress</option><option value="egress">Egress</option><option value="protocol">Protocol</option><option value="port">Port</option><option value="source">Source</option></optgroup><optgroup label="Risk and workflow"><option value="internet">Internet exposure</option><option value="severity">Severity</option><option value="risk">Risk</option><option value="status">Status</option><option value="owner">Owner</option><option value="assignee">Assignee</option><option value="recurrence">Recurrence</option></optgroup><optgroup label="History and evidence"><option value="changed-after">Changed after</option><option value="changed-before">Changed before</option><option value="changed-by">Changed by</option><option value="evidence">Evidence</option><option value="confidence">Confidence</option><option value="resource">Attached resource</option><option value="tag">Resource tag</option></optgroup></select></label>
+            <label><span>Operator</span><select value={builderOperator} disabled={!['risk', 'confidence', 'age', 'recurrence'].includes(builderField)} onChange={(event) => setBuilderOperator(event.target.value)}><option value="contains">Contains / equals</option><option value=">=">At least</option><option value="<=">At most</option><option value=">">Greater than</option><option value="<">Less than</option></select></label>
+            <label className="builder-value"><span>Value</span><input value={builderValue} onChange={(event) => setBuilderValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addBuilderClause(); } }} list="query-builder-values" placeholder="Value or date" /><datalist id="query-builder-values">{(data?.searchSuggestions.values[builderField] ?? []).map((value) => <option value={value} key={value} />)}</datalist></label>
+            <label className="builder-negate"><input type="checkbox" checked={builderNegated} onChange={(event) => setBuilderNegated(event.target.checked)} /> Exclude with NOT</label>
+            <button type="button" className="button button-primary" disabled={!builderValue.trim()} onClick={addBuilderClause}><Plus size={14} />Add clause</button>
+            {effectiveQuery ? <footer><span>Current expression</span><code>{effectiveQuery}</code><button type="button" onClick={() => setDetailedQuery("")}>Clear</button></footer> : null}
+          </div> : null}
         </div>
+
+        {data && effectiveQuery && !data.queryDiagnostics.syntaxErrors.length && !data.queryDiagnostics.unsupportedFields.length && !data.queryDiagnostics.unclosedQuote ? <section className="search-result-insights" aria-label="Search result facets">
+          <header><div><strong>Result intelligence</strong><span>{data.total} findings across {data.resultGroupCount} security groups{data.evidenceMatches.length ? ` · ${data.evidenceMatches.length} matching evidence records shown` : ""}</span></div><button onClick={() => setFacetsOpen((value) => !value)} aria-expanded={facetsOpen}>{facetsOpen ? "Hide breakdown" : "Show breakdown"}</button></header>
+          {facetsOpen ? <div>{Object.entries(data.resultFacets).map(([name, values]) => <section key={name}><strong>{name}</strong><div>{values.map((facet) => <button key={facet.value} onClick={() => {
+            const field = name === "accounts" ? "account" : name === "regions" ? "region" : name === "severities" ? "severity" : name === "owners" ? "owner" : name === "directions" ? "rule" : "internet";
+            const facetValue = (name === "accounts" ? facet.value.match(/\d{12}/)?.[0] ?? facet.value : facet.value).replaceAll('"', "");
+            const clause = `${field}:${/\s/.test(facetValue) ? `"${facetValue}"` : facetValue}`;
+            setDetailedQuery(effectiveQuery ? `${effectiveQuery} AND ${clause}` : clause);
+          }}><span>{facet.value}</span><b>{facet.count}</b></button>)}</div></section>)}</div> : null}
+        </section> : null}
 
         {selected.size ? (
           <div className="bulk-action-bar" role="toolbar" aria-label="Bulk findings actions">
             <strong>{selected.size} selected</strong>
+            {data && selected.size === data.items.length && data.total > selected.size ? <button disabled={data.total > 100} title={data.total > 100 ? "Refine the search to 100 findings or fewer." : `Select all ${data.total} matching findings`} onClick={() => void selectEveryResult()}><CheckCheck size={14} />Select all {data.total} results</button> : null}
             <button onClick={() => openAction("follow-up", [...selected])}><CalendarClock size={14} />Create follow-up</button>
             <button disabled={data?.items.filter((item) => selected.has(item.fingerprint)).some((item) => !decisionEligible(item, data.source))} title="Decisions require complete, fresh observed evidence." onClick={() => openAction("acknowledged", [...selected])}><CheckCheck size={14} />Acknowledge</button>
             <button disabled={selected.size > 20 || data?.items.filter((item) => selected.has(item.fingerprint)).some((item) => !decisionEligible(item, data.source))} title="Accept risk is limited to 20 findings with complete evidence." onClick={() => openAction("accepted-risk", [...selected])}><ShieldEllipsis size={14} />Accept risk</button>
@@ -862,10 +1026,10 @@ export default function DailyFindingsView({
         ) : null}
 
         <div className="daily-result-summary">
-          <span><strong>{data?.total ?? 0}</strong> findings · <b>{data?.stats.reviewedToday ?? 0}</b> reviewed today · <b>{reviewedInSession}</b> this session</span>
+          <span><strong>{data?.total ?? 0}</strong> findings · <b>{data?.resultGroupCount ?? 0}</b> security groups · <b>{data?.stats.reviewedToday ?? 0}</b> reviewed today · <b>{reviewedInSession}</b> this session</span>
           <div className="queue-display-controls" aria-label="Queue display controls">
-            <button className={queueMode === "findings" ? "active" : ""} onClick={() => setQueueMode("findings")}><ListChecks size={13} /> Findings</button>
-            <button className={queueMode === "security-groups" ? "active" : ""} onClick={() => setQueueMode("security-groups")}><Layers3 size={13} /> Grouped</button>
+            <button className={queueMode === "findings" ? "active" : ""} onClick={() => { setQueueMode("findings"); setPage(1); }}><ListChecks size={13} /> Findings</button>
+            <button className={queueMode === "security-groups" ? "active" : ""} onClick={() => { setQueueMode("security-groups"); setPage(1); }}><Layers3 size={13} /> Grouped</button>
             <button
               title="Toggle queue density"
               onClick={() => {
@@ -882,6 +1046,11 @@ export default function DailyFindingsView({
             <span><Command size={12} /> J/K to review</span>
           </div>
         </div>
+
+        {data?.searchScope === "all" && effectiveQuery ? <section className="universal-evidence-results" aria-label="Matching AWS evidence">
+          <header><div><FileCheck2 size={16} /><p><strong>Correlated AWS evidence</strong><span>Config, CloudTrail, Flow Logs, network analysis, service access, and managed findings searched with the same expression.</span></p></div><span>{data.evidenceMatches.length} shown</span></header>
+          {data.evidenceMatches.length ? <div>{data.evidenceMatches.map((record) => <article key={record.fingerprint}><header><strong>{record.eventName || record.sourceType}</strong><span>{record.evidenceClass}</span></header><p>{record.resourceId || record.resourceType || "Unmatched resource"}</p><small>{record.accountId || "Unknown account"} · {record.region || "Unknown Region"} · {formatDate(record.observedAt)}</small>{record.matchReasons.length ? <footer>{record.matchReasons.map((reason) => <span key={reason}>{reason}</span>)}</footer> : null}</article>)}</div> : <div className="universal-evidence-empty">No normalized evidence records matched independently of the consolidated findings.</div>}
+        </section> : null}
 
         {loading && !data ? (
           <div className="daily-loading" aria-label="Loading findings">
@@ -922,6 +1091,7 @@ export default function DailyFindingsView({
                       {visibleFields.scope ? <small>{item.accountName} · {item.region}</small> : null}
                       {visibleFields.rule ? <div className="queue-rule"><Network size={12} /><span>{item.ruleSummary}</span></div> : null}
                       {visibleFields.workflow ? <footer><span className={`finding-status status-${item.status}`}>{statusLabels[item.status]}</span><span>{item.verdict}</span><span>{item.ageDays === 0 ? "Today" : `${item.ageDays}d old`}</span></footer> : null}
+                      {effectiveQuery && item.matchReasons.length ? <div className="queue-match-reasons" aria-label="Why this finding matched">{item.matchReasons.map((reason) => <span key={reason}>{reason}</span>)}</div> : null}
                     </div>
                   </article>
                 )) : clusters.map((cluster) => {
@@ -934,11 +1104,11 @@ export default function DailyFindingsView({
                         cluster.forEach((item) => event.target.checked ? next.add(item.fingerprint) : next.delete(item.fingerprint));
                         return next;
                       })} /></label>
-                      <div><strong>{lead.securityGroupName}</strong><code>{lead.securityGroupId}</code><small>{lead.accountName} · {lead.region} · {lead.attachments.length} resources</small></div>
+                      <div><strong>{lead.securityGroupName}</strong><code>{lead.securityGroupId}</code><small>{lead.accountName} · {lead.region} · {new Set(cluster.flatMap((item) => item.attachments.map((attachment) => attachment.id))).size} resources</small></div>
                       <span className={`compact-risk risk-${riskTone(Math.max(...cluster.map((item) => item.riskScore)))}`}>{Math.max(...cluster.map((item) => item.riskScore))}</span>
                     </header>
                     <div className="cluster-findings">{cluster.map((item) => <button key={item.fingerprint} onClick={() => setActiveFinding(item)}><span className={`daily-severity severity-${item.severity}`} />{item.title}<ChevronRight size={13} /></button>)}</div>
-                    <footer><span>{cluster.length} correlated findings</span><button onClick={() => { setSelected(new Set(cluster.map((item) => item.fingerprint))); openAction("follow-up", cluster.map((item) => item.fingerprint)); }}>Follow up as group</button></footer>
+                    <footer><span>{cluster.length} finding{cluster.length === 1 ? "" : "s"} · {new Set(cluster.map((item) => item.ruleSummary)).size} rule{new Set(cluster.map((item) => item.ruleSummary)).size === 1 ? "" : "s"} · {new Set(cluster.map((item) => item.verdict)).size} exposure state{new Set(cluster.map((item) => item.verdict)).size === 1 ? "" : "s"}</span><button onClick={() => { setSelected(new Set(cluster.map((item) => item.fingerprint))); openAction("follow-up", cluster.map((item) => item.fingerprint)); }}>Follow up as group</button></footer>
                   </article>;
                 })}
               </div>
@@ -1042,6 +1212,7 @@ export default function DailyFindingsView({
             );
           }}
           fingerprints={actionTargets}
+          selectionQuery={actionTargets.length > 1 ? effectiveQuery : ""}
         />
       ) : null}
 
@@ -1067,6 +1238,17 @@ export default function DailyFindingsView({
           }}
         />
       ) : null}
+
+      {monitorOpen ? <SearchMonitorModal
+        query={effectiveQuery}
+        filters={filters}
+        resultCount={data?.total ?? 0}
+        onClose={() => setMonitorOpen(false)}
+        onSaved={() => {
+          setMonitorOpen(false);
+          onToast("Saved search monitor created. Future result-set transitions will be tracked.");
+        }}
+      /> : null}
 
       {saveViewOpen ? (
         <div className="modal-layer" role="dialog" aria-modal="true" aria-labelledby="save-view-title">
@@ -1307,6 +1489,73 @@ function FindingInvestigationPane({
   );
 }
 
+function SearchMonitorModal({
+  query,
+  filters,
+  resultCount,
+  onClose,
+  onSaved,
+}: {
+  query: string;
+  filters: Filters;
+  resultCount: number;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [schedule, setSchedule] = useState("daily");
+  const [triggerMode, setTriggerMode] = useState("enters");
+  const [destination, setDestination] = useState("notification-delivery");
+  const [visibility, setVisibility] = useState<"personal" | "team">("personal");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function save() {
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch("/api/organization-operations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "monitor-save",
+          name,
+          query,
+          filters: { ...filters, surface: "daily-findings" },
+          schedule,
+          triggerMode,
+          groupBy: "security-group",
+          destinations: [destination],
+          visibility,
+        }),
+      });
+      const payload = (await response.json()) as { saved?: boolean; error?: string };
+      if (!response.ok || !payload.saved) throw new Error(payload.error ?? "The search monitor could not be created.");
+      onSaved();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The search monitor could not be created.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <div className="modal-layer" role="dialog" aria-modal="true" aria-labelledby="search-monitor-title">
+    <button className="modal-scrim" aria-label="Cancel search monitor" onClick={onClose} />
+    <div className="daily-compact-modal search-monitor-modal">
+      <header><div><p>Continuous detection</p><h2 id="search-monitor-title">Monitor this search</h2><span>Track when findings enter or leave this {resultCount}-result population.</span></div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={18} /></button></header>
+      <div className="daily-modal-body">
+        <label className="form-field"><span>Monitor name <em>Required</em></span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} maxLength={120} placeholder="New production admin exposure" /></label>
+        <div className="monitor-query-preview"><strong>Evaluated query</strong><code>{query}</code><small>Current scope and filters are stored with the query and re-evaluated server-side.</small></div>
+        <div className="form-grid-two"><label className="form-field"><span>Schedule</span><select value={schedule} onChange={(event) => setSchedule(event.target.value)}><option value="hourly">Hourly</option><option value="daily">Daily</option><option value="weekly">Weekly</option></select></label><label className="form-field"><span>Notify when</span><select value={triggerMode} onChange={(event) => setTriggerMode(event.target.value)}><option value="enters">A finding enters</option><option value="leaves">A finding leaves</option><option value="severity-change">Severity changes</option><option value="recurrence">Exposure recurs</option><option value="coverage-gap">Evidence coverage degrades</option></select></label></div>
+        <label className="form-field"><span>Destination</span><select value={destination} onChange={(event) => setDestination(event.target.value)}><option value="notification-delivery">Configured email/webhook policy</option><option value="jira">Jira remediation queue</option><option value="security-hub">AWS Security Hub custom action</option></select></label>
+        <fieldset className="view-visibility"><legend>Visibility</legend><label><input type="radio" name="monitor-visibility" checked={visibility === "personal"} onChange={() => setVisibility("personal")} /><span><strong>Personal</strong><small>Only you and administrators can manage it.</small></span></label><label><input type="radio" name="monitor-visibility" checked={visibility === "team"} onChange={() => setVisibility("team")} /><span><strong>Security team</strong><small>Analysts can see and run the monitor.</small></span></label></fieldset>
+        {error ? <div className="form-error" role="alert"><CircleAlert size={15} />{error}</div> : null}
+      </div>
+      <footer><button className="button button-secondary" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={saving || name.trim().length < 3} onClick={() => void save()}>{saving ? <><RefreshCw className="spin" size={14} />Saving…</> : <><BellRing size={14} />Create monitor</>}</button></footer>
+    </div>
+  </div>;
+}
+
 function JiraTicketModal({
   fingerprints,
   existingCount,
@@ -1368,6 +1617,7 @@ function TriageModal({
   targetCount,
   defaultAssignee,
   fingerprints,
+  selectionQuery,
   evidenceEligible,
   onClose,
   onSaved,
@@ -1376,6 +1626,7 @@ function TriageModal({
   targetCount: number;
   defaultAssignee: string;
   fingerprints: string[];
+  selectionQuery: string;
   evidenceEligible: boolean;
   onClose: () => void;
   onSaved: (undo?: { token: string; expiresAt: string }, warning?: string) => void;
@@ -1484,6 +1735,7 @@ function TriageModal({
           <button className="icon-button" aria-label="Close" onClick={onClose}><X size={18} /></button>
         </header>
         <div className="daily-modal-body">
+          {targetCount > 1 ? <div className="bulk-audit-preview"><ListChecks size={17} /><div><strong>Guarded bulk operation</strong><p>{targetCount} stable finding fingerprints will be revalidated by the API. Gatewatch writes one event per finding plus a bulk audit summary and provides a five-minute undo.</p>{selectionQuery ? <code>{selectionQuery}</code> : null}</div></div> : null}
           {action === "acknowledged" ? (
             <div className="triage-guidance"><CheckCheck size={17} /><p><strong>Acknowledgement keeps the finding active.</strong><span>Use this when the current exposure is understood but should continue to appear in monitoring.</span></p></div>
           ) : null}

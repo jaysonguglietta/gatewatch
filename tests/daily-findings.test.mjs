@@ -47,6 +47,19 @@ test("makes the daily findings inbox the default organization-scale workflow", a
   assert.match(inbox, /Search or use arn:, name:, account:, ingress:/);
   assert.match(findingsRoute, /dailyFindingMatchesQuery/);
   assert.match(catalog, /securityGroupArn/);
+  for (const capability of [
+    "Query builder",
+    "Monitor search",
+    "Export all results",
+    "all correlated AWS evidence",
+    "Result intelligence",
+    "Why this finding matched",
+    "Select all",
+    "Guarded bulk operation",
+  ]) assert.match(inbox, new RegExp(capability));
+  for (const capability of ["resultFacets", "evidenceMatches", "matchReasons", "searchSuggestions", "format"]) {
+    assert.match(findingsRoute, new RegExp(capability));
+  }
   assert.match(catalog, /accounts: 324/);
   assert.match(inbox, /gatewatch\.findings-density/);
   assert.doesNotMatch(inbox, /localStorage\.(?:getItem|setItem)\(["'][^"']*(?:note|ticket|workflow)/i);

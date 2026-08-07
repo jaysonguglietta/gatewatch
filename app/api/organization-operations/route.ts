@@ -13,6 +13,9 @@ import {
   securityGroupArn,
 } from "../../../lib/organization-operations";
 import { securityGroups, type SecurityGroup } from "../../../lib/security-data";
+import { findingCatalogForGroups } from "../../../lib/daily-findings";
+import { dailyFindingMatchesQuery, parseDailyFindingQuery } from "../../../lib/daily-finding-query";
+import { internetExposureForVerdict } from "../../../lib/finding-exposure";
 import { cleanText } from "../../../lib/admin-sources";
 import {
   apiJson,
@@ -31,7 +34,8 @@ type AccountRow = {
   businessUnit: string; owner: string; tags: string; status: string; lastSeenAt: string; updatedAt: string;
 };
 
-const groupByOptions = new Set(["account", "organizational-unit", "environment", "region", "owner", "severity"]);
+const groupByOptions = new Set(["account", "organizational-unit", "environment", "region", "owner", "severity", "security-group"]);
+const monitorDestinations = new Set(["notification-delivery", "jira", "security-hub"]);
 const legalHoldScopes = new Set(["workspace", "account", "security-group", "finding", "export"]);
 
 async function ensureSchema() {
@@ -138,6 +142,34 @@ function matchesQuery(group: SecurityGroup, query: string) {
   if (!query) return true;
   return [group.id, group.name, group.accountId, group.accountName, group.region, group.owner, group.environment, ...group.findings]
     .join(" ").toLowerCase().includes(query.toLowerCase());
+}
+
+async function matchesDailyMonitor(groups: SecurityGroup[], query: string, filters: Record<string, unknown>) {
+  const parsed = parseDailyFindingQuery(query);
+  const [workflowResult, observationResult] = await Promise.all([
+    env.DB.prepare(`SELECT fingerprint, status, assignee FROM finding_workflows WHERE workspace_id = 'default'`).all<{ fingerprint: string; status: string; assignee: string }>(),
+    env.DB.prepare(`SELECT fingerprint, last_seen_at AS lastSeenAt, observation_count AS observationCount
+      FROM finding_observations WHERE workspace_id = 'default'`).all<{ fingerprint: string; lastSeenAt: string; observationCount: number }>(),
+  ]);
+  const workflows = new Map(workflowResult.results.map((item) => [item.fingerprint, item]));
+  const observations = new Map(observationResult.results.map((item) => [item.fingerprint, item]));
+  return findingCatalogForGroups(groups, { live: true, snapshotId: "monitor-evaluation" })
+    .map((finding) => {
+      const workflow = workflows.get(finding.fingerprint) ?? workflows.get(finding.legacyFingerprint);
+      const observation = observations.get(finding.fingerprint);
+      return { ...finding, status: workflow?.status ?? "new", assignee: workflow?.assignee ?? finding.owner ?? "Unassigned",
+        lastSeenAt: observation?.lastSeenAt ?? finding.lastObserved, observationCount: observation?.observationCount ?? 1 };
+    })
+    .filter((finding) =>
+      (!query || dailyFindingMatchesQuery(finding, parsed)) &&
+      (!filters.severity || finding.severity === filters.severity) &&
+      (!filters.status || (filters.status === "open" ? finding.status !== "resolved" : finding.status === filters.status)) &&
+      (!filters.account || finding.accountId === filters.account) &&
+      (!filters.region || finding.region === filters.region) &&
+      (!filters.owner || finding.owner === filters.owner) &&
+      (!filters.environment || finding.environment === filters.environment) &&
+      (!filters.internet || internetExposureForVerdict(finding.verdict) === filters.internet),
+    );
 }
 
 function exportBody(groups: SecurityGroup[], format: string) {
@@ -324,12 +356,20 @@ export async function POST(request: Request) {
     }
 
     if (action === "monitor-save") {
-      const name = cleanText(body.name, 120); const query = cleanText(body.query, 160);
+      const name = cleanText(body.name, 120); const query = cleanText(body.query, 500);
       const schedule = cleanText(body.schedule, 20); const triggerMode = cleanText(body.triggerMode, 30);
       const groupBy = cleanText(body.groupBy, 30); const visibility = body.visibility === "team" ? "team" : "personal";
       if (name.length < 3 || !monitorSchedules.includes(schedule as never) || !monitorTriggers.includes(triggerMode as never) || !groupByOptions.has(groupBy)) return apiJson({ error: "Provide a monitor name and supported schedule, trigger, and grouping." }, 400);
+      const rawFilters = body.filters && typeof body.filters === "object" ? body.filters as Record<string, unknown> : {};
+      const filters = Object.fromEntries(["surface", "severity", "status", "account", "region", "owner", "environment", "internet", "scope"]
+        .map((key) => [key, cleanText(rawFilters[key], key === "owner" ? 120 : 40)] as const)
+        .filter(([, value]) => Boolean(value)));
+      const parsed = parseDailyFindingQuery(query);
+      if (filters.surface === "daily-findings" && (parsed.unsupportedFields.length || parsed.unclosedQuote || parsed.syntaxErrors.length)) {
+        return apiJson({ error: "Fix the search expression before creating a monitor." }, 400);
+      }
       const id = cleanText(body.id, 80) || crypto.randomUUID();
-      const destinations = strings(body.destinations, 5);
+      const destinations = strings(body.destinations, 5).filter((destination) => monitorDestinations.has(destination));
       if (body.id) {
         const existing = await env.DB.prepare(`SELECT owner FROM evidence_monitors WHERE id = ? AND workspace_id = 'default'`).bind(id).first<{ owner: string }>();
         if (!existing) return apiJson({ error: "Monitor was not found." }, 404);
@@ -337,11 +377,11 @@ export async function POST(request: Request) {
       }
       await env.DB.prepare(`INSERT INTO evidence_monitors
         (id, name, query, filters, group_by, schedule, trigger_mode, destinations, visibility, owner, next_run_at)
-        VALUES (?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET name = excluded.name, query = excluded.query, group_by = excluded.group_by,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET name = excluded.name, query = excluded.query, filters = excluded.filters, group_by = excluded.group_by,
           schedule = excluded.schedule, trigger_mode = excluded.trigger_mode, destinations = excluded.destinations,
           visibility = excluded.visibility, updated_at = CURRENT_TIMESTAMP`)
-        .bind(id, name, query, groupBy, schedule, triggerMode, JSON.stringify(destinations), visibility, user, nextMonitorRun(schedule)).run();
+        .bind(id, name, query, JSON.stringify(filters), groupBy, schedule, triggerMode, JSON.stringify(destinations), visibility, user, nextMonitorRun(schedule)).run();
       await audit(user, "monitor.save", "evidence-monitor", id, `${body.id ? "Updated" : "Created"} monitor ${name}.`);
       return apiJson({ saved: true, id }, body.id ? 200 : 201);
     }
@@ -366,29 +406,46 @@ export async function POST(request: Request) {
 
     if (action === "monitor-run") {
       const id = cleanText(body.id, 80);
-      const monitor = await env.DB.prepare(`SELECT query, schedule, last_match_count AS lastMatchCount FROM evidence_monitors
-        WHERE id = ? AND workspace_id = 'default' AND (owner = ? OR visibility = 'team' OR ? = 'admin')`).bind(id, user, permission.role).first<{ query: string; schedule: string; lastMatchCount: number }>();
+      const monitor = await env.DB.prepare(`SELECT query, filters, group_by AS groupBy, schedule, destinations, last_match_count AS lastMatchCount FROM evidence_monitors
+        WHERE id = ? AND workspace_id = 'default' AND (owner = ? OR visibility = 'team' OR ? = 'admin')`).bind(id, user, permission.role).first<{ query: string; filters: string; groupBy: string; schedule: string; destinations: string; lastMatchCount: number }>();
       if (!monitor) return apiJson({ error: "Monitor was not found." }, 404);
-      const data = await inventory(); const matches = data.groups.filter((group) => matchesQuery(group, monitor.query));
-      const entered = Math.max(0, matches.length - monitor.lastMatchCount); const exited = Math.max(0, monitor.lastMatchCount - matches.length);
+      const data = await inventory();
+      const filters = safeJson<Record<string, unknown>>(monitor.filters, {});
+      const matchedRecords = filters.surface === "daily-findings"
+        ? await matchesDailyMonitor(data.groups, monitor.query, filters)
+        : data.groups.filter((group) => matchesQuery(group, monitor.query));
+      const matchCount = monitor.groupBy === "security-group"
+        ? new Set(matchedRecords.map((item) => "canonicalResourceKey" in item ? item.canonicalResourceKey : securityGroupArn(item))).size
+        : matchedRecords.length;
+      const entered = Math.max(0, matchCount - monitor.lastMatchCount); const exited = Math.max(0, monitor.lastMatchCount - matchCount);
       const runId = crypto.randomUUID(); const now = new Date().toISOString();
       await env.DB.batch([
         env.DB.prepare(`INSERT INTO evidence_monitor_runs (id, monitor_id, status, match_count, entered_count, exited_count, summary)
-          VALUES (?, ?, 'complete', ?, ?, ?, ?)`).bind(runId, id, matches.length, entered, exited, JSON.stringify({ query: monitor.query, snapshotGeneratedAt: data.source.generatedAt })),
+          VALUES (?, ?, 'complete', ?, ?, ?, ?)`).bind(runId, id, matchCount, entered, exited, JSON.stringify({ query: monitor.query, filters, snapshotGeneratedAt: data.source.generatedAt })),
         env.DB.prepare(`UPDATE evidence_monitors SET last_run_at = ?, next_run_at = ?, last_match_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-          .bind(now, nextMonitorRun(monitor.schedule), matches.length, id),
+          .bind(now, nextMonitorRun(monitor.schedule), matchCount, id),
       ]);
       if (entered || exited) {
-        await queueNotification("monitor-transition", id, entered ? "high" : "medium", {
-          monitorId: id, query: monitor.query, matchCount: matches.length, entered, exited,
-        });
+        const deliveryPayload = { monitorId: id, query: monitor.query, filters, matchCount, entered, exited };
+        const destinations = safeJson<string[]>(monitor.destinations, []);
+        if (destinations.includes("notification-delivery")) {
+          await queueNotification("monitor-transition", id, entered ? "high" : "medium", deliveryPayload);
+        }
+        const integrations = destinations.filter((destination) => ["jira", "security-hub"].includes(destination));
+        if (integrations.length) {
+          await env.DB.batch(integrations.map((integration) => env.DB.prepare(
+            `INSERT INTO integration_deliveries
+              (id, workspace_id, integration, event_type, target_id, status, payload, next_attempt_at)
+             VALUES (?, 'default', ?, 'monitor-transition', ?, 'pending', ?, CURRENT_TIMESTAMP)`,
+          ).bind(crypto.randomUUID(), integration, id, JSON.stringify(deliveryPayload).slice(0, 20_000))));
+        }
       }
-      await audit(user, "monitor.run", "evidence-monitor", id, `Monitor matched ${matches.length} security groups.`, { entered, exited });
-      return apiJson({ completed: true, matches: matches.length, entered, exited });
+      await audit(user, "monitor.run", "evidence-monitor", id, `Monitor matched ${matchCount} ${monitor.groupBy === "security-group" ? "security groups" : "records"}.`, { entered, exited });
+      return apiJson({ completed: true, matches: matchCount, entered, exited });
     }
 
     if (action === "export-create") {
-      const format = cleanText(body.format, 30); const name = cleanText(body.name, 120); const query = cleanText(body.query, 160);
+      const format = cleanText(body.format, 30); const name = cleanText(body.name, 120); const query = cleanText(body.query, 500);
       const schedule = ["once", "daily", "weekly", "monthly"].includes(String(body.schedule)) ? String(body.schedule) : "once";
       if (!exportFormats.includes(format as never) || name.length < 3) return apiJson({ error: "Choose an export name and supported format." }, 400);
       const data = await inventory(); const rows = data.groups.filter((group) => matchesQuery(group, query));

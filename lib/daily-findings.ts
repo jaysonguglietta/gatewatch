@@ -91,7 +91,11 @@ export type FindingWorkflowState = {
   jiraLastSyncedAt?: string;
 };
 
-export type DailyFinding = FindingCatalogItem & FindingWorkflowState;
+export type DailyFinding = FindingCatalogItem & FindingWorkflowState & {
+  lastSeenAt: string;
+  observationCount: number;
+  observationState: "active" | "reopened" | "resolved";
+};
 
 const accountHierarchy: Record<string, { organization: string; ou: string }> = {
   "428196730552": {

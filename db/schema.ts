@@ -596,6 +596,12 @@ export const findingObservations = sqliteTable(
       table.canonicalResourceKey,
       table.state,
     ),
+    index("finding_observations_temporal_idx").on(
+      table.workspaceId,
+      table.state,
+      table.lastSeenAt,
+      table.observationCount,
+    ),
   ],
 );
 

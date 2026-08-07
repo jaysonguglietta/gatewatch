@@ -56,6 +56,7 @@ test("organization operating plane is durable, authenticated, auditable, and dep
   const ui = readFileSync("app/organization-operations-view.tsx", "utf8");
   const d1 = readFileSync("drizzle/0011_charming_beyonder.sql", "utf8");
   const postgres = readFileSync("db/postgres/0002_organization_operations.sql", "utf8");
+  const searchIndexes = readFileSync("db/postgres/0003_finding_search.sql", "utf8");
   assert.match(route, /requestUser\(request\)/);
   assert.match(route, /sameOrigin\(request\)/);
   assert.match(route, /requirePermission/);
@@ -65,6 +66,9 @@ test("organization operating plane is durable, authenticated, auditable, and dep
   assert.match(route, /evidence_export_jobs/);
   assert.match(route, /CREATE TABLE IF NOT EXISTS aws_evidence_records/);
   assert.match(route, /ALTER TABLE aws_evidence_records ADD COLUMN workspace_id/);
+  assert.match(route, /matchesDailyMonitor/);
+  assert.match(route, /integration_deliveries/);
+  assert.match(route, /filters = excluded.filters/);
   assert.match(ui, /Account catalog/);
   assert.match(ui, /Correlation workbench/);
   assert.match(ui, /Create governed export/);
@@ -72,4 +76,7 @@ test("organization operating plane is durable, authenticated, auditable, and dep
   assert.match(d1, /CREATE TABLE `evidence_monitors`/);
   assert.match(postgres, /ENABLE ROW LEVEL SECURITY/);
   assert.match(postgres, /workspace_isolation/);
+  assert.match(searchIndexes, /gin_trgm_ops/);
+  assert.match(searchIndexes, /aws_evidence_universal_search_idx/);
+  assert.match(searchIndexes, /finding_observations_temporal_idx/);
 });

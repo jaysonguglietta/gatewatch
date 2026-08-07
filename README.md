@@ -25,6 +25,10 @@ resources, and vulnerability context.
   account ID/name, Region, VPC, ingress/egress rule, protocol, port, source CIDR,
   ownership, attached resources and tags, evidence state, workflow, and numeric
   risk/confidence/age comparisons
+- A visual query composer with field/value autocomplete, `AND`/`OR`/`NOT`
+  expressions, parentheses, history and recurrence predicates, matched-clause
+  explanations, dynamic result facets, correlated raw-evidence scope, monitored
+  searches, complete-result exports, and guarded search-backed bulk workflows
 - Finding-level follow-up, acknowledgement, accepted-risk, and resolution
   workflows with structured reasons, evidence freshness gates, bulk guardrails,
   mandatory rationale, owners, review dates, tickets, compensating controls,
