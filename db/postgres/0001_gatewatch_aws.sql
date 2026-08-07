@@ -317,6 +317,37 @@ CREATE INDEX config_items_resource_capture_idx
 CREATE TABLE config_items_default
   PARTITION OF config_items DEFAULT;
 
+-- Source-neutral ledger for AWS-native evidence that is neither a Config item
+-- nor a CloudTrail management event. Raw objects remain immutable in S3; this
+-- table stores bounded normalized fields plus the source-specific AWS payload.
+CREATE TABLE aws_evidence_records (
+  workspace_id uuid NOT NULL REFERENCES workspaces(id),
+  fingerprint text NOT NULL,
+  source_id uuid NOT NULL REFERENCES ingestion_sources(id),
+  raw_object_id uuid NOT NULL REFERENCES ingested_objects(id),
+  source_type text NOT NULL,
+  evidence_class text NOT NULL CHECK (evidence_class IN (
+    'observed-traffic', 'reachability', 'service-access', 'threat-finding'
+  )),
+  observed_at timestamptz,
+  account_id text NOT NULL DEFAULT '',
+  region text NOT NULL DEFAULT '',
+  resource_type text NOT NULL DEFAULT '',
+  resource_id text NOT NULL DEFAULT '',
+  event_name text NOT NULL DEFAULT '',
+  disposition text NOT NULL DEFAULT '',
+  normalized_payload jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (workspace_id, fingerprint)
+);
+
+CREATE INDEX aws_evidence_records_source_time_idx
+  ON aws_evidence_records (workspace_id, source_type, observed_at DESC);
+
+CREATE INDEX aws_evidence_records_resource_time_idx
+  ON aws_evidence_records
+  (workspace_id, account_id, region, resource_id, observed_at DESC);
+
 CREATE TABLE aws_resources (
   workspace_id uuid NOT NULL REFERENCES workspaces(id),
   account_id text NOT NULL,

@@ -25,8 +25,8 @@ flowchart TD
   A["1. Organization collector"] --> B["2. PostgreSQL migration"]
   B --> C["3. AWS data platform"]
   C --> D["4. Identity and web runtime"]
-  D --> E["5. CloudTrail / Config sources"]
-  E --> F["6. Flow Log summaries and Jira"]
+  D --> E["5. AWS-native evidence sources"]
+  E --> F["6. Evidence correlation and Jira"]
   F --> G["7. Production validation and release gate"]
 ```
 
@@ -102,10 +102,17 @@ authoritative multi-account governance, replace it with individual OIDC/MFA,
 TLS to the origin, separate web/bridge task roles, WAF/rate limiting, and a
 production runtime as described in the security roadmap.
 
-## 5. Connect CloudTrail and Config
+## 5. Connect AWS-native evidence
 
 - Prefer an organization trail delivered to a central log-archive bucket.
 - Prefer an organization Config aggregator/history source.
+- Add VPC and Transit Gateway Flow Logs as observed-traffic evidence.
+- Add Reachability Analyzer and Network Access Analyzer exports as static path
+  evidence, without treating them as proof that traffic occurred.
+- Add ELB, WAF, CloudFront, API Gateway, Route 53 Resolver, and Network Firewall
+  logs only where those services are in the protected path.
+- Add GuardDuty, Security Hub, and Inspector findings as threat enrichment, not
+  as the source of truth for security-group configuration or reachability.
 - Use a dedicated `GatewatchLogReadRole` per source account/bucket.
 - Generate the template from Admin, review the JSON policy, and validate it with
   IAM Access Analyzer before deployment.

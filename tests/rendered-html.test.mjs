@@ -49,7 +49,8 @@ test("ships the Gatewatch product shell and production metadata", async () => {
   assert.match(dashboard, /Connectivity history/);
   assert.match(dashboard, /Hand off analysis and enforcement safely\./);
   assert.match(dashboard, /Simulation only · no AWS write permission/);
-  assert.match(dashboard, /Drag in an AWS CloudTrail log\./);
+  assert.match(dashboard, /Import AWS-native evidence\./);
+  assert.match(dashboard, /AWS log imports/);
   assert.match(dashboard, /Your log stays on this device/);
   assert.match(dashboard, /JSON or JSON\.GZ/);
   assert.match(dashboard, /Clear session/);

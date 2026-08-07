@@ -10,6 +10,7 @@ import type {
   ConnectionTestSummary,
   IngestionSource,
 } from "./admin-sources";
+import { sourceTypeDefinition } from "./admin-sources";
 import { awsRuntimeCredentials } from "./aws-runtime-credentials";
 
 function check(
@@ -57,7 +58,10 @@ function detectedFormat(source: IngestionSource, key = "") {
   if (source.sourceType === "config-history" || key.includes("ConfigHistory")) {
     return "AWS Config history";
   }
-  return "AWS Config snapshot";
+  if (source.sourceType === "config-snapshot" || key.includes("ConfigSnapshot")) {
+    return "AWS Config snapshot";
+  }
+  return sourceTypeDefinition(source.sourceType).format;
 }
 
 export async function testAwsSource(
@@ -181,7 +185,7 @@ export async function testAwsSource(
             "sample",
             "Read sample object",
             "failed",
-            "Add a CloudTrail or AWS Config delivery file, then test again.",
+            `Add a ${sourceTypeDefinition(source.sourceType).label} delivery file, then test again.`,
           ),
         ],
       };

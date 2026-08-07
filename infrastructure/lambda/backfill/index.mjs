@@ -10,6 +10,16 @@ const database = process.env.DATABASE_NAME;
 const resourceArn = process.env.DB_CLUSTER_ARN;
 const secretArn = process.env.DB_SECRET_ARN;
 const queueUrl = process.env.INGESTION_QUEUE_URL;
+const SUPPORTED_EVIDENCE_SUFFIXES = [
+  ".json",
+  ".json.gz",
+  ".log",
+  ".log.gz",
+  ".txt",
+  ".txt.gz",
+  ".csv",
+  ".tsv",
+];
 
 function fieldString(field) {
   return field?.stringValue ?? "";
@@ -127,7 +137,7 @@ export async function handler(event) {
     (item) =>
       item.Key &&
       (!item.LastModified || item.LastModified.getTime() >= startTime) &&
-      (item.Key.endsWith(".json") || item.Key.endsWith(".json.gz")),
+      SUPPORTED_EVIDENCE_SUFFIXES.some((suffix) => item.Key.toLowerCase().endsWith(suffix)),
   );
   await enqueue(source, objects, event.runId);
   const cursor = result.NextContinuationToken ?? "";

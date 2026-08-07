@@ -128,8 +128,9 @@ as well. Schema changes live in
 The AWS target uses Aurora PostgreSQL rather than copying raw logs into a
 transactional database. The production schema is
 `db/postgres/0001_gatewatch_aws.sql`. Raw objects remain in the configured S3
-bucket; normalized events, configuration items, current rule versions,
-findings, and evidence references are stored in Aurora.
+bucket; normalized events, configuration items, traffic observations, network
+analyses, service access, managed findings, current rule versions, findings,
+and evidence references are stored in Aurora.
 
 The current-state authority is the distributed EC2 inventory collector. AWS
 Config supplies configuration history, CloudTrail supplies actor/change
@@ -140,7 +141,10 @@ reachability, and Flow Logs supply observed use. These claims remain separate.
 
 Open **Admin config** in the application navigation to:
 
-- Add CloudTrail, Config history, and Config snapshot S3 prefixes
+- Add S3 prefixes for CloudTrail, Config, VPC and Transit Gateway Flow Logs,
+  Reachability Analyzer, Network Access Analyzer, ELB, WAF, CloudFront,
+  API Gateway, Route 53 Resolver, Network Firewall, GuardDuty, Security Hub,
+  and Inspector evidence
 - Generate a least-privilege cross-account read-role template
 - Validate source structure locally and perform live STS/S3 tests when an AWS
   runtime identity is present
@@ -175,7 +179,7 @@ AWS deployment assets are under `infrastructure/`:
 - `cloudformation/gatewatch-s3-event-forwarding.yaml` — prefix-filtered S3
   Object Created forwarding through EventBridge
 - `lambda/organization-collector/` — discovery, account worker, and finalizer handlers
-- `lambda/ingest/` — duplicate-safe, size-bounded CloudTrail and Config worker
+- `lambda/ingest/` — duplicate-safe, size-bounded AWS-native evidence worker
 - `lambda/backfill/` — paginated historical discovery and enqueue worker
 
 ### Personal AWS deployment

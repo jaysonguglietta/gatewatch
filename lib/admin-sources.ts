@@ -2,9 +2,67 @@ export const sourceTypes = [
   "cloudtrail",
   "config-history",
   "config-snapshot",
+  "vpc-flow-logs",
+  "transit-gateway-flow-logs",
+  "reachability-analyzer",
+  "network-access-analyzer",
+  "elastic-load-balancing",
+  "waf",
+  "cloudfront",
+  "api-gateway",
+  "route53-resolver",
+  "network-firewall",
+  "guardduty",
+  "security-hub",
+  "inspector",
 ] as const;
 
 export type SourceType = (typeof sourceTypes)[number];
+
+export type EvidenceClass =
+  | "configuration"
+  | "change"
+  | "observed-traffic"
+  | "reachability"
+  | "service-access"
+  | "threat-finding";
+
+export type SourceTypeDefinition = {
+  value: SourceType;
+  label: string;
+  group: "Core evidence" | "Network analysis" | "Service access" | "Security findings";
+  evidenceClass: EvidenceClass;
+  format: string;
+  description: string;
+};
+
+export const sourceTypeDefinitions: readonly SourceTypeDefinition[] = [
+  { value: "cloudtrail", label: "AWS CloudTrail", group: "Core evidence", evidenceClass: "change", format: "JSON or JSON.GZ", description: "Control-plane changes, actor identity, source address, and request outcome." },
+  { value: "config-history", label: "AWS Config history", group: "Core evidence", evidenceClass: "configuration", format: "JSON or JSON.GZ", description: "Historical resource configurations and relationships." },
+  { value: "config-snapshot", label: "AWS Config snapshot", group: "Core evidence", evidenceClass: "configuration", format: "JSON or JSON.GZ", description: "Point-in-time resource configuration and relationship inventory." },
+  { value: "vpc-flow-logs", label: "VPC Flow Logs", group: "Core evidence", evidenceClass: "observed-traffic", format: "S3 text, JSON, or JSON.GZ", description: "Accepted and rejected traffic observed at VPC, subnet, or ENI scope." },
+  { value: "transit-gateway-flow-logs", label: "Transit Gateway Flow Logs", group: "Core evidence", evidenceClass: "observed-traffic", format: "S3 text, JSON, or JSON.GZ", description: "Traffic observed across transit-gateway attachments." },
+  { value: "reachability-analyzer", label: "Reachability Analyzer", group: "Network analysis", evidenceClass: "reachability", format: "AWS CLI or API JSON", description: "Hop-by-hop reachable paths and blocking components." },
+  { value: "network-access-analyzer", label: "Network Access Analyzer", group: "Network analysis", evidenceClass: "reachability", format: "AWS CLI or API JSON", description: "Potential paths matching an AWS network access scope." },
+  { value: "elastic-load-balancing", label: "ELB access logs (ALB/NLB)", group: "Service access", evidenceClass: "service-access", format: "AWS access log text or JSON", description: "Client connections, requests, targets, TLS, and response outcomes." },
+  { value: "waf", label: "AWS WAF logs", group: "Service access", evidenceClass: "service-access", format: "JSON or JSON.GZ", description: "Allowed, blocked, counted, and challenged web requests." },
+  { value: "cloudfront", label: "CloudFront access logs", group: "Service access", evidenceClass: "service-access", format: "Standard TSV, JSON, or JSON.GZ", description: "Viewer requests and edge responses for public distributions." },
+  { value: "api-gateway", label: "API Gateway access logs", group: "Service access", evidenceClass: "service-access", format: "Structured JSON Lines", description: "API requests, routes, callers, latency, and response status." },
+  { value: "route53-resolver", label: "Route 53 Resolver query logs", group: "Service access", evidenceClass: "service-access", format: "JSON or JSON.GZ", description: "DNS queries from VPC resources and Resolver endpoints." },
+  { value: "network-firewall", label: "AWS Network Firewall logs", group: "Service access", evidenceClass: "observed-traffic", format: "JSON or JSON.GZ", description: "Firewall flow and alert decisions on inspected network paths." },
+  { value: "guardduty", label: "Amazon GuardDuty findings", group: "Security findings", evidenceClass: "threat-finding", format: "GetFindings or EventBridge JSON", description: "Managed threat detections enriched with affected AWS resources." },
+  { value: "security-hub", label: "AWS Security Hub findings", group: "Security findings", evidenceClass: "threat-finding", format: "ASFF JSON", description: "Security posture and partner findings in AWS Security Finding Format." },
+  { value: "inspector", label: "Amazon Inspector findings", group: "Security findings", evidenceClass: "threat-finding", format: "ListFindings or EventBridge JSON", description: "Vulnerability findings for reachable workloads and software packages." },
+] as const;
+
+export function sourceTypeDefinition(value: SourceType) {
+  return sourceTypeDefinitions.find((definition) => definition.value === value)
+    ?? sourceTypeDefinitions[0];
+}
+
+export function isConfigSource(value: SourceType) {
+  return value === "config-history" || value === "config-snapshot";
+}
 export type SourceStatus =
   | "draft"
   | "testing"
@@ -127,7 +185,7 @@ export function validateSourceInput(value: unknown) {
     errors.push("Give the source a name of at least 3 characters.");
   }
   if (!sourceTypes.includes(sourceType)) {
-    errors.push("Choose CloudTrail, Config history, or Config snapshot.");
+    errors.push("Choose a supported AWS evidence source.");
   }
   if (!/^arn:(aws|aws-us-gov|aws-cn):s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucketArn)) {
     errors.push("Enter a valid S3 bucket ARN.");
@@ -191,15 +249,15 @@ export function validateSourceInput(value: unknown) {
       excludedAccounts: cleanStringList(record.excludedAccounts, 500, 12),
       includedRegions: cleanStringList(record.includedRegions, 50, 40),
       configResourceTypes:
-        sourceType === "cloudtrail"
-          ? []
-          : cleanStringList(
+        isConfigSource(sourceType)
+          ? cleanStringList(
               record.configResourceTypes,
               100,
               160,
             ).length
             ? cleanStringList(record.configResourceTypes, 100, 160)
-            : defaultConfigResourceTypes,
+            : defaultConfigResourceTypes
+          : [],
       retentionDays,
     },
   };

@@ -21,7 +21,8 @@ broad CIDRs, and wide port ranges.
    isolated worker per account with bounded Region fan-out.
 2. Successful account/Region scans write immutable, checksummed evidence shards;
    failed targets remain explicit in the run manifest and Coverage view.
-3. An administrator configures additional read-only CloudTrail and Config sources.
+3. An administrator configures read-only AWS-native configuration, change,
+   traffic, network-analysis, service-access, and managed-finding sources.
 4. Gatewatch validates role assumption, prefix listing, bounded object reading,
    and KMS access.
 5. Continuous events and historical backfills populate normalized Aurora state.
@@ -69,7 +70,8 @@ broad CIDRs, and wide port ranges.
 `organization_collection_runs`, `organization_collection_targets`,
 `inventory_shard_objects`, `security_group_observations`,
 `security_group_rule_observations`,
-`config_items`, `aws_resources`, `security_group_rule_versions`, `findings`,
+`config_items`, `aws_evidence_records`, `aws_resources`,
+`security_group_rule_versions`, `findings`,
 `exposure_verdicts`, `rule_recommendations`, `exposure_drift_events`,
 `ownership_assignments`, `exception_requests`, `control_evaluations`,
 `hygiene_findings`, `iac_guardrail_evaluations`, `program_metric_snapshots`,
@@ -138,6 +140,8 @@ broad CIDRs, and wide port ranges.
 - Real AWS-capable connection test with a safe configuration-only local state
 - Least-privilege cross-account IAM template generation
 - Config parser and CloudTrail/Config correlation library
+- AWS-native evidence catalog, local validation, and a bounded generic evidence
+  ledger for Flow Logs, path analyses, service logs, and managed findings
 - Idempotent bounded AWS ingestion worker with partial-batch failure reporting
 - Aurora production schema, SQS/DLQ, Lambda, KMS, alarms, and event forwarding IaC
 - Operational views for sources, runs, roles, retention, and audit history

@@ -504,6 +504,38 @@ export const configItems = sqliteTable(
   ],
 );
 
+export const awsEvidenceRecords = sqliteTable(
+  "aws_evidence_records",
+  {
+    fingerprint: text("fingerprint").primaryKey(),
+    sourceId: text("source_id").notNull(),
+    rawObjectId: text("raw_object_id").notNull(),
+    sourceType: text("source_type").notNull(),
+    evidenceClass: text("evidence_class").notNull(),
+    observedAt: text("observed_at").notNull().default(""),
+    accountId: text("account_id").notNull().default(""),
+    region: text("region").notNull().default(""),
+    resourceType: text("resource_type").notNull().default(""),
+    resourceId: text("resource_id").notNull().default(""),
+    eventName: text("event_name").notNull().default(""),
+    disposition: text("disposition").notNull().default(""),
+    normalizedPayload: text("normalized_payload").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("aws_evidence_source_time_idx").on(
+      table.sourceId,
+      table.observedAt,
+    ),
+    index("aws_evidence_resource_time_idx").on(
+      table.accountId,
+      table.region,
+      table.resourceId,
+      table.observedAt,
+    ),
+  ],
+);
+
 export const productWorkflowRecords = sqliteTable(
   "product_workflow_records",
   {

@@ -14,6 +14,7 @@ import {
 const MAX_COMPRESSED_BYTES = 50 * 1024 * 1024;
 const MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024;
 const MAX_RECORDS = 100_000;
+const MAX_GENERIC_PAYLOAD_BYTES = 64 * 1024;
 const SG_EVENTS = new Set([
   "AuthorizeSecurityGroupIngress",
   "AuthorizeSecurityGroupEgress",
@@ -25,6 +26,26 @@ const SG_EVENTS = new Set([
   "UpdateSecurityGroupRuleDescriptionsIngress",
   "UpdateSecurityGroupRuleDescriptionsEgress",
 ]);
+const GENERIC_SOURCE_CLASSES = new Map([
+  ["vpc-flow-logs", "observed-traffic"],
+  ["transit-gateway-flow-logs", "observed-traffic"],
+  ["reachability-analyzer", "reachability"],
+  ["network-access-analyzer", "reachability"],
+  ["elastic-load-balancing", "service-access"],
+  ["waf", "service-access"],
+  ["cloudfront", "service-access"],
+  ["api-gateway", "service-access"],
+  ["route53-resolver", "service-access"],
+  ["network-firewall", "observed-traffic"],
+  ["guardduty", "threat-finding"],
+  ["security-hub", "threat-finding"],
+  ["inspector", "threat-finding"],
+]);
+const DEFAULT_FLOW_FIELDS = [
+  "version", "account-id", "interface-id", "srcaddr", "dstaddr", "srcport",
+  "dstport", "protocol", "packets", "bytes", "start", "end", "action",
+  "log-status",
+];
 
 const rds = new RDSDataClient({});
 const sts = new STSClient({});
@@ -236,6 +257,250 @@ function normalizeConfig(item) {
     configuration: JSON.stringify(configuration),
     relationships: JSON.stringify(item.relationships ?? []),
   };
+}
+
+function recordObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function recordString(value, maximum = 2_000) {
+  if (typeof value === "string") return value.slice(0, maximum);
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value).slice(0, maximum);
+  }
+  return "";
+}
+
+function firstRecordValue(record, keys, maximum = 2_000) {
+  for (const key of keys) {
+    const value = recordString(record?.[key], maximum);
+    if (value) return value;
+  }
+  return "";
+}
+
+function parseJsonLines(text) {
+  const records = [];
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    try {
+      const value = JSON.parse(trimmed);
+      if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+      records.push(value);
+    } catch {
+      return null;
+    }
+  }
+  return records.length ? records : null;
+}
+
+function parseFlowText(text) {
+  const records = [];
+  let fields = DEFAULT_FLOW_FIELDS;
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#Version:")) continue;
+    if (trimmed.startsWith("#Fields:")) {
+      fields = trimmed.slice(8).trim().split(/\s+/);
+      continue;
+    }
+    const values = trimmed.split(/\s+/);
+    if (values.length < 8) continue;
+    records.push(Object.fromEntries(values.map((value, index) => [fields[index] ?? `field-${index + 1}`, value])));
+  }
+  return records;
+}
+
+function parseCloudFrontText(text) {
+  const records = [];
+  let fields = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim() || line.startsWith("#Version:")) continue;
+    if (line.startsWith("#Fields:")) {
+      fields = line.slice(8).trim().split(/\s+/);
+      continue;
+    }
+    const values = line.split("\t");
+    if (!fields.length || values.length < 2) continue;
+    records.push(Object.fromEntries(values.map((value, index) => [fields[index] ?? `field-${index + 1}`, value])));
+  }
+  return records;
+}
+
+function parseAccessText(text) {
+  return text.split(/\r?\n/).flatMap((line, index) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) return [];
+    const values = trimmed.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
+    if (values.length < 3) return [];
+    const networkLoadBalancer = /^\d+\.\d+$/.test(values[1] ?? "");
+    return [{
+      recordNumber: index + 1,
+      type: values[0],
+      timestamp: values[networkLoadBalancer ? 2 : 1],
+      resource: values[networkLoadBalancer ? 3 : 2],
+      client: values[networkLoadBalancer ? 5 : 3] ?? "",
+      target: values[networkLoadBalancer ? 6 : 4] ?? "",
+      status: values[8] ?? values[7] ?? "",
+      raw: trimmed.slice(0, 16_000),
+    }];
+  });
+}
+
+function recordsFromJson(parsed, sourceType) {
+  if (Array.isArray(parsed)) return parsed;
+  const root = recordObject(parsed);
+  const candidates = sourceType === "security-hub"
+    ? [root.Findings, root.findings]
+    : sourceType === "guardduty" || sourceType === "inspector"
+      ? [root.Findings, root.findings, root.detail ? [root.detail] : undefined]
+      : sourceType === "reachability-analyzer"
+        ? [root.NetworkInsightsAnalyses, root.NetworkInsightsPaths, root.NetworkInsightsAnalysis ? [root.NetworkInsightsAnalysis] : undefined]
+        : sourceType === "network-access-analyzer"
+          ? [root.NetworkInsightsAccessScopeAnalyses, root.Findings, root.NetworkInsightsAccessScopeAnalysis ? [root.NetworkInsightsAccessScopeAnalysis] : undefined]
+          : [root.Records, root.records, root.logEvents, root.events];
+  const records = candidates.find(Array.isArray);
+  return records ?? [root];
+}
+
+function recordHasAny(record, keys) {
+  return keys.some((key) => record?.[key] !== undefined && record?.[key] !== null && record?.[key] !== "");
+}
+
+function isAwsSourceRecord(record, sourceType) {
+  const item = recordObject(record);
+  if (sourceType === "vpc-flow-logs") return recordHasAny(item, ["interface-id", "interfaceId"]) && recordHasAny(item, ["srcaddr", "sourceAddress"]) && recordHasAny(item, ["dstaddr", "destinationAddress"]);
+  if (sourceType === "transit-gateway-flow-logs") return recordHasAny(item, ["tgw-id", "tgw-attachment-id", "transitGatewayId"]) && recordHasAny(item, ["srcaddr", "sourceAddress"]);
+  if (sourceType === "reachability-analyzer") return recordHasAny(item, ["NetworkInsightsAnalysisId", "NetworkInsightsPathId", "NetworkPathFound", "Explanations"]);
+  if (sourceType === "network-access-analyzer") return recordHasAny(item, ["NetworkInsightsAccessScopeAnalysisId", "NetworkInsightsAccessScopeId", "NetworkInsightsAccessScopeArn", "Findings"]);
+  if (sourceType === "elastic-load-balancing") return recordHasAny(item, ["client", "clientIp"]) && recordHasAny(item, ["resource", "elb", "loadBalancerArn"]);
+  if (sourceType === "waf") return recordHasAny(item, ["webaclId", "terminatingRuleId", "httpRequest"]);
+  if (sourceType === "cloudfront") return recordHasAny(item, ["date", "timestamp"]) && recordHasAny(item, ["c-ip", "clientIp", "cs-method", "uri"]);
+  if (sourceType === "api-gateway") return recordHasAny(item, ["requestId", "routeKey", "resourcePath", "httpMethod"]) && recordHasAny(item, ["status", "statusCode", "responseStatus", "protocol"]);
+  if (sourceType === "route53-resolver") return recordHasAny(item, ["query_name", "query_type", "query_type_id"]) && recordHasAny(item, ["srcids", "vpc_id", "instance_id"]);
+  if (sourceType === "network-firewall") return recordHasAny(item, ["firewall_name", "availability_zone"]) && recordHasAny(item, ["event", "event_type"]);
+  if (sourceType === "guardduty") return recordHasAny(item, ["type", "severity", "service", "resource"]) && recordHasAny(item, ["id", "arn", "accountId"]);
+  if (sourceType === "security-hub") return recordHasAny(item, ["SchemaVersion", "ProductArn", "GeneratorId", "Types"]) && recordHasAny(item, ["Id", "AwsAccountId"]);
+  if (sourceType === "inspector") return recordHasAny(item, ["findingArn", "awsAccountId", "resources"]) && recordHasAny(item, ["type", "status", "severity"]);
+  return false;
+}
+
+function extractGenericRecords(content, sourceType) {
+  const text = content.toString("utf8");
+  let records;
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+    records = recordsFromJson(parsed, sourceType);
+  } catch {
+    const lines = parseJsonLines(text);
+    if (lines) records = lines;
+  }
+  if (!records && (sourceType === "vpc-flow-logs" || sourceType === "transit-gateway-flow-logs")) {
+    records = parseFlowText(text);
+  }
+  if (!records && sourceType === "cloudfront") records = parseCloudFrontText(text);
+  if (!records && (sourceType === "elastic-load-balancing" || sourceType === "api-gateway")) {
+    records = parseAccessText(text);
+  }
+  const validated = (records ?? []).filter((record) => isAwsSourceRecord(record, sourceType));
+  if (!validated.length) throw new Error("INVALID_AWS_EVIDENCE_FORMAT");
+  return validated;
+}
+
+function normalizeGeneric(record, index, source, objectId) {
+  const item = recordObject(record);
+  const resource = recordObject(item.Resource ?? item.resource);
+  const service = recordObject(item.service);
+  const payload = JSON.stringify(item);
+  if (Buffer.byteLength(payload) > MAX_GENERIC_PAYLOAD_BYTES) {
+    throw new Error("AWS_EVIDENCE_RECORD_TOO_LARGE");
+  }
+  const observedAt = firstRecordValue(item, [
+    "eventTime", "timestamp", "time", "updatedAt", "UpdatedAt", "createdAt",
+    "CreatedAt", "start", "date", "datetime", "@timestamp",
+  ], 100);
+  if (observedAt && !Number.isFinite(Date.parse(observedAt)) && !/^\d{10}$/.test(observedAt)) {
+    throw new Error("INVALID_AWS_EVIDENCE_TIMESTAMP");
+  }
+  const accountId = firstRecordValue(item, ["accountId", "account-id", "AwsAccountId", "awsAccountId", "recipientAccountId"], 20)
+    || firstRecordValue(resource, ["accountId"], 20);
+  const region = firstRecordValue(item, ["region", "awsRegion", "Region", "aws_region"], 50)
+    || firstRecordValue(service, ["region"], 50);
+  const resources = Array.isArray(item.Resources)
+    ? item.Resources
+    : Array.isArray(item.resources)
+      ? item.resources
+      : [];
+  const firstResource = recordObject(resources[0]);
+  const resourceId = firstRecordValue(firstResource, ["Id", "id", "arn", "resourceArn"], 800)
+    || firstRecordValue(item, [
+    "resourceId", "resourceArn", "ResourceId", "Arn", "Id", "interface-id",
+    "tgw-id", "tgw-attachment-id", "firewall_name", "webaclId", "resource",
+  ], 800);
+  const resourceType = firstRecordValue(item, ["resourceType", "ResourceType", "type", "Type"], 240);
+  const eventName = firstRecordValue(item, [
+    "eventName", "eventType", "event_type", "Type", "type", "action",
+    "findingStatus", "Status", "query_type", "routeKey", "httpMethod",
+  ], 240);
+  const disposition = firstRecordValue(item, [
+    "action", "Action", "status", "Status", "log-status", "statusCode",
+    "responseStatus", "workflowStatus", "RecordState", "findingStatus",
+  ], 160);
+  const stableId = firstRecordValue(item, [
+    "eventID", "eventId", "Id", "id", "findingArn", "requestId", "analysisId",
+  ], 500);
+  const fingerprint = createHash("sha256")
+    .update(`${source.id}|${source.sourceType}|${stableId || objectId}|${index}|${payload}`)
+    .digest("hex");
+  const normalizedPayload = JSON.stringify({
+    source: firstRecordValue(item, ["srcaddr", "pkt-srcaddr", "sourceIPAddress", "client", "clientIp", "sourceAddress", "source_ip", "c-ip"], 500),
+    destination: firstRecordValue(item, ["dstaddr", "pkt-dstaddr", "target", "destinationAddress", "destination_ip", "cs-host", "host", "query_name", "resourcePath"], 500),
+    aws: item,
+  });
+  return {
+    workspaceId: source.workspaceId,
+    fingerprint,
+    sourceId: source.id,
+    objectId,
+    sourceType: source.sourceType,
+    evidenceClass: GENERIC_SOURCE_CLASSES.get(source.sourceType),
+    observedAt: /^\d{10}$/.test(observedAt)
+      ? new Date(Number(observedAt) * 1000).toISOString()
+      : observedAt,
+    accountId,
+    region,
+    resourceType,
+    resourceId,
+    eventName,
+    disposition,
+    normalizedPayload,
+  };
+}
+
+async function insertGenericEvidence(source, objectId, records) {
+  const evidenceClass = GENERIC_SOURCE_CLASSES.get(source.sourceType);
+  if (!evidenceClass) throw new Error("UNSUPPORTED_AWS_EVIDENCE_SOURCE");
+  const normalized = records.map((record, index) => normalizeGeneric(record, index, source, objectId));
+  const statement = `INSERT INTO aws_evidence_records
+    (workspace_id, fingerprint, source_id, raw_object_id, source_type,
+     evidence_class, observed_at, account_id, region, resource_type,
+     resource_id, event_name, disposition, normalized_payload)
+   VALUES (CAST(:workspaceId AS uuid), :fingerprint, CAST(:sourceId AS uuid),
+     CAST(:objectId AS uuid), :sourceType, :evidenceClass,
+     NULLIF(:observedAt, '')::timestamptz, :accountId, :region, :resourceType,
+     :resourceId, :eventName, :disposition, CAST(:normalizedPayload AS jsonb))
+   ON CONFLICT DO NOTHING`;
+  for (let index = 0; index < normalized.length; index += 25) {
+    await rds.send(new BatchExecuteStatementCommand({
+      database,
+      resourceArn,
+      secretArn,
+      sql: statement,
+      parameterSets: normalized.slice(index, index + 25).map(parameters),
+    }));
+  }
 }
 
 async function insertCloudTrail(source, objectId, events) {
@@ -787,15 +1052,22 @@ async function processRecord(record) {
       ? gunzipSync(compressed, { maxOutputLength: MAX_DECOMPRESSED_BYTES })
       : compressed;
     if (content.length > MAX_DECOMPRESSED_BYTES) throw new Error("DECOMPRESSED_OBJECT_TOO_LARGE");
-    const parsed = JSON.parse(content.toString("utf8"));
-    const records = Array.isArray(parsed)
-      ? parsed
-      : parsed.Records ?? parsed.configurationItems ?? parsed.ConfigSnapshot ?? [parsed];
+    let records;
+    if (GENERIC_SOURCE_CLASSES.has(source.sourceType)) {
+      records = extractGenericRecords(content, source.sourceType);
+    } else {
+      const parsed = JSON.parse(content.toString("utf8"));
+      records = Array.isArray(parsed)
+        ? parsed
+        : parsed.Records ?? parsed.configurationItems ?? parsed.ConfigSnapshot ?? [parsed];
+    }
     if (!Array.isArray(records) || records.length > MAX_RECORDS) throw new Error("INVALID_RECORD_COUNT");
     if (source.sourceType === "cloudtrail") {
       await insertCloudTrail(source, objectId, records.flatMap(normalizeCloudTrail));
-    } else {
+    } else if (source.sourceType === "config-history" || source.sourceType === "config-snapshot") {
       await insertConfig(source, objectId, records.map(normalizeConfig).filter(Boolean));
+    } else {
+      await insertGenericEvidence(source, objectId, records);
     }
     const checksum = createHash("sha256").update(content).digest("hex");
     await sql(

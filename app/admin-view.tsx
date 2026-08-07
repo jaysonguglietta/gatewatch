@@ -40,7 +40,10 @@ import { useEffect, useMemo, useState } from "react";
 import {
   defaultConfigResourceTypes,
   generateExternalId,
+  isConfigSource,
   sourceAccessCloudFormation,
+  sourceTypeDefinition,
+  sourceTypeDefinitions,
   type ConnectionTestSummary,
   type IngestionSource,
   type SourceType,
@@ -607,7 +610,7 @@ export default function AdminView({
                 <p>
                   {sourceTotals.total
                     ? "A source must pass a live AssumeRole, list, and bounded object-read test before activation."
-                    : "Add the CloudTrail and AWS Config prefixes that contain your security-group evidence."}
+                    : "Add the AWS log and evidence prefixes that explain configuration, reachability, observed traffic, and threat context."}
                 </p>
                 <button className="button button-dark" onClick={() => setTab("sources")}>
                   Open data sources <ArrowRight size={15} />
@@ -646,7 +649,7 @@ export default function AdminView({
           <div className="panel-header">
             <div>
               <h2>S3 evidence sources</h2>
-              <p>CloudTrail logs and AWS Config histories or snapshots</p>
+              <p>AWS-native configuration, traffic, access, analysis, and finding sources</p>
             </div>
             <span className="version-chip">{data.sources.length} configured</span>
           </div>
@@ -667,7 +670,7 @@ export default function AdminView({
                     <div>
                       <strong>{source.name}</strong>
                       <p>{source.bucketName}/{source.objectPrefix}</p>
-                      <small>{source.region} · {source.sourceType.replaceAll("-", " ")}</small>
+                      <small>{source.region} · {sourceTypeDefinition(source.sourceType).label}</small>
                     </div>
                     <span className={`admin-status status-${source.status}`}>
                       <i /> {statusLabels[source.status] ?? source.status}
@@ -785,7 +788,7 @@ export default function AdminView({
             <div className="admin-empty">
               <span><CloudCog size={24} /></span>
               <h3>No S3 evidence sources yet</h3>
-              <p>Connect CloudTrail first for actor attribution, then AWS Config for confirmed before-and-after state.</p>
+              <p>Start with CloudTrail, Config, and VPC Flow Logs; add path analysis, service access, and security findings as enrichment.</p>
               <button
                 className="button button-primary"
                 onClick={() => {
@@ -922,7 +925,7 @@ export default function AdminView({
         <div className="admin-two-column">
           <section className="panel retention-form">
             <div className="panel-header"><div><h2>Normalized data retention</h2><p>Raw evidence remains governed by the source S3 lifecycle</p></div></div>
-            <label><span>Normalized CloudTrail and Config records</span><div><input type="number" min={30} max={3650} value={retention.eventDays} onChange={(event) => setRetention((current) => ({ ...current, eventDays: Number(event.target.value) }))} /><em>days</em></div><small>Used for change attribution and historical reconstruction.</small></label>
+            <label><span>Normalized AWS evidence records</span><div><input type="number" min={30} max={3650} value={retention.eventDays} onChange={(event) => setRetention((current) => ({ ...current, eventDays: Number(event.target.value) }))} /><em>days</em></div><small>Used for configuration history, change attribution, observed traffic, path analysis, and threat context.</small></label>
             <label><span>Evidence snapshots and decisions</span><div><input type="number" min={90} max={3650} value={retention.evidenceDays} onChange={(event) => setRetention((current) => ({ ...current, evidenceDays: Number(event.target.value) }))} /><em>days</em></div><small>Preserves the facts considered during reviews and exceptions.</small></label>
             <label><span>Administrative audit trail</span><div><input type="number" min={365} max={3650} value={retention.auditDays} onChange={(event) => setRetention((current) => ({ ...current, auditDays: Number(event.target.value) }))} /><em>days</em></div><small>Seven years is the default for regulated environments.</small></label>
             <button className="button button-primary" disabled={saving} onClick={() => void settingAction({ action: "retention", ...retention })}><Check size={15} /> Save retention</button>
@@ -930,7 +933,7 @@ export default function AdminView({
           <section className="panel retention-boundary">
             <Archive size={21} />
             <h2>Deletion boundaries</h2>
-            <p>Gatewatch retention jobs delete normalized database rows only. They never delete or modify the source CloudTrail or AWS Config objects.</p>
+            <p>Gatewatch retention jobs delete normalized database rows only. They never delete or modify the source AWS log objects.</p>
             <div><CircleCheck size={14} /><span>S3 remains the immutable source of truth</span></div>
             <div><CircleCheck size={14} /><span>Legal holds can override scheduled deletion</span></div>
             <div><CircleCheck size={14} /><span>Every purge produces an audit event and count</span></div>
@@ -969,8 +972,8 @@ export default function AdminView({
             <div className="modal-body">
               {wizardStep === 1 ? (
                 <div className="source-form-grid">
-                  <label className="form-field"><span>Source name</span><input autoFocus value={draft.name} maxLength={120} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Organization CloudTrail" /></label>
-                  <label className="form-field"><span>Delivery type</span><select value={draft.sourceType} onChange={(event) => setDraft((current) => ({ ...current, sourceType: event.target.value as SourceType }))}><option value="cloudtrail">AWS CloudTrail</option><option value="config-history">AWS Config history</option><option value="config-snapshot">AWS Config snapshot</option></select></label>
+                  <label className="form-field"><span>Source name</span><input autoFocus value={draft.name} maxLength={120} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Organization AWS evidence" /></label>
+                  <label className="form-field"><span>AWS source type</span><select value={draft.sourceType} onChange={(event) => setDraft((current) => ({ ...current, sourceType: event.target.value as SourceType }))}>{[...new Set(sourceTypeDefinitions.map((definition) => definition.group))].map((group) => <optgroup key={group} label={group}>{sourceTypeDefinitions.filter((definition) => definition.group === group).map((definition) => <option key={definition.value} value={definition.value}>{definition.label}</option>)}</optgroup>)}</select><small>{sourceTypeDefinition(draft.sourceType).description} Expected: {sourceTypeDefinition(draft.sourceType).format}.</small></label>
                   <label className="form-field source-span-two"><span>S3 bucket ARN</span><input value={draft.bucketArn} onChange={(event) => setDraft((current) => ({ ...current, bucketArn: event.target.value }))} placeholder="arn:aws:s3:::organization-security-logs" /><small>Enter the bucket ARN, not an HTTPS URL.</small></label>
                   <label className="form-field"><span>AWS region</span><input value={draft.region} onChange={(event) => setDraft((current) => ({ ...current, region: event.target.value }))} placeholder="us-east-1" /></label>
                   <label className="form-field"><span>Object prefix</span><input value={draft.objectPrefix} onChange={(event) => setDraft((current) => ({ ...current, objectPrefix: event.target.value }))} placeholder="AWSLogs/o-example/" /></label>
@@ -1012,7 +1015,7 @@ export default function AdminView({
                   <label className="form-field"><span>Included regions <em>Optional</em></span><textarea value={draft.includedRegions} onChange={(event) => setDraft((current) => ({ ...current, includedRegions: event.target.value }))} placeholder="us-east-1, us-west-2" /><small>Leave blank to accept every delivered region.</small></label>
                   <label className="form-field"><span>Excluded accounts <em>Optional</em></span><textarea value={draft.excludedAccounts} onChange={(event) => setDraft((current) => ({ ...current, excludedAccounts: event.target.value }))} placeholder="999900001111" /></label>
                   <label className="form-field"><span>Normalized retention</span><div className="input-suffix"><input type="number" min={30} max={3650} value={draft.retentionDays} onChange={(event) => setDraft((current) => ({ ...current, retentionDays: Number(event.target.value) }))} /><em>days</em></div></label>
-                  {draft.sourceType !== "cloudtrail" ? (
+                  {isConfigSource(draft.sourceType) ? (
                     <div className="config-types source-span-two">
                       <span>Config resource types</span>
                       {defaultConfigResourceTypes.map((resourceType) => (

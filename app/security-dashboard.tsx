@@ -89,6 +89,16 @@ import {
   type CloudTrailImportResult,
   type ImportedCloudTrailEvent,
 } from "../lib/cloudtrail-import";
+import {
+  parseAwsEvidenceText,
+  readAwsEvidenceFile,
+  type AwsEvidenceImportResult,
+} from "../lib/aws-evidence-import";
+import {
+  sourceTypeDefinition,
+  sourceTypeDefinitions,
+  type SourceType,
+} from "../lib/admin-sources";
 import { csvDocument } from "../lib/csv";
 import AdminView from "./admin-view";
 import DailyFindingsView from "./daily-findings-view";
@@ -566,7 +576,7 @@ export default function SecurityDashboard() {
       icon: FileBarChart,
       items: [
         { id: "metrics" as View, label: "Detailed reports", icon: FileBarChart },
-        { id: "cloudtrail" as View, label: "CloudTrail imports", icon: UploadCloud },
+        { id: "cloudtrail" as View, label: "AWS log imports", icon: UploadCloud },
         { id: "handoffs" as View, label: "AWS handoffs", icon: FileCode2 },
       ],
     },
@@ -3987,6 +3997,177 @@ function RemediationView({
   );
 }
 
+function AwsEvidenceSourcePicker({
+  value,
+  onChange,
+}: {
+  value: SourceType;
+  onChange: (value: SourceType) => void;
+}) {
+  const definition = sourceTypeDefinition(value);
+  return (
+    <section className="panel aws-evidence-source-picker" aria-labelledby="aws-evidence-source-label">
+      <div>
+        <span className="eyebrow" id="aws-evidence-source-label">AWS evidence type</span>
+        <select
+          value={value}
+          onChange={(event) => onChange(event.target.value as SourceType)}
+          aria-label="AWS evidence type"
+        >
+          {[...new Set(sourceTypeDefinitions.map((item) => item.group))].map((group) => (
+            <optgroup key={group} label={group}>
+              {sourceTypeDefinitions.filter((item) => item.group === group).map((item) => (
+                <option key={item.value} value={item.value}>{item.label}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </div>
+      <p><strong>{definition.label}</strong><span>{definition.description}</span></p>
+      <span className="version-chip">{definition.format}</span>
+    </section>
+  );
+}
+
+function formatEvidenceDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function GenericAwsEvidenceImportView({
+  sourceType,
+  onSourceTypeChange,
+  onToast,
+}: {
+  sourceType: SourceType;
+  onSourceTypeChange: (value: SourceType) => void;
+  onToast: (message: string) => void;
+}) {
+  const [dragging, setDragging] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [importError, setImportError] = useState("");
+  const [query, setQuery] = useState("");
+  const [imported, setImported] = useState<{
+    fileName: string;
+    fileSize: number;
+    importedAt: string;
+    result: AwsEvidenceImportResult;
+  } | null>(null);
+  const definition = sourceTypeDefinition(sourceType);
+  const visibleRecords = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!imported || !normalized) return imported?.result.records ?? [];
+    return imported.result.records.filter((record) => [
+      record.observedAt,
+      record.accountId,
+      record.region,
+      record.resource,
+      record.event,
+      record.disposition,
+      record.source,
+      record.destination,
+      record.summary,
+    ].join(" ").toLowerCase().includes(normalized));
+  }, [imported, query]);
+
+  async function processFile(file: File) {
+    setProcessing(true);
+    setImportError("");
+    try {
+      const text = await readAwsEvidenceFile(file);
+      const result = parseAwsEvidenceText(text, sourceType);
+      setImported({
+        fileName: file.name.slice(0, 240),
+        fileSize: file.size,
+        importedAt: new Date().toISOString(),
+        result,
+      });
+      setQuery("");
+      onToast(`Validated ${result.records.length.toLocaleString()} ${result.sourceLabel} records locally.`);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "The AWS evidence file could not be imported.");
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  function exportRecords() {
+    if (!imported) return;
+    const csv = csvDocument([
+      ["Observed at", "Event", "Disposition", "Resource", "Source", "Destination", "Account", "Region", "Summary"],
+      ...visibleRecords.map((record) => [record.observedAt, record.event, record.disposition, record.resource, record.source, record.destination, record.accountId, record.region, record.summary]),
+    ]);
+    downloadText(`gatewatch-${sourceType}-${new Date().toISOString().slice(0, 10)}.csv`, csv, "text/csv;charset=utf-8");
+    onToast(`Exported ${visibleRecords.length.toLocaleString()} normalized AWS evidence records.`);
+  }
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Local AWS evidence import"
+        title="Import AWS-native evidence."
+        description="Validate and normalize configuration, traffic, path-analysis, service-access, and security-finding exports without uploading the source file."
+        actions={imported ? <>
+          <button className="button button-secondary" onClick={exportRecords} disabled={!visibleRecords.length}><Download size={16} /> Export normalized records</button>
+          <button className="button button-secondary button-danger-subtle" onClick={() => { setImported(null); setImportError(""); onToast("Imported AWS evidence cleared from this session."); }}><Trash2 size={16} /> Clear session</button>
+        </> : undefined}
+      />
+      <AwsEvidenceSourcePicker
+        value={sourceType}
+        onChange={(value) => {
+          setImported(null);
+          setImportError("");
+          onSourceTypeChange(value);
+        }}
+      />
+      <section className="local-processing-banner">
+        <span><ShieldCheck size={20} /></span>
+        <div><strong>AWS-produced evidence only</strong><p>The selected parser validates the AWS delivery shape. Files remain in this browser tab and are not persisted.</p></div>
+        <span className="healthy-chip"><CircleCheck size={13} /> Session only</span>
+      </section>
+      <label
+        className={`cloudtrail-dropzone ${dragging ? "cloudtrail-dropzone-active" : ""} ${processing ? "cloudtrail-dropzone-processing" : ""}`}
+        htmlFor="aws-evidence-file-input"
+        onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
+        onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
+        onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragging(false);
+          if (event.dataTransfer.files.length !== 1) {
+            setImportError("Drop one AWS evidence file at a time.");
+            return;
+          }
+          void processFile(event.dataTransfer.files[0]);
+        }}
+      >
+        <input id="aws-evidence-file-input" className="sr-only" type="file" accept=".json,.json.gz,.log,.log.gz,.txt,.txt.gz,.csv,.tsv,application/json,application/gzip,text/plain,text/csv" disabled={processing} onChange={(event) => { const file = event.target.files?.[0]; if (file) void processFile(file); event.target.value = ""; }} />
+        <span className="dropzone-icon">{processing ? <RefreshCw size={27} className="spin" /> : <UploadCloud size={27} />}</span>
+        <div><strong>{processing ? `Validating ${definition.label}…` : dragging ? "Drop the AWS file to import it" : imported ? "Drop another file to replace this session" : `Drop ${definition.label} here`}</strong><p>Or choose a file · {definition.format} · 25 MB compressed limit · 50,000 records</p></div>
+        <span className="button button-primary"><FileArchive size={16} /> Choose AWS log</span>
+      </label>
+      {importError ? <div className="import-error" role="alert"><CircleAlert size={17} /><div><strong>{definition.label} import failed</strong><p>{importError}</p></div><button aria-label="Dismiss import error" onClick={() => setImportError("")}><X size={15} /></button></div> : null}
+      {imported ? <>
+        <section className="import-file-summary">
+          <div className="imported-file"><span><FileJson2 size={19} /></span><p><strong>{imported.fileName}</strong><small>{(imported.fileSize / 1024 / 1024).toFixed(2)} MB · imported {new Date(imported.importedAt).toLocaleTimeString()}</small></p></div>
+          <div><strong>{imported.result.totalRecords.toLocaleString()}</strong><span>Total records</span></div>
+          <div><strong>{imported.result.records.length.toLocaleString()}</strong><span>Validated</span></div>
+          <div><strong>{imported.result.skippedRecords.toLocaleString()}</strong><span>Skipped</span></div>
+          <div><strong>{imported.result.evidenceClass.replaceAll("-", " ")}</strong><span>Evidence class</span></div>
+        </section>
+        {imported.result.warnings.length ? <section className="import-warnings">{imported.result.warnings.map((warning) => <p key={warning}><AlertTriangle size={14} /> {warning}</p>)}</section> : null}
+        <section className="panel imported-events-panel">
+          <div className="imported-events-header"><div><h2>{imported.result.sourceLabel} records</h2><p>Normalized for correlation while the source-specific AWS payload remains available to the production evidence ledger.</p></div><label className="table-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search resource, address, result…" aria-label="Search imported AWS evidence" /></label></div>
+          <div className="import-results-count">Showing <strong>{Math.min(visibleRecords.length, 500).toLocaleString()}</strong> of <strong>{visibleRecords.length.toLocaleString()}</strong> matching records</div>
+          {visibleRecords.length ? <div className="table-wrap cloudtrail-event-table"><table><thead><tr><th>Time / event</th><th>Resource</th><th>Source → destination</th><th>Account / Region</th><th>Outcome</th></tr></thead><tbody>{visibleRecords.slice(0, 500).map((record, index) => <tr key={`${record.id}-${index}`}><td><strong>{record.event || "AWS record"}</strong><small>{record.observedAt ? formatEvidenceDate(record.observedAt) : "Timestamp not supplied"}</small></td><td><strong>{record.resource || "Resource not supplied"}</strong><small>{record.summary}</small></td><td><strong>{record.source || "—"}</strong><small>{record.destination ? `→ ${record.destination}` : "Destination not supplied"}</small></td><td><strong>{record.accountId || "Account unavailable"}</strong><small>{record.region || "Region unavailable"}</small></td><td><span className="event-result success">{record.disposition || "Recorded"}</span></td></tr>)}</tbody></table></div> : <div className="empty-state"><div><Search size={24} /></div><h3>No evidence records match</h3><p>Clear the search to return to the validated AWS records.</p><button className="button button-secondary" onClick={() => setQuery("")}>Clear search</button></div>}
+        </section>
+      </> : <div className="cloudtrail-onboarding-grid">
+        {[{ icon: Database, title: "Configuration and change", copy: "AWS Config and CloudTrail establish current state, history, and change identity." }, { icon: Network, title: "Traffic and reachability", copy: "Flow logs and AWS network analysis distinguish observed traffic from potential paths." }, { icon: ShieldAlert, title: "Access and threat context", copy: "Service logs, GuardDuty, Security Hub, and Inspector enrich exposure without replacing network evidence." }].map((item) => { const Icon = item.icon; return <section className="panel" key={item.title}><span className="onboarding-icon"><Icon size={20} /></span><h2>{item.title}</h2><p>{item.copy}</p></section>; })}
+      </div>}
+    </>
+  );
+}
+
 function CloudTrailImportView({
   imported,
   setImported,
@@ -3998,6 +4179,7 @@ function CloudTrailImportView({
   onSelect: (group: SecurityGroup) => void;
   onToast: (message: string) => void;
 }) {
+  const [sourceType, setSourceType] = useState<SourceType>("cloudtrail");
   const [dragging, setDragging] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [importError, setImportError] = useState("");
@@ -4135,12 +4317,22 @@ function CloudTrailImportView({
   const failedEvents =
     imported?.result.events.filter((event) => event.errorCode).length ?? 0;
 
+  if (sourceType !== "cloudtrail") {
+    return (
+      <GenericAwsEvidenceImportView
+        sourceType={sourceType}
+        onSourceTypeChange={setSourceType}
+        onToast={onToast}
+      />
+    );
+  }
+
   return (
     <>
       <PageHeader
         eyebrow="Local evidence import"
-        title="Drag in an AWS CloudTrail log."
-        description="Extract security-group changes, identify rules opened to the internet, and correlate events with Gatewatch groups without sending the file anywhere."
+        title="Import AWS-native evidence."
+        description="Inspect AWS configuration, changes, traffic, path analysis, service access, and security findings without sending the file anywhere."
         actions={
           imported ? (
             <>
@@ -4165,6 +4357,8 @@ function CloudTrailImportView({
           ) : undefined
         }
       />
+
+      <AwsEvidenceSourcePicker value={sourceType} onChange={setSourceType} />
 
       <section className="local-processing-banner">
         <span>

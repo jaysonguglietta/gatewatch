@@ -132,6 +132,10 @@ erDiagram
 
 - `config_items` stores normalized AWS Config items and resource history.
 - `cloudtrail_events` stores only security-group-relevant management events.
+- `aws_evidence_records` stores bounded normalized fields and the original AWS
+  record payload for Flow Logs, network analyses, service access logs, and
+  managed security findings. Its evidence class prevents observed traffic,
+  static reachability, service access, and threat findings from being conflated.
 - `security_group_rule_versions` provides valid-from/valid-to state.
 - `gatewatch_correlate_cloudtrail_event` connects a successful change to a rule
   observation within a bounded time window.
