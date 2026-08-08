@@ -119,6 +119,38 @@ all existing capabilities without presenting nineteen equal-priority choices.
 - Remediation code is an analyst-reviewed package. Gatewatch does not silently
   execute the generated AWS CLI, CloudFormation, or Terraform change.
 
+## Reviewing CloudFormation and Terraform
+
+Open **Recommendations → IaC guardrails** and upload up to 40 files per browser
+session. Supported inputs are CloudFormation `.yaml`, `.yml`, `.template`, and
+JSON, plus Terraform `.tf` and `.tf.json`. Each file is limited to 5 MB and the
+selected batch to 50 MB.
+
+Gatewatch recognizes CloudFormation security groups and standalone ingress or
+egress resources, Terraform `aws_security_group`, legacy
+`aws_security_group_rule`, and modern `aws_vpc_security_group_ingress_rule` or
+`aws_vpc_security_group_egress_rule` resources. Rules from separate files are
+consolidated by logical resource address.
+
+The review reports:
+
+- unrestricted IPv4 and IPv6 ingress;
+- public SSH, RDP, database, cache, search, development, and management ports;
+- all-protocol access, wide port ranges, very broad private CIDRs, and open egress;
+- missing rule descriptions and unresolved deployment-time expressions;
+- internet-gateway, default-route, and public-attachment signals;
+- exact source file, resource address, and line where available.
+
+Static IaC evidence produces **potential internet path**, **public reachability
+unresolved**, or **no public ingress identified**. It never claims that an
+undeployed service is reachable. CloudFormation transforms and nested stacks,
+Terraform modules, dynamic blocks, provider plugins, external data sources, and
+computed values are not executed. Their unresolved effects must be supplied as
+resolved CI plan evidence or verified after deployment.
+
+Files remain in the browser session and are not sent to the Gatewatch server.
+Use the sample files under `samples/iac-review/` to test the workflow safely.
+
 ## Keyboard controls
 
 | Key | Action |

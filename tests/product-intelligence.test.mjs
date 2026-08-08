@@ -84,3 +84,36 @@ test("models the intelligence features in the future AWS database", async () => 
   assert.match(postgres, /approver <> requestor/);
   assert.match(postgres, /CHECK \(verdict IN \('pass', 'warn', 'block'\)\)/);
 });
+
+test("adds a local multi-file CloudFormation and Terraform security review", async () => {
+  const [view, parser, packageJson] = await Promise.all([
+    source("app/product-intelligence.tsx"),
+    source("lib/iac-security-review.ts"),
+    source("package.json"),
+  ]);
+
+  for (const capability of [
+    "Review CloudFormation and Terraform",
+    "Drop CloudFormation and Terraform files",
+    "No code execution",
+    "File ledger",
+    "Configuration issues",
+    "Normalized rules",
+    "Potential internet path",
+    "Export review",
+  ]) assert.match(view, new RegExp(capability));
+
+  for (const resource of [
+    "AWS::EC2::SecurityGroup",
+    "AWS::EC2::SecurityGroupIngress",
+    "aws_security_group",
+    "aws_security_group_rule",
+    "aws_vpc_security_group_ingress_rule",
+  ]) assert.match(parser, new RegExp(resource.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+  assert.match(packageJson, /"yaml": "\^2\.9\.0"/);
+  assert.doesNotMatch(parser, /child_process|execSync|spawnSync|terraform init|terraform plan/);
+  assert.match(parser, /MAX_IAC_FILE_BYTES = 5 \* 1024 \* 1024/);
+  assert.match(parser, /MAX_IAC_FILES = 40/);
+  assert.match(parser, /MAX_IAC_BATCH_RULES = 10_000/);
+});

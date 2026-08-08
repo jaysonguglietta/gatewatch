@@ -23,6 +23,30 @@
   search and hunts scale across accounts, remediation is inspectable, and the UI
   remains responsive and keyboard accessible.
 
+## Infrastructure-as-code security review (August 2026)
+
+- **Target users:** application teams, cloud-platform engineers, and security
+  reviewers validating proposed AWS network access before deployment.
+- **Core problem:** CloudFormation and Terraform can introduce dangerous rules
+  before AWS-native logs exist, while repository-only CI results do not help an
+  analyst reviewing an ad hoc template or multi-file change.
+- **Primary workflow:** drop mixed IaC files, inspect the file ledger, review one
+  consolidated result per proposed security group, verify public-path signals,
+  investigate exact file/resource/line issues, then export a review package.
+- **Main view:** Recommendations → IaC guardrails, with local upload, metrics,
+  search, severity filters, finding detail, normalized rules, and the existing
+  connected CI evaluation feed.
+- **Key models:** parsed file, proposed security group, normalized ingress/egress
+  rule, static issue, exposure-path signals, unresolved expression, and verdict.
+- **Edge cases:** CloudFormation intrinsic tags, standalone rule resources,
+  Terraform variables and references, dynamic blocks, duplicate definitions,
+  missing descriptions, IPv6, cross-file rules, malformed files, and oversized input.
+- **Assumptions:** static source cannot confirm runtime reachability; module,
+  transform, condition, and provider results remain unresolved until CI supplies
+  resolved plan or deployed-state evidence.
+- **Done:** supported files are parsed locally as data, never executed, bounded by
+  count/size, consolidated, prioritized, searchable, exportable, and covered by tests.
+
 ## Organization operations release (August 2026)
 
 - **Target users:** central cloud-security teams, delegated account owners, and auditors operating across 500+ AWS accounts.

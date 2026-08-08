@@ -73,6 +73,11 @@ resources, and vulnerability context.
   ineffective egress, and quota pressure
 - Pre-change IaC guardrails with pass/warn/block verdicts, projected risk,
   read-only PR evidence, and administrator-controlled enforcement mode
+- Local multi-file IaC security review for CloudFormation YAML/JSON and
+  Terraform HCL/JSON. Gatewatch consolidates inline and standalone rules by
+  proposed security group, reports exact file/resource/line evidence, evaluates
+  public-path signals, searches and filters results, and exports review-ready CSV
+  without executing templates, Terraform, providers, modules, or external data
 - Executive program metrics for exposure reduction, reachable critical assets,
   remediation speed, workflow adoption, evidence coverage, and CSV reporting
 - Posture context ranked by reachable risk
@@ -144,6 +149,8 @@ node --test tests/rendered-html.test.mjs
 
 The analyst workflow and decision controls are documented in
 [`docs/SECURITY_ANALYST_WORKSPACE.md`](docs/SECURITY_ANALYST_WORKSPACE.md).
+The static IaC parsing and safety model is documented in
+[`docs/architecture/IAC_SECURITY_REVIEW.md`](docs/architecture/IAC_SECURITY_REVIEW.md).
 
 Review decisions are persisted through the configured Cloudflare D1 `DB`
 binding. Stable finding fingerprints, current analyst workflow, append-only

@@ -1,5 +1,14 @@
 # Gatewatch AWS evidence samples
 
+## Infrastructure-as-code review
+
+`iac-review/` contains CloudFormation YAML, Terraform HCL, and Terraform JSON
+examples for **Recommendations → IaC guardrails**. Upload the three numbered
+files together to exercise multi-file static analysis, public-path signals,
+critical administration/database findings, and a private security-group
+reference. These are intentionally incomplete review fixtures and are not
+deployable production templates.
+
 ## Mixed AWS evidence batch
 
 `aws-evidence-batch/` is a deterministic, entirely synthetic investigation
