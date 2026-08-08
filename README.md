@@ -17,6 +17,14 @@ resources, and vulnerability context.
 - A server-paginated, split-pane **Daily Findings Workspace** with keyboard
   triage, auto-advance, server-backed undo, session progress, clustering, and
   new/overdue/expiring/reopened workload counters
+- An exposure-first **Fix First** queue that consolidates contributing records
+  into one security-group work item, ranks confirmed public paths ahead of
+  evidence gaps and internal-only risk, and keeps the full ARN visible
+- Guided hunts for public administration/database/development ports, IPv6,
+  all-traffic rules, active public traffic, unapproved changes, internal lateral
+  reach, default groups, stale groups, exceptions, recurrence, and missing evidence
+- A transparent plain-language hunt assistant that produces an inspectable,
+  editable structured query rather than an opaque model decision
 - Organization, OU, account, region, environment, owner, severity, workflow, and
   effective-internet exposure
   scoping designed for hundreds of AWS accounts, plus shareable URL filters and
@@ -24,7 +32,8 @@ resources, and vulnerability context.
 - Field-aware Daily Findings search across full security-group ARN, group ID/name,
   account ID/name, Region, VPC, ingress/egress rule, protocol, port, source CIDR,
   ownership, attached resources and tags, evidence state, workflow, and numeric
-  risk/confidence/age comparisons
+  risk/confidence/age comparisons, plus intent, approval ticket, change approval,
+  Flow Log coverage, observed flows, rule ID, and attached-asset criticality
 - A visual query composer with field/value autocomplete, `AND`/`OR`/`NOT`
   expressions, parentheses, history and recurrence predicates, matched-clause
   explanations, dynamic result facets, correlated raw-evidence scope, monitored
@@ -34,8 +43,12 @@ resources, and vulnerability context.
   mandatory rationale, owners, review dates, tickets, compensating controls,
   expiration, evidence snapshots, and append-only history
 - A persistent investigation pane with effective rules, explainable risk,
-  policy mapping, exact before/after change, attached resources, AWS deep links,
-  remediation guidance, notes, and the complete decision timeline
+  a five-step exposure truth strip, evidence-readiness checklist, policy mapping,
+  exact before/after change, blast radius, AWS deep links, remediation package,
+  raw normalized evidence, notes, and the complete decision timeline
+- Exposure-by-criticality matrix and security outcome measures for confirmed
+  critical assets, exposure hours, reopened groups, tracked exceptions,
+  decision-ready evidence, and potential risk reduction
 - Five task-oriented workspaces—Findings, Inventory, Governance, Reports, and
   Administration—with contextual navigation to every existing capability
 - Rule-level broad-access overview with search, direction/category filters, and
@@ -108,6 +121,9 @@ limitations, confidence, and snapshot identity behind each finding. The
 collector includes route-table, internet-gateway, public-address, subnet, and
 broad NACL evidence. A configured network path does not claim that a service
 is listening or that a connection succeeded without traffic evidence.
+Conversely, zero observed flows never proves a path is safe: Gatewatch presents
+Flow Logs as corroborating usage evidence and bases exposure on route, attachment,
+public-address, network-control, and reachability evidence.
 
 ## Local development
 

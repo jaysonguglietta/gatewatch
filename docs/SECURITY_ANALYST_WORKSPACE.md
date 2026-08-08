@@ -21,7 +21,20 @@ all existing capabilities without presenting nineteen equal-priority choices.
 
 ## Daily workflow
 
-1. Open **Findings → Daily findings**. The highest-risk finding is selected.
+1. Open **Findings → Daily findings**. Begin with the **Fix First** security group.
+   Gatewatch ranks one consolidated work item per canonical security-group ARN,
+   using effective exposure, attached-asset criticality, risk, traffic,
+   recurrence, change recency, and approval provenance. The three lanes are:
+
+   - **Confirmed internet:** the public path is supported end to end.
+   - **Evidence incomplete:** a broad rule exists, but decisive route,
+     attachment, analyzer, or coverage evidence is missing.
+   - **Internal risk:** no public path is confirmed, while lateral or
+     least-privilege risk may remain.
+
+   Use a guided hunt for common high-value patterns or **Describe a hunt** to
+   generate a visible structured expression. The preview is always editable;
+   unsupported natural-language concepts are not silently guessed.
 2. Choose a personal/team saved view or narrow organization, OU, account, Region,
    owner, environment, status, severity, or effective internet exposure. Internet,
    no-internet, and incomplete-evidence findings remain separate filter states.
@@ -38,6 +51,8 @@ all existing capabilities without presenting nineteen equal-priority choices.
    `egress:`, `rule:`, `port:`, `protocol:`, and `source:`. Analysts can also use
    `severity:`, `risk:`, `verdict:`, `status:`, `owner:`, `assignee:`, `policy:`,
    `path:`, `resource:`, `tag:`, `actor:`, `evidence:`, `confidence:`, and `age:`.
+   Intent and evidence-specific fields are `intent:`, `ticket:`, `approved:`,
+   `flows:`, `coverage:`, `rule-id:`, and `criticality:`.
    Numeric fields support exact values, ranges, and comparisons such as
    `risk:70-90`, `confidence:>=70`, and `age:>30`. Search is retained in the URL
    and in saved personal or team views. Unsupported fields and unclosed quotes are
@@ -69,9 +84,19 @@ all existing capabilities without presenting nineteen equal-priority choices.
    can expand to all results only when the set contains at most 100 findings;
    accepted-risk and Jira actions retain their 20-finding limits. The API
    revalidates every fingerprint, permission, evidence gate, and decision field.
-3. Review the compact queue or group findings by canonical security-group identity.
-4. Inspect the selected finding's decision summary, risk factors, policy mapping,
-   exact change, attached resources, and evidence confidence.
+3. Review the grouped queue. Its five-step truth strip shows **effective rule →
+   entry point → network path → observed traffic → exposure verdict**. Expand a
+   group only when the contributing signal matters; otherwise work at the
+   security-group level to avoid duplicate remediation.
+4. Use the investigation tabs:
+
+   - **Summary:** decision context, explainable risk, intent, and exact change.
+   - **Exposure path:** decisive path evidence and the missing-evidence checklist.
+   - **Impact:** attached resources, public/private addresses, criticality, and tags.
+   - **Remediation:** current/proposed access, blast radius, reviewable CLI,
+     CloudFormation and Terraform guidance, plus post-change checks.
+   - **Notes & history:** append-only workflow decisions.
+   - **Raw evidence:** preserved normalized snapshot, lineage, and limitations.
 5. Follow direct AWS links to the security group, Config timeline, or CloudTrail event.
 6. Record one structured outcome:
    - **Follow-up:** reason, assignee, current/future due date, note, and optional Jira ticket.
@@ -80,6 +105,19 @@ all existing capabilities without presenting nineteen equal-priority choices.
      compensating controls, and justification.
    - **Resolve:** reason, remediation evidence, and resolution note.
 7. Gatewatch auto-advances to the next item. Use the five-minute undo action when needed.
+
+## Evidence interpretation
+
+- A `0.0.0.0/0` or `::/0` rule is a candidate exposure, not sufficient proof of
+  internet reachability. Gatewatch also evaluates public entry points, public
+  addresses, subnet routes, internet gateways, NACLs, and analyzer evidence.
+- A VPC Flow Log ACCEPT observation increases urgency and confirms use. No
+  matching flow does not prove safety: the path may be unused, the time window
+  may be incomplete, or Flow Logs may be absent.
+- Terminal decisions remain blocked when required evidence is stale, inferred,
+  or incomplete. Follow-up is available to assign evidence collection.
+- Remediation code is an analyst-reviewed package. Gatewatch does not silently
+  execute the generated AWS CLI, CloudFormation, or Terraform change.
 
 ## Keyboard controls
 

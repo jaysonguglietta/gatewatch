@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  ArrowRight,
   BadgeCheck,
   BellRing,
   CalendarClock,
@@ -21,11 +22,14 @@ import {
   FileCheck2,
   Filter,
   FolderTree,
+  Gauge,
+  Globe2,
   History,
   ListChecks,
   Layers3,
   Network,
   NotebookPen,
+  PackageCheck,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -34,11 +38,16 @@ import {
   ShieldAlert,
   ShieldCheck,
   ShieldEllipsis,
+  ShieldQuestion,
   ShieldX,
+  Sparkles,
   SlidersHorizontal,
   TicketPlus,
+  Target,
   UserRound,
   Users,
+  Waypoints,
+  Wrench,
   X,
 } from "lucide-react";
 import { csvDocument } from "../lib/csv";
@@ -47,6 +56,15 @@ import type {
   DailyFinding,
   FindingWorkflowStatus,
 } from "../lib/daily-findings";
+import {
+  evidenceChecksForFinding,
+  exposureTruthForFinding,
+  groupSecurityGroupFindings,
+  guidedSecurityGroupHunts,
+  remediationPackageForFinding,
+  translateNaturalLanguageHunt,
+  type ExposureLane,
+} from "../lib/security-group-triage";
 
 type Filters = {
   q: string;
@@ -117,6 +135,20 @@ type InboxResponse = {
   };
   resultFacets: Record<"accounts" | "regions" | "severities" | "internet" | "owners" | "directions", Array<{ value: string; count: number }>>;
   resultGroupCount: number;
+  exposureOverview: {
+    groups: number;
+    lanes: Record<ExposureLane, number>;
+    matrix: Record<ExposureLane, Record<"critical" | "important" | "standard", number>>;
+    hunts: Record<string, number>;
+    outcomes: {
+      criticalAssetsExposed: number;
+      reopened: number;
+      expiringExceptions: number;
+      evidenceCompletePercent: number;
+      exposureHours: number;
+      potentialRiskReduction: number;
+    };
+  };
   evidenceMatches: Array<{
     fingerprint: string;
     sourceId: string;
@@ -360,7 +392,9 @@ export default function DailyFindingsView({
   const [builderValue, setBuilderValue] = useState("");
   const [builderConnector, setBuilderConnector] = useState<"AND" | "OR">("AND");
   const [builderNegated, setBuilderNegated] = useState(false);
-  const [queueMode, setQueueMode] = useState<QueueMode>("findings");
+  const [queueMode, setQueueMode] = useState<QueueMode>("security-groups");
+  const [naturalLanguageOpen, setNaturalLanguageOpen] = useState(false);
+  const [naturalLanguageInput, setNaturalLanguageInput] = useState("");
   const [density, setDensity] = useState<QueueDensity>(() => {
     if (typeof window === "undefined") return "compact";
     const stored = window.localStorage.getItem("gatewatch.findings-density");
@@ -501,7 +535,7 @@ export default function DailyFindingsView({
   function addBuilderClause() {
     const value = builderValue.trim();
     if (!value) return;
-    const numeric = ["risk", "confidence", "age", "recurrence"].includes(builderField);
+    const numeric = ["risk", "confidence", "age", "recurrence", "flows", "coverage"].includes(builderField);
     const operator = numeric && builderOperator !== "contains" ? builderOperator : "";
     const encoded = /\s/.test(value) ? `"${value.replaceAll('"', "")}"` : value;
     const clause = `${builderNegated ? "NOT " : ""}${builderField}:${operator}${encoded}`;
@@ -608,17 +642,31 @@ export default function DailyFindingsView({
     Boolean(data?.items.length) &&
     data!.items.every((item) => selected.has(item.fingerprint));
 
-  const clusters = useMemo(() => {
-    const grouped = new Map<string, DailyFinding[]>();
-    for (const finding of data?.items ?? []) {
-      const current = grouped.get(finding.canonicalResourceKey) ?? [];
-      current.push(finding);
-      grouped.set(finding.canonicalResourceKey, current);
-    }
-    return [...grouped.values()].sort(
-      (left, right) => Math.max(...right.map((item) => item.riskScore)) - Math.max(...left.map((item) => item.riskScore)),
-    );
-  }, [data?.items]);
+  const clusters = useMemo(() => groupSecurityGroupFindings(data?.items ?? []), [data?.items]);
+  const naturalLanguagePreview = useMemo(
+    () => translateNaturalLanguageHunt(naturalLanguageInput),
+    [naturalLanguageInput],
+  );
+
+  function applyHunt(query: string, label: string) {
+    setDetailedQuery(query);
+    updateFilter("status", "open");
+    setQueueMode("security-groups");
+    onToast(`${label} hunt applied.`);
+  }
+
+  function applyExposureSlice(lane: ExposureLane, criticality?: "critical" | "important" | "standard") {
+    updateFilter("internet", lane === "confirmed" ? "internet" : lane === "unknown" ? "unknown" : "no-internet");
+    const criticalityQuery = criticality === "critical"
+      ? "criticality:Critical"
+      : criticality === "important"
+        ? "criticality:High"
+        : criticality === "standard"
+          ? "(criticality:Medium OR criticality:Low)"
+          : "";
+    setDetailedQuery(criticalityQuery);
+    setQueueMode("security-groups");
+  }
 
   function moveActive(offset: number) {
     if (!data?.items.length) return;
@@ -671,11 +719,11 @@ export default function DailyFindingsView({
     <>
       <div className="daily-page-header">
         <div>
-          <p className="eyebrow">Daily security operations</p>
-          <h1>Daily findings inbox</h1>
+          <p className="eyebrow">AWS exposure operations</p>
+          <h1>Security group exposure triage</h1>
           <p>
-            Review what changed, assign follow-up, document acceptable exposure,
-            and preserve a complete decision history across the AWS Organization.
+            Start with the groups that create a real path to important resources,
+            understand the decisive evidence, and prepare a safe change package.
           </p>
         </div>
         <div className="daily-header-actions">
@@ -699,96 +747,80 @@ export default function DailyFindingsView({
         </div>
       </div>
 
-      <section className="daily-scope-bar" aria-label="Organization scope">
-        <div className="scope-organization">
-          <FolderTree size={17} />
-          <p>
-            <span>Organization</span>
-            <strong>
-              {data?.items[0]?.organization ??
-                (data?.source.mode === "aws" ? "AWS account scope" : "Demonstration organization")}
-            </strong>
-          </p>
-        </div>
-        <label>
-          <span>Organizational unit</span>
-          <select
-            value={filters.ou}
-            onChange={(event) => updateFilter("ou", event.target.value)}
-          >
-            <option value="">All organizational units</option>
-            {data?.facets.organizationalUnits.map((value) => (
-              <option key={value}>{value}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>AWS account</span>
-          <select
-            value={filters.account}
-            onChange={(event) => updateFilter("account", event.target.value)}
-          >
-            <option value="">All accounts</option>
-            {data?.facets.accounts.map((account) => (
-              <option value={account.id} key={account.id}>
-                {account.name} · {account.id}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>Region</span>
-          <select
-            value={filters.region}
-            onChange={(event) => updateFilter("region", event.target.value)}
-          >
-            <option value="">All regions</option>
-            {data?.facets.regions.map((value) => (
-              <option key={value}>{value}</option>
-            ))}
-          </select>
-        </label>
-        <div className="coverage-scope">
-          <strong>{data?.coverage.accounts ?? "—"}</strong>
-          <span>accounts monitored</span>
-          {data?.source ? (
-            <small>
-              {data.source.mode === "aws"
-                ? `${data.source.coveragePercent}% collected · ${data.source.freshnessMinutes}m old`
-                : "Demonstration data"}
-            </small>
-          ) : null}
+      <section className="fix-first-overview" aria-label="Fix first exposure lanes">
+        <button className="exposure-lane lane-confirmed" onClick={() => applyExposureSlice("confirmed")}>
+          <span><Globe2 size={18} /></span><p><strong>{data?.exposureOverview.lanes.confirmed ?? "—"}</strong><b>Confirmed internet</b><small>Public path proven end to end</small></p><ArrowRight size={16} />
+        </button>
+        <button className="exposure-lane lane-unknown" onClick={() => applyExposureSlice("unknown")}>
+          <span><ShieldQuestion size={18} /></span><p><strong>{data?.exposureOverview.lanes.unknown ?? "—"}</strong><b>Evidence incomplete</b><small>Collect what is needed to decide</small></p><ArrowRight size={16} />
+        </button>
+        <button className="exposure-lane lane-internal" onClick={() => applyExposureSlice("internal")}>
+          <span><Network size={18} /></span><p><strong>{data?.exposureOverview.lanes.internal ?? "—"}</strong><b>Internal risk</b><small>No public path; lateral access remains</small></p><ArrowRight size={16} />
+        </button>
+        <div className="exposure-coverage-card">
+          <Gauge size={18} />
+          <p><strong>{data?.exposureOverview.outcomes.evidenceCompletePercent ?? "—"}%</strong><b>decision-ready</b><small>{data?.coverage.accounts ?? 0} accounts · {data?.stats.staleAccounts ?? 0} stale</small></p>
         </div>
       </section>
 
-      <section className="daily-stat-grid" aria-label="Daily workload summary">
-        <button onClick={() => updateFilter("status", "new")}>
-          <span className="daily-stat-icon stat-new"><BellRing size={17} /></span>
-          <p><strong>{data?.stats.newToday ?? "—"}</strong><span>New today</span><small>Since your last review</small></p>
-        </button>
-        <button onClick={() => updateFilter("status", "open")}>
-          <span className="daily-stat-icon stat-action"><ShieldAlert size={17} /></span>
-          <p><strong>{data?.stats.awaitingAction ?? "—"}</strong><span>Awaiting action</span><small>New or reopened</small></p>
-        </button>
-        <button onClick={() => updateFilter("status", "follow-up")}>
-          <span className="daily-stat-icon stat-overdue"><CalendarClock size={17} /></span>
-          <p><strong>{data?.stats.overdue ?? "—"}</strong><span>Follow-ups overdue</span><small>Owner action required</small></p>
-        </button>
-        <button onClick={() => updateFilter("status", "accepted-risk")}>
-          <span className="daily-stat-icon stat-exception"><ShieldEllipsis size={17} /></span>
-          <p><strong>{data?.stats.expiringSoon ?? "—"}</strong><span>Exceptions expiring</span><small>Within 14 days</small></p>
-        </button>
-        <button onClick={() => updateFilter("status", "reopened")}>
-          <span className="daily-stat-icon stat-reopened"><History size={17} /></span>
-          <p><strong>{data?.stats.reopened ?? "—"}</strong><span>Reopened</span><small>Exposure returned</small></p>
-        </button>
-        <button onClick={() => onToast("Coverage view opened from the sidebar.")}>
-          <span className="daily-stat-icon stat-stale"><CircleAlert size={17} /></span>
-          <p><strong>{data?.stats.staleAccounts ?? "—"}</strong><span>Accounts stale</span><small>Evidence older than SLA</small></p>
-        </button>
-      </section>
+      {clusters[0] ? <section className={`fix-first-card lane-${clusters[0].lane}`} aria-label="Highest priority security group">
+        <div className="fix-first-rank"><Target size={18} /><span>Fix first</span><strong>{clusters[0].priorityScore}</strong></div>
+        <div className="fix-first-content">
+          <header><div><h2>{clusters[0].lead.securityGroupName}</h2><code>{clusters[0].lead.securityGroupArn}</code></div><span className={`exposure-verdict verdict-${clusters[0].lane}`}>{clusters[0].lane === "confirmed" ? "Internet confirmed" : clusters[0].lane === "unknown" ? "Evidence incomplete" : "Internal risk"}</span></header>
+          <p>{clusters[0].reason}</p>
+          <footer><span>{clusters[0].criticality} asset</span><span>{clusters[0].attachmentCount} resources</span><span>{clusters[0].findings.length} contributing signals</span><span>{clusters[0].lead.owner}</span></footer>
+        </div>
+        <button className="button button-primary" onClick={() => setActiveFinding(clusters[0].lead)}>Investigate <ArrowRight size={14} /></button>
+      </section> : null}
+
+      <details className="scope-disclosure">
+        <summary><FolderTree size={15} /> Organization scope <span>{filters.ou || filters.account || filters.region || "All monitored AWS accounts"}</span></summary>
+        <section className="daily-scope-bar" aria-label="Organization scope">
+          <div className="scope-organization"><FolderTree size={17} /><p><span>Organization</span><strong>{data?.items[0]?.organization ?? (data?.source.mode === "aws" ? "AWS account scope" : "Demonstration organization")}</strong></p></div>
+          <label><span>Organizational unit</span><select value={filters.ou} onChange={(event) => updateFilter("ou", event.target.value)}><option value="">All organizational units</option>{data?.facets.organizationalUnits.map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label><span>AWS account</span><select value={filters.account} onChange={(event) => updateFilter("account", event.target.value)}><option value="">All accounts</option>{data?.facets.accounts.map((account) => <option value={account.id} key={account.id}>{account.name} · {account.id}</option>)}</select></label>
+          <label><span>Region</span><select value={filters.region} onChange={(event) => updateFilter("region", event.target.value)}><option value="">All regions</option>{data?.facets.regions.map((value) => <option key={value}>{value}</option>)}</select></label>
+          <div className="coverage-scope"><strong>{data?.coverage.accounts ?? "—"}</strong><span>accounts monitored</span>{data?.source ? <small>{data.source.mode === "aws" ? `${data.source.coveragePercent}% collected · ${data.source.freshnessMinutes}m old` : "Demonstration data"}</small> : null}</div>
+        </section>
+      </details>
 
       <section className="panel daily-inbox-panel">
+        <section className="guided-hunts" aria-labelledby="guided-hunts-title">
+          <header><div><Target size={17} /><p><strong id="guided-hunts-title">Security group hunts</strong><span>Start with a proven misconfiguration pattern, then refine the generated query.</span></p></div><button className="button button-secondary" onClick={() => setNaturalLanguageOpen((value) => !value)} aria-expanded={naturalLanguageOpen}><Sparkles size={14} />Describe a hunt</button></header>
+          <div className="guided-hunt-scroll">
+            {guidedSecurityGroupHunts.map((hunt) => <button key={hunt.id} onClick={() => applyHunt(hunt.query, hunt.title)}><span>{data?.exposureOverview.hunts[hunt.id] ?? 0}</span><strong>{hunt.title}</strong><small>{hunt.description}</small></button>)}
+          </div>
+          {naturalLanguageOpen ? <div className="natural-hunt-builder">
+            <label><span>Describe the AWS security groups you want to find</span><textarea value={naturalLanguageInput} onChange={(event) => setNaturalLanguageInput(event.target.value)} maxLength={300} placeholder="Show production security groups with public database access, observed traffic, and no approval in the last 7 days." /></label>
+            <div className={naturalLanguagePreview.recognized ? "recognized" : "unrecognized"}><span>Structured preview</span><code>{naturalLanguagePreview.query || "Add an environment, exposure, port, workflow state, account, or time window."}</code>{naturalLanguagePreview.explanations.length ? <small>{naturalLanguagePreview.explanations.join(" · ")}</small> : null}</div>
+            <button className="button button-primary" disabled={!naturalLanguagePreview.recognized} onClick={() => applyHunt(naturalLanguagePreview.query, "Described")}>Run transparent query <ArrowRight size={14} /></button>
+          </div> : null}
+        </section>
+
+        <details className="exposure-intelligence">
+          <summary><Waypoints size={16} /><span><strong>Exposure intelligence</strong><small>Criticality matrix and outcome measures</small></span><ChevronsUpDown size={14} /></summary>
+          <div className="exposure-intelligence-grid">
+            <section className="exposure-matrix" aria-label="Exposure by asset criticality">
+              <header><strong>Exposure × asset criticality</strong><span>Choose a cell to investigate that slice.</span></header>
+              <div className="matrix-table">
+                <span /> <b>Critical</b><b>Important</b><b>Standard</b>
+                {(["confirmed", "unknown", "internal"] as const).map((lane) => <div className="matrix-row" key={lane}><strong>{lane === "confirmed" ? "Internet" : lane === "unknown" ? "Unknown" : "Internal"}</strong>{(["critical", "important", "standard"] as const).map((criticality) => <button className={`matrix-${lane}`} key={criticality} onClick={() => applyExposureSlice(lane, criticality)}><span>{data?.exposureOverview.matrix[lane][criticality] ?? 0}</span><small>groups</small></button>)}</div>)}
+              </div>
+            </section>
+            <section className="outcome-metrics" aria-label="Security outcome metrics">
+              <header><strong>Security outcomes</strong><span>Measures that should improve as exposure is removed.</span></header>
+              <div>
+                <article><Globe2 size={15} /><p><strong>{data?.exposureOverview.outcomes.criticalAssetsExposed ?? 0}</strong><span>Critical assets exposed</span></p></article>
+                <article><Clock3 size={15} /><p><strong>{data?.exposureOverview.outcomes.exposureHours.toLocaleString() ?? 0}</strong><span>Open exposure hours</span></p></article>
+                <article><History size={15} /><p><strong>{data?.exposureOverview.outcomes.reopened ?? 0}</strong><span>Reopened groups</span></p></article>
+                <article><ShieldEllipsis size={15} /><p><strong>{data?.exposureOverview.outcomes.expiringExceptions ?? 0}</strong><span>Exceptions tracked</span></p></article>
+                <article><FileCheck2 size={15} /><p><strong>{data?.exposureOverview.outcomes.evidenceCompletePercent ?? 0}%</strong><span>Decision-ready evidence</span></p></article>
+                <article><Gauge size={15} /><p><strong>{data?.exposureOverview.outcomes.potentialRiskReduction ?? 0}</strong><span>Potential risk points removed</span></p></article>
+              </div>
+            </section>
+          </div>
+        </details>
+
         <div className="saved-view-row">
           <label className="saved-view-picker">
             <ListChecks size={15} />
@@ -966,6 +998,7 @@ export default function DailyFindingsView({
                 <code>severity:</code> <code>risk:&gt;=70</code> <code>verdict:</code> <code>status:</code> <code>owner:</code> <code>assignee:</code>
                 <code>app:</code> <code>env:</code> <code>ou:</code> <code>policy:</code> <code>path:</code> <code>resource:</code> <code>tag:</code>
                 <code>actor:</code> <code>evidence:</code> <code>confidence:&gt;=70</code> <code>age:&gt;30</code>
+                <code>intent:</code> <code>ticket:</code> <code>approved:false</code> <code>flows:&gt;0</code> <code>coverage:&gt;=90</code> <code>rule-id:</code> <code>criticality:</code>
               </p>
             </details>
             {data?.queryDiagnostics.unsupportedFields.length ? (
@@ -981,8 +1014,8 @@ export default function DailyFindingsView({
           {builderOpen ? <div className="daily-query-builder" aria-label="Visual search query builder">
             <div><strong>Build a clause</strong><span>Choose a field and Gatewatch will generate valid syntax.</span></div>
             <label><span>Join</span><select value={builderConnector} onChange={(event) => setBuilderConnector(event.target.value as "AND" | "OR")}><option>AND</option><option>OR</option></select></label>
-            <label><span>Field</span><select value={builderField} onChange={(event) => { setBuilderField(event.target.value); setBuilderOperator("contains"); }}><optgroup label="Identity"><option value="arn">ARN</option><option value="sg">Security group ID</option><option value="name">Security group name</option><option value="account">Cloud account</option><option value="region">Region</option><option value="vpc">VPC</option></optgroup><optgroup label="Rule"><option value="ingress">Ingress</option><option value="egress">Egress</option><option value="protocol">Protocol</option><option value="port">Port</option><option value="source">Source</option></optgroup><optgroup label="Risk and workflow"><option value="internet">Internet exposure</option><option value="severity">Severity</option><option value="risk">Risk</option><option value="status">Status</option><option value="owner">Owner</option><option value="assignee">Assignee</option><option value="recurrence">Recurrence</option></optgroup><optgroup label="History and evidence"><option value="changed-after">Changed after</option><option value="changed-before">Changed before</option><option value="changed-by">Changed by</option><option value="evidence">Evidence</option><option value="confidence">Confidence</option><option value="resource">Attached resource</option><option value="tag">Resource tag</option></optgroup></select></label>
-            <label><span>Operator</span><select value={builderOperator} disabled={!['risk', 'confidence', 'age', 'recurrence'].includes(builderField)} onChange={(event) => setBuilderOperator(event.target.value)}><option value="contains">Contains / equals</option><option value=">=">At least</option><option value="<=">At most</option><option value=">">Greater than</option><option value="<">Less than</option></select></label>
+            <label><span>Field</span><select value={builderField} onChange={(event) => { setBuilderField(event.target.value); setBuilderOperator("contains"); }}><optgroup label="Identity"><option value="arn">ARN</option><option value="sg">Security group ID</option><option value="name">Security group name</option><option value="account">Cloud account</option><option value="region">Region</option><option value="vpc">VPC</option></optgroup><optgroup label="Rule"><option value="ingress">Ingress</option><option value="egress">Egress</option><option value="rule-id">Rule ID</option><option value="protocol">Protocol</option><option value="port">Port</option><option value="source">Source</option></optgroup><optgroup label="Risk and workflow"><option value="internet">Internet exposure</option><option value="criticality">Asset criticality</option><option value="severity">Severity</option><option value="risk">Risk</option><option value="status">Status</option><option value="owner">Owner</option><option value="assignee">Assignee</option><option value="recurrence">Recurrence</option></optgroup><optgroup label="Intent and evidence"><option value="intent">Approved intent</option><option value="ticket">Intent ticket</option><option value="approved">Change approval</option><option value="flows">Observed flows</option><option value="coverage">Flow Log coverage</option><option value="changed-after">Changed after</option><option value="changed-before">Changed before</option><option value="changed-by">Changed by</option><option value="evidence">Evidence</option><option value="confidence">Confidence</option><option value="resource">Attached resource</option><option value="tag">Resource tag</option></optgroup></select></label>
+            <label><span>Operator</span><select value={builderOperator} disabled={!['risk', 'confidence', 'age', 'recurrence', 'flows', 'coverage'].includes(builderField)} onChange={(event) => setBuilderOperator(event.target.value)}><option value="contains">Contains / equals</option><option value=">=">At least</option><option value="<=">At most</option><option value=">">Greater than</option><option value="<">Less than</option></select></label>
             <label className="builder-value"><span>Value</span><input value={builderValue} onChange={(event) => setBuilderValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addBuilderClause(); } }} list="query-builder-values" placeholder="Value or date" /><datalist id="query-builder-values">{(data?.searchSuggestions.values[builderField] ?? []).map((value) => <option value={value} key={value} />)}</datalist></label>
             <label className="builder-negate"><input type="checkbox" checked={builderNegated} onChange={(event) => setBuilderNegated(event.target.checked)} /> Exclude with NOT</label>
             <button type="button" className="button button-primary" disabled={!builderValue.trim()} onClick={addBuilderClause}><Plus size={14} />Add clause</button>
@@ -1095,26 +1128,31 @@ export default function DailyFindingsView({
                     </div>
                   </article>
                 )) : clusters.map((cluster) => {
-                  const lead = cluster[0];
-                  const allSelected = cluster.every((item) => selected.has(item.fingerprint));
-                  return <article key={lead.canonicalResourceKey} className={`triage-cluster ${activeFinding && cluster.some((item) => item.fingerprint === activeFinding.fingerprint) ? "active" : ""}`}>
+                  const lead = cluster.lead;
+                  const allSelected = cluster.findings.every((item) => selected.has(item.fingerprint));
+                  const truth = exposureTruthForFinding(lead);
+                  return <article key={cluster.key} className={`triage-cluster exposure-cluster lane-${cluster.lane} ${activeFinding && cluster.findings.some((item) => item.fingerprint === activeFinding.fingerprint) ? "active" : ""}`}>
                     <header onClick={() => setActiveFinding(lead)}>
                       <label onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={allSelected} aria-label={`Select all findings for ${lead.securityGroupName}`} onChange={(event) => setSelected((current) => {
                         const next = new Set(current);
-                        cluster.forEach((item) => event.target.checked ? next.add(item.fingerprint) : next.delete(item.fingerprint));
+                        cluster.findings.forEach((item) => event.target.checked ? next.add(item.fingerprint) : next.delete(item.fingerprint));
                         return next;
                       })} /></label>
-                      <div><strong>{lead.securityGroupName}</strong><code>{lead.securityGroupId}</code><small>{lead.accountName} · {lead.region} · {new Set(cluster.flatMap((item) => item.attachments.map((attachment) => attachment.id))).size} resources</small></div>
-                      <span className={`compact-risk risk-${riskTone(Math.max(...cluster.map((item) => item.riskScore)))}`}>{Math.max(...cluster.map((item) => item.riskScore))}</span>
+                      <div className="cluster-identity"><strong>{lead.securityGroupName}</strong><code title={lead.securityGroupArn}>{lead.securityGroupArn}</code><small>{lead.accountName} · {lead.region} · {cluster.attachmentCount} resources · {cluster.criticality} criticality</small></div>
+                      <span className={`exposure-verdict verdict-${cluster.lane}`}>{cluster.lane === "confirmed" ? "Internet confirmed" : cluster.lane === "unknown" ? "Evidence incomplete" : "Internal risk"}</span>
+                      <span className={`compact-risk risk-${riskTone(cluster.maxRisk)}`} title={`Priority ${cluster.priorityScore}`}>{cluster.maxRisk}</span>
                     </header>
-                    <div className="cluster-findings">{cluster.map((item) => <button key={item.fingerprint} onClick={() => setActiveFinding(item)}><span className={`daily-severity severity-${item.severity}`} />{item.title}<ChevronRight size={13} /></button>)}</div>
-                    <footer><span>{cluster.length} finding{cluster.length === 1 ? "" : "s"} · {new Set(cluster.map((item) => item.ruleSummary)).size} rule{new Set(cluster.map((item) => item.ruleSummary)).size === 1 ? "" : "s"} · {new Set(cluster.map((item) => item.verdict)).size} exposure state{new Set(cluster.map((item) => item.verdict)).size === 1 ? "" : "s"}</span><button onClick={() => { setSelected(new Set(cluster.map((item) => item.fingerprint))); openAction("follow-up", cluster.map((item) => item.fingerprint)); }}>Follow up as group</button></footer>
+                    <p className="cluster-priority-reason">{cluster.reason}</p>
+                    <div className="cluster-truth-strip" aria-label={`Exposure evidence for ${lead.securityGroupName}`}>{truth.map((step, index) => <div className={`truth-step truth-${step.state}`} key={step.key}><span>{step.label}</span><strong title={step.value}>{step.value}</strong>{index < truth.length - 1 ? <ArrowRight size={12} /> : null}</div>)}</div>
+                    <div className="cluster-findings">{cluster.findings.map((item) => <button key={item.fingerprint} onClick={() => setActiveFinding(item)}><span className={`daily-severity severity-${item.severity}`} />{item.title}<ChevronRight size={13} /></button>)}</div>
+                    <footer><span>{cluster.findings.length} contributing signal{cluster.findings.length === 1 ? "" : "s"} · {cluster.ruleCount} rule{cluster.ruleCount === 1 ? "" : "s"} · {cluster.recurrence} observation{cluster.recurrence === 1 ? "" : "s"}</span><button onClick={() => { const fingerprints = cluster.findings.map((item) => item.fingerprint); setSelected(new Set(fingerprints)); openAction("follow-up", fingerprints); }}>Follow up as group</button></footer>
                   </article>;
                 })}
               </div>
             </section>
             {activeFinding ? (
               <FindingInvestigationPane
+                key={activeFinding.fingerprint}
                 finding={activeFinding}
                 source={data.source}
                 position={data.items.findIndex((item) => item.fingerprint === activeFinding.fingerprint) + 1}
@@ -1307,7 +1345,7 @@ function FindingInvestigationPane({
   onAction: (action: TriageAction) => void;
   onToast: (message: string) => void;
 }) {
-  const [tab, setTab] = useState<"evidence" | "history">("evidence");
+  const [tab, setTab] = useState<"summary" | "path" | "resources" | "remediation" | "history" | "raw">("summary");
   const [events, setEvents] = useState<FindingHistoryEvent[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
@@ -1325,6 +1363,16 @@ function FindingInvestigationPane({
 
   const eligible = decisionEligible(finding, source);
   const links = awsConsoleLinks(finding);
+  const exposureTruth = exposureTruthForFinding(finding);
+  const evidenceChecks = evidenceChecksForFinding(finding);
+  const remediation = remediationPackageForFinding(finding);
+  const rawEvidence = useMemo(() => {
+    try {
+      return JSON.stringify(JSON.parse(finding.evidenceSnapshot), null, 2);
+    } catch {
+      return finding.evidenceSnapshot;
+    }
+  }, [finding.evidenceSnapshot]);
 
   async function copyValue(label: string, value: string) {
     await navigator.clipboard.writeText(value);
@@ -1357,6 +1405,9 @@ function FindingInvestigationPane({
             {finding.evidence.limitations.length ? <small>{finding.evidence.limitations.join(" ")}</small> : null}
           </div>
         </section>
+        <section className="drawer-exposure-truth" aria-label="Decisive exposure evidence">
+          {exposureTruth.map((step, index) => <div className={`truth-step truth-${step.state}`} key={step.key}><span>{step.label}</span><strong>{step.value}</strong>{index < exposureTruth.length - 1 ? <ArrowRight size={13} /> : null}</div>)}
+        </section>
         <div className="finding-drawer-actions">
           <button onClick={() => onAction("follow-up")}><CalendarClock size={15} />Follow up</button>
           <button disabled={!eligible} title={!eligible ? "Complete and refresh evidence before acknowledging." : "Keyboard shortcut: A"} onClick={() => onAction("acknowledged")}><CheckCheck size={15} />Acknowledge</button>
@@ -1364,11 +1415,15 @@ function FindingInvestigationPane({
           <button disabled={!eligible} title={!eligible ? "Complete and refresh evidence before resolving." : "Keyboard shortcut: R"} onClick={() => onAction("resolved")}><ShieldX size={15} />Resolve</button>
         </div>
         <div className="drawer-tabs" role="tablist">
-          <button className={tab === "evidence" ? "active" : ""} role="tab" aria-selected={tab === "evidence"} onClick={() => setTab("evidence")}><ShieldCheck size={14} />Evidence</button>
+          <button className={tab === "summary" ? "active" : ""} role="tab" aria-selected={tab === "summary"} onClick={() => setTab("summary")}><ShieldCheck size={14} />Summary</button>
+          <button className={tab === "path" ? "active" : ""} role="tab" aria-selected={tab === "path"} onClick={() => setTab("path")}><Waypoints size={14} />Exposure path</button>
+          <button className={tab === "resources" ? "active" : ""} role="tab" aria-selected={tab === "resources"} onClick={() => setTab("resources")}><FolderTree size={14} />Impact</button>
+          <button className={tab === "remediation" ? "active" : ""} role="tab" aria-selected={tab === "remediation"} onClick={() => setTab("remediation")}><Wrench size={14} />Remediation</button>
           <button className={tab === "history" ? "active" : ""} role="tab" aria-selected={tab === "history"} onClick={() => setTab("history")}><History size={14} />Notes & history</button>
+          <button className={tab === "raw" ? "active" : ""} role="tab" aria-selected={tab === "raw"} onClick={() => setTab("raw")}><FileCheck2 size={14} />Raw evidence</button>
         </div>
         <div className="finding-drawer-body">
-          {tab === "evidence" ? (
+          {tab === "summary" ? (
             <>
               <section className="finding-explanation">
                 <AlertTriangle size={18} />
@@ -1464,6 +1519,72 @@ function FindingInvestigationPane({
               ) : null}
               <button className="button button-secondary open-group-evidence" onClick={onOpenGroup}>Open complete security-group evidence <ChevronRight size={15} /></button>
             </>
+          ) : tab === "path" ? (
+            <section className="exposure-path-panel">
+              <header className="drawer-section-heading">
+                <div><p>Decisive evidence</p><h3>Is this security group actually reachable?</h3></div>
+                <span className={`path-status path-${finding.pathStatus}`}>{finding.pathStatus}</span>
+              </header>
+              <div className="path-narrative">
+                {exposureTruth.map((step, index) => (
+                  <article className={`path-node path-node-${step.state}`} key={step.key}>
+                    <span>{index + 1}</span>
+                    <div><small>{step.label}</small><strong>{step.value}</strong></div>
+                    {index < exposureTruth.length - 1 ? <ArrowRight size={16} /> : null}
+                  </article>
+                ))}
+              </div>
+              <div className="evidence-readiness-card">
+                <header><div><h3>Evidence readiness</h3><p>Each decisive claim must be supported before a terminal decision is available.</p></div><strong>{evidenceChecks.filter((check) => check.state === "complete").length}/{evidenceChecks.length}</strong></header>
+                <div className="evidence-check-list">
+                  {evidenceChecks.map((check) => <article key={check.key} className={`evidence-check evidence-check-${check.state}`}><span>{check.state === "complete" ? <Check size={14} /> : check.state === "partial" ? <ShieldQuestion size={14} /> : <CircleAlert size={14} />}</span><div><strong>{check.label}</strong><small>{check.detail}</small></div><em>{check.state}</em></article>)}
+                </div>
+              </div>
+              <aside className="traffic-caveat"><Gauge size={17} /><div><strong>Traffic is corroborating evidence, not proof of safety.</strong><p>No observed flows can mean the path was unused, the collection window was incomplete, or Flow Logs were unavailable. Reachability and routing evidence determine exposure.</p></div></aside>
+            </section>
+          ) : tab === "resources" ? (
+            <section className="impact-panel">
+              <header className="drawer-section-heading"><div><p>Blast radius</p><h3>{finding.attachments.length} attached resource{finding.attachments.length === 1 ? "" : "s"}</h3></div><span>{finding.application} · {finding.environment}</span></header>
+              <div className="intent-impact-card">
+                <div><span>Documented intent</span><strong>{finding.approvedIntent || "Owner intent not supplied"}</strong><small>{finding.intentTicket || "No linked approval ticket"}</small></div>
+                <div><span>Intent status</span><strong>{finding.intentStatus.replaceAll("-", " ")}</strong><small>{finding.intentJustification || "No justification supplied"}</small></div>
+              </div>
+              {finding.attachments.length ? (
+                <div className="finding-attachment-list">
+                  {finding.attachments.map((attachment) => {
+                    const tags = Object.entries(attachment.tags ?? {}).sort(([left], [right]) => left.localeCompare(right));
+                    return <article key={`${attachment.type}:${attachment.id}:${attachment.networkInterfaceId ?? "direct"}`}>
+                      <div className="finding-attachment-icon"><FolderTree size={17} /></div>
+                      <div className="finding-attachment-content">
+                        <header><div><strong>{attachment.name}</strong><small>{attachment.type} · {attachment.id}</small></div><em>{attachment.criticality}</em></header>
+                        {attachment.description ? <p>{attachment.description}</p> : null}
+                        <div className="finding-attachment-metadata">{attachment.networkInterfaceId ? <span><b>Interface</b>{attachment.networkInterfaceId}</span> : null}{attachment.privateAddress ? <span><b>Private IP</b>{attachment.privateAddress}</span> : null}{attachment.publicAddress ? <span><b>Public IP</b>{attachment.publicAddress}</span> : null}</div>
+                        <div className="finding-attachment-tags" aria-label={`Tags for ${attachment.name}`}>{tags.length ? tags.slice(0, 12).map(([key, value]) => <span key={key}><b>{key}</b>{value || "—"}</span>) : <small>No resource tags returned by AWS</small>}{tags.length > 12 ? <small>+{tags.length - 12} more tags</small> : null}</div>
+                      </div>
+                    </article>;
+                  })}
+                </div>
+              ) : <div className="finding-attachments-empty"><FolderTree size={20} /><div><strong>No attached resources observed</strong><p>This can indicate an unused group or incomplete attachment evidence. Confirm ENI and managed-service inventory before deletion.</p></div></div>}
+            </section>
+          ) : tab === "remediation" ? (
+            <section className="remediation-panel">
+              <header className="drawer-section-heading"><div><p>Safe change package</p><h3>{remediation.title}</h3></div><PackageCheck size={20} /></header>
+              <div className="remediation-diff"><article><span>Current access</span><strong>{remediation.current}</strong></article><ArrowRight size={18} /><article><span>Proposed outcome</span><strong>{remediation.proposed}</strong></article></div>
+              <div className="remediation-impact"><Target size={17} /><div><strong>Expected impact</strong><p>{remediation.impact}</p><small>{remediation.recommendation}</small></div></div>
+              <div className="remediation-code-list">
+                {([['AWS CLI', remediation.cli], ['CloudFormation guidance', remediation.cloudFormation], ['Terraform guidance', remediation.terraform]] as const).map(([label, value]) => <article key={label}><header><strong>{label}</strong><button onClick={() => void copyValue(label, value)}><Clipboard size={13} />Copy</button></header><pre><code>{value}</code></pre></article>)}
+              </div>
+              <div className="remediation-verification"><h3>Post-change verification</h3>{remediation.verification.map((step, index) => <div key={step}><span>{index + 1}</span><p>{step}</p></div>)}</div>
+              <aside className="package-safety-note"><ShieldCheck size={16} /><p>Gatewatch produces an analyst-reviewed change package. It does not silently modify AWS resources.</p></aside>
+            </section>
+          ) : tab === "raw" ? (
+            <section className="raw-evidence-panel">
+              <header className="drawer-section-heading"><div><p>Source preservation</p><h3>Normalized evidence snapshot</h3></div><span>{finding.evidence.sources.length} sources</span></header>
+              <div className="raw-evidence-meta"><div><span>Finding fingerprint</span><code>{finding.fingerprint}</code></div><div><span>Security group ARN</span><code>{finding.securityGroupArn}</code></div><div><span>Correlated observations</span><strong>{finding.observationCount}</strong></div><div><span>Last observed</span><strong>{formatDate(finding.lastObserved)}</strong></div></div>
+              <pre className="raw-evidence-json"><code>{rawEvidence}</code></pre>
+              <div className="raw-source-list"><strong>Correlated sources</strong>{finding.evidence.sources.map((item) => <span key={item}><FileCheck2 size={13} />{item}</span>)}</div>
+              {finding.evidence.limitations.length ? <div className="raw-limitations"><CircleAlert size={15} /><div><strong>Known limitations</strong>{finding.evidence.limitations.map((item) => <p key={item}>{item}</p>)}</div></div> : null}
+            </section>
           ) : (
             <section className="finding-history">
               <div className="history-heading"><div><h3>Decision history</h3><p>Append-only notes and workflow changes for this stable finding.</p></div><span>{events.length} events</span></div>

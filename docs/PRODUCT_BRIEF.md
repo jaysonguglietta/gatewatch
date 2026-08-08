@@ -1,5 +1,28 @@
 # Gatewatch AWS ingestion product brief
 
+## Exposure triage release (August 2026)
+
+- **Target users:** cloud-security analysts and account owners finding and fixing
+  misconfigured security groups across hundreds of AWS accounts.
+- **Core problem:** rule syntax alone cannot distinguish true public exposure
+  from internal reachability or incomplete evidence, while multiple log sources
+  create duplicate findings and slow investigation.
+- **Primary workflow:** open Fix First, choose a guided or described hunt, confirm
+  the five-step exposure truth, inspect affected resources and intent, generate a
+  safe remediation package, then record and verify the outcome.
+- **Main views:** three exposure lanes, consolidated ARN-first queue, guided hunts,
+  exposure-criticality matrix, decision-first investigation, and outcome metrics.
+- **Key models:** security-group exposure cluster, effective path, evidence check,
+  rule intent, asset criticality, remediation proposal, and outcome measure.
+- **Edge cases:** IPv6 public access, indirect load-balancer paths, missing ENI or
+  route evidence, incomplete Flow Log coverage, no observed traffic, reused group
+  IDs, multiple signals for one group, exceptions, and reopened exposure.
+- **Assumptions:** AWS evidence is the only input; raw objects stay in customer S3;
+  generated remediation is review-only and never silently applied.
+- **Done:** priority is security-group-centric, exposure claims are evidence-aware,
+  search and hunts scale across accounts, remediation is inspectable, and the UI
+  remains responsive and keyboard accessible.
+
 ## Organization operations release (August 2026)
 
 - **Target users:** central cloud-security teams, delegated account owners, and auditors operating across 500+ AWS accounts.

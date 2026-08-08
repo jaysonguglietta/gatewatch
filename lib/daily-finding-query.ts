@@ -38,6 +38,13 @@ export const dailyFindingQueryFields = [
   "changed-before",
   "changed-by",
   "recurrence",
+  "intent",
+  "ticket",
+  "approved",
+  "flows",
+  "coverage",
+  "rule-id",
+  "criticality",
 ] as const;
 
 type QueryField = (typeof dailyFindingQueryFields)[number];
@@ -71,6 +78,13 @@ export type SearchableDailyFinding = {
   ageDays: number;
   lastSeenAt?: string;
   observationCount?: number;
+  intentStatus?: string;
+  approvedIntent?: string;
+  intentTicket?: string;
+  changeApproved?: boolean;
+  ruleFlows30d?: number;
+  trafficCoverage?: number;
+  ruleId?: string;
   evidence: {
     state: string;
     confidence: number;
@@ -81,6 +95,7 @@ export type SearchableDailyFinding = {
     id: string;
     name: string;
     type: string;
+    criticality?: string;
     publicAddress?: string;
     privateAddress?: string;
     networkInterfaceId?: string;
@@ -318,6 +333,12 @@ function allText(finding: SearchableDailyFinding) {
     finding.pathSummary,
     finding.changeActor,
     finding.changeSummary,
+    finding.ruleId,
+    finding.ruleFlows30d,
+    finding.trafficCoverage,
+    finding.intentStatus,
+    finding.approvedIntent,
+    finding.intentTicket,
     finding.evidence.state,
     finding.evidence.confidence,
     ...finding.evidence.sources,
@@ -379,6 +400,13 @@ function tokenMatches(finding: SearchableDailyFinding, token: DailyFindingQueryT
   if (field === "changed-before") return Boolean(finding.changeTime && finding.changeTime.slice(0, 10) <= value);
   if (field === "changed-by") return includesValue(`${finding.changeActor} ${finding.changeSummary}`, value);
   if (field === "recurrence") return numericMatch(finding.observationCount ?? 1, value);
+  if (field === "intent") return includesValue(`${finding.intentStatus} ${finding.approvedIntent}`.replaceAll("-", " "), value);
+  if (field === "ticket") return includesValue(finding.intentTicket, value);
+  if (field === "approved") return normalized(finding.changeApproved) === normalized(value);
+  if (field === "flows") return numericMatch(finding.ruleFlows30d ?? 0, value);
+  if (field === "coverage") return numericMatch(finding.trafficCoverage ?? 0, value);
+  if (field === "rule-id") return includesValue(finding.ruleId, value);
+  if (field === "criticality") return includesValue(finding.attachments.map((attachment) => attachment.criticality).join(" "), value);
   return false;
 }
 
@@ -441,6 +469,8 @@ const fieldLabels: Partial<Record<QueryField, string>> = {
   ou: "Organizational unit", title: "Finding", policy: "Policy", path: "Network path",
   resource: "Attached resource", tag: "Resource tag", actor: "Change actor", "changed-by": "Change actor",
   evidence: "Evidence", confidence: "Evidence confidence", age: "Finding age", internet: "Internet exposure",
+  intent: "Approved intent", ticket: "Intent ticket", approved: "Change approval", flows: "Observed flows",
+  coverage: "Flow Log coverage", "rule-id": "Rule ID", criticality: "Asset criticality",
   "changed-after": "Changed after", "changed-before": "Changed before", recurrence: "Recurrence",
 };
 

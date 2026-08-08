@@ -35,6 +35,13 @@ const finding = {
   ageDays: 42,
   lastSeenAt: "2026-07-30T12:00:00.000Z",
   observationCount: 4,
+  ruleId: "sgr-0123",
+  ruleFlows30d: 128,
+  trafficCoverage: 96,
+  intentStatus: "broader-than-intent",
+  approvedIntent: "CloudFront to ALB on TCP 443",
+  intentTicket: "PAY-4812",
+  changeApproved: false,
   changeTime: "2026-07-21T09:30:00.000Z",
   evidence: {
     state: "observed",
@@ -46,6 +53,7 @@ const finding = {
     id: "alb-payments",
     name: "payments-public-alb",
     type: "ALB",
+    criticality: "Critical",
     publicAddress: "198.51.100.10",
     vpcId: "vpc-0123",
     arn: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/payments/1234",
@@ -116,6 +124,13 @@ test("searches change history, internet state, and recurrence", () => {
   assert.equal(matches("internet:confirmed recurrence:>=3 changed-after:2026-07-01 changed-before:2026-07-31"), true);
   assert.equal(matches("changed-by:network-admin"), true);
   assert.equal(matches("recurrence:>4"), false);
+});
+
+test("searches intent, provenance, traffic, rule identity, and asset criticality", () => {
+  assert.equal(matches('intent:"broader than intent" ticket:PAY-4812 approved:false'), true);
+  assert.equal(matches("flows:>100 coverage:>=90 rule-id:sgr-0123 criticality:Critical"), true);
+  assert.equal(matches("approved:true"), false);
+  assert.equal(matches("flows:>1000"), false);
 });
 
 test("explains positive matched clauses without presenting excluded terms as evidence", () => {

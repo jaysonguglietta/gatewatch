@@ -38,6 +38,7 @@ import {
   type DailyFindingQueryToken,
 } from "../../../lib/daily-finding-query";
 import { csvDocument } from "../../../lib/csv";
+import { buildExposureOverview, groupSecurityGroupFindings } from "../../../lib/security-group-triage";
 
 const userStatuses = new Set<FindingWorkflowStatus>([
   "follow-up",
@@ -930,7 +931,10 @@ export async function GET(request: Request) {
       directions: countFacet(filtered.map((item) => item.ruleSummary.split(" ")[0] ?? "Unknown")),
     };
     const groupMode = url.searchParams.get("group") === "1";
-    const orderedGroupKeys = [...new Set(filtered.map((finding) => finding.canonicalResourceKey))];
+    const exposureOverview = buildExposureOverview(filtered);
+    const orderedGroupKeys = groupMode && (url.searchParams.get("sort") ?? "risk") === "risk"
+      ? groupSecurityGroupFindings(filtered).map((cluster) => cluster.key)
+      : [...new Set(filtered.map((finding) => finding.canonicalResourceKey))];
     const paginationTotal = groupMode ? orderedGroupKeys.length : filtered.length;
     const requestedPageSize = Math.min(
       100,
@@ -979,6 +983,7 @@ export async function GET(request: Request) {
         owners: [...new Set(catalog.map((item) => item.owner))].sort(),
       },
       resultFacets,
+      exposureOverview,
       resultGroupCount: new Set(filtered.map((item) => item.canonicalResourceKey)).size,
       evidenceMatches,
       searchScope,
