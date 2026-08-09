@@ -29,6 +29,31 @@
 - Remove a previously collected account's role and prove the current UI retains
   its last observation while marking the new run incomplete/stale.
 
+## Bedrock AI analyst tests
+
+- Put prompt instructions, XML-like role tags, Unicode controls, markdown, and
+  remediation commands in security-group names, tags, owner, intent, and actor fields.
+- Confirm raw `evidenceSnapshot`, uploaded log bodies, credentials, and unrelated
+  findings never appear in the compact Bedrock request.
+- Require every accepted claim reference to exist in the submitted fact IDs.
+- Mutate the model's deterministic verdict, mode, schema version, extra property,
+  query field, confidence, action approval flag, and output length independently;
+  confirm validation fails and deterministic fallback is returned.
+- Confirm Guardrail intervention, timeout, access denial, throttling, malformed
+  JSON, missing text output, and disabled service all preserve core findings.
+- Send more than 25 findings, 60 KB to the route, 96 KB to the bridge, and 64 KB
+  from a mock model; confirm each boundary fails closed.
+- Race more than 100 requests for one actor and 500 for a workspace; confirm the
+  atomic counters prevent overrun and cached requests do not consume reservations.
+- Verify viewer/reviewer denial, analyst access, same-origin enforcement, feedback
+  ownership, cache expiry, audit attribution, and generic public errors.
+- Verify the workload role can invoke only the approved inference profile/model
+  destinations and stack Guardrail, and cannot invoke an unrelated model.
+- Render hostile model text and remediation blocks; confirm React escapes them and
+  no control offers automatic execution.
+- Disable Bedrock through CloudFormation and confirm deterministic daily findings,
+  search, triage, reporting, and remediation continue unchanged.
+
 **Version:** 1.0  
 **Baseline:** July 31, 2026 adversarial audit  
 **Purpose:** Convert the threat model and findings into repeatable release gates

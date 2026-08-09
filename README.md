@@ -25,6 +25,11 @@ resources, and vulnerability context.
   reach, default groups, stale groups, exceptions, recurrence, and missing evidence
 - A transparent plain-language hunt assistant that produces an inspectable,
   editable structured query rather than an opaque model decision
+- An optional Amazon Bedrock analyst for evidence-cited finding explanations,
+  daily digests, cluster briefs, natural-language hunt translation, and
+  review-only remediation drafts. A versioned Guardrail, strict JSON schema,
+  citation checks, atomic daily budgets, seven-day cache, feedback, and a
+  deterministic fallback keep AI output advisory and auditable
 - Organization, OU, account, region, environment, owner, severity, workflow, and
   effective-internet exposure
   scoping designed for hundreds of AWS accounts, plus shareable URL filters and
@@ -151,6 +156,9 @@ The analyst workflow and decision controls are documented in
 [`docs/SECURITY_ANALYST_WORKSPACE.md`](docs/SECURITY_ANALYST_WORKSPACE.md).
 The static IaC parsing and safety model is documented in
 [`docs/architecture/IAC_SECURITY_REVIEW.md`](docs/architecture/IAC_SECURITY_REVIEW.md).
+The Bedrock data boundary, model controls, IAM policy, failure behavior, and
+operating procedure are documented in
+[`docs/architecture/BEDROCK_AI_ANALYST.md`](docs/architecture/BEDROCK_AI_ANALYST.md).
 
 Review decisions are persisted through the configured Cloudflare D1 `DB`
 binding. Stable finding fingerprints, current analyst workflow, append-only
@@ -171,7 +179,8 @@ transactional database. Apply the production migrations in filename order from
 `0002_organization_operations.sql` adds the organization operating plane and
 workspace isolation, and `0003_finding_search.sql` adds the bounded search,
 temporal-history, and JSONB/trigram indexes used by the organization-scale
-findings workflow. Raw objects remain in the configured S3 bucket;
+findings workflow. `0004_bedrock_ai_analyst.sql` adds model analysis, feedback,
+and daily usage records without copying raw evidence. Raw objects remain in the configured S3 bucket;
 normalized events, configuration items, traffic observations, network
 analyses, service access, managed findings, current rule versions, findings,
 and evidence references are stored in Aurora.
@@ -203,6 +212,8 @@ Open **Admin config** in the application navigation to:
 - Review ingestion runs and administrative audit history
 - Manage application roles and normalized-data retention
 - Configure Jira reconciliation and notification routing
+- Inspect the Bedrock analyst model, Guardrail version, availability, personal
+  and workspace usage budgets, and the immutable human-approval boundary
 
 Notification routing writes retryable, auditable outbox records. An email or
 webhook delivery worker must be connected in the AWS runtime before those

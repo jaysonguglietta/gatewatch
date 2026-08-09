@@ -59,6 +59,19 @@ Parameters:
     AllowedValues:
       - t4g.small
       - t4g.medium
+  BedrockEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Enables review-only Bedrock analyst workflows. Deterministic findings remain authoritative.
+  BedrockModelId:
+    Type: String
+    Default: us.amazon.nova-2-lite-v1:0
+    AllowedValues:
+      - us.amazon.nova-2-lite-v1:0
+    Description: US-geo inference profile approved for Gatewatch structured analysis.
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
@@ -159,6 +172,36 @@ Resources:
         - Key: DataClassification
           Value: Credential
 
+  GatewatchAiGuardrail:
+    Type: AWS::Bedrock::Guardrail
+    Properties:
+      Name: !Sub gatewatch-${EnvironmentName}-ai-guardrail
+      Description: Prompt-attack protection for untrusted AWS evidence and Gatewatch analyst requests.
+      BlockedInputMessaging: Gatewatch blocked untrusted instructions in the supplied evidence or analyst request.
+      BlockedOutputsMessaging: Gatewatch blocked an unsafe model response. Deterministic findings remain available.
+      ContentPolicyConfig:
+        FiltersConfig:
+          - Type: PROMPT_ATTACK
+            InputStrength: HIGH
+            OutputStrength: NONE
+            InputAction: BLOCK
+            OutputAction: NONE
+            InputEnabled: true
+            OutputEnabled: false
+            InputModalities:
+              - TEXT
+      Tags:
+        - Key: Application
+          Value: Gatewatch
+        - Key: Purpose
+          Value: SecurityAnalysis
+
+  GatewatchAiGuardrailVersion:
+    Type: AWS::Bedrock::GuardrailVersion
+    Properties:
+      GuardrailIdentifier: !GetAtt GatewatchAiGuardrail.GuardrailId
+      Description: Immutable Gatewatch analyst guardrail version.
+
   ApplicationLogGroup:
     Type: AWS::Logs::LogGroup
     DeletionPolicy: Retain
@@ -241,6 +284,20 @@ Resources:
                 Effect: Allow
                 Action: secretsmanager:PutSecretValue
                 Resource: !Ref JiraIntegrationSecret
+              - Sid: InvokeApprovedGatewatchModel
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource:
+                  - !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}
+                  - !Sub arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/amazon.nova-2-lite-v1:0
+                  - !Sub arn:${AWS::Partition}:bedrock:us-east-2::foundation-model/amazon.nova-2-lite-v1:0
+                  - !Sub arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/amazon.nova-2-lite-v1:0
+              - Sid: ApplyGatewatchGuardrail
+                Effect: Allow
+                Action:
+                  - bedrock:ApplyGuardrail
+                Resource: !GetAtt GatewatchAiGuardrail.GuardrailArn
               - Sid: PublishApplicationLogs
                 Effect: Allow
                 Action:
@@ -412,7 +469,11 @@ Resources:
                 '${OrganizationEvidenceBucket}' \
                 '${OrganizationManifestKey}' \
                 '${ApplicationLogGroup}' \
-                "$RELEASE_ID"
+                "$RELEASE_ID" \
+                '${BedrockEnabled}' \
+                '${BedrockModelId}' \
+                '${GatewatchAiGuardrail.GuardrailId}' \
+                '${GatewatchAiGuardrailVersion.Version}'
 
   NoCachePolicy:
     Type: AWS::CloudFront::CachePolicy
@@ -523,6 +584,14 @@ Outputs:
   JiraIntegrationSecretArn:
     Description: Secret containing the Jira Cloud integration configuration.
     Value: !Ref JiraIntegrationSecret
+  BedrockModelId:
+    Description: Approved Bedrock inference profile used by Gatewatch.
+    Value: !Ref BedrockModelId
+  BedrockGuardrailId:
+    Description: Versioned prompt-attack guardrail applied to Gatewatch inference.
+    Value: !GetAtt GatewatchAiGuardrail.GuardrailId
+  BedrockGuardrailVersion:
+    Value: !GetAtt GatewatchAiGuardrailVersion.Version
   InstanceId:
     Value: !Ref WebInstance
   PersistentFileSystemId:

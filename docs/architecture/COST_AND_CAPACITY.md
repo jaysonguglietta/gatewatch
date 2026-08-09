@@ -32,6 +32,7 @@
 | Aurora | Minimum ACU + ingestion/query bursts + I/O | Serverless bounds, indexes, pagination |
 | CloudWatch | Log bytes and retention | Structured concise logs, 90-day hot retention |
 | NAT/data transfer | Workloads placed behind NAT | Prefer VPC endpoints where justified |
+| Bedrock analysis | Input/output tokens on uncached analyst requests | Nova 2 Lite, compact evidence, 4,000-token output cap, seven-day cache, per-user/workspace daily budgets |
 
 ## Capacity controls
 
@@ -48,6 +49,13 @@ Starting values:
 Increase account concurrency only after checking EC2 API throttling, Lambda
 regional concurrency, KMS request rates, and Step Functions Map Run metrics.
 Increasing concurrency reduces wall-clock time but not the total API work.
+
+Bedrock starts with 100 uncached requests per user and 500 per workspace per UTC
+day. The API atomically reserves capacity before inference, so parallel requests
+cannot exceed a counter. Cache hits are free of the application request budget.
+Track actual input/output tokens in `ai_usage_daily` and price them against the
+current Bedrock Nova 2 Lite rates in the deployment Region; do not hard-code a
+dollar estimate because service and cross-Region pricing can change.
 
 ## Scaling signals
 

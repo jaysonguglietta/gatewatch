@@ -15,6 +15,20 @@ backward-compatible single-account source during migration.
 See [`docs/architecture`](../../docs/architecture/README.md) for architecture,
 deployment order, diagrams, data contracts, capacity guidance, and runbooks.
 
+## AWS web and Bedrock analyst
+
+`gatewatch-aws-web.yaml` deploys the current CloudFront/EC2 web runtime. It also
+creates a versioned Bedrock Guardrail with a high-strength prompt-attack input
+filter and grants the instance role access only to the approved US Nova 2 Lite
+inference profile, its three US destination model ARNs, and that Guardrail.
+
+`BedrockEnabled` defaults to `true`. `BedrockModelId` is allowlisted to
+`us.amazon.nova-2-lite-v1:0`. Set `BedrockEnabled=false` to retain the complete
+deterministic application while disabling inference. Do not replace the scoped
+Bedrock resources with `*`. See
+[`BEDROCK_AI_ANALYST.md`](../../docs/architecture/BEDROCK_AI_ANALYST.md) for the
+data boundary, validation contract, budgets, and failure procedure.
+
 ## Legacy aggregate collector
 
 This CloudFormation deployment produces a normalized, point-in-time inventory

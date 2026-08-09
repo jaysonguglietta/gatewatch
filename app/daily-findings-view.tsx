@@ -5,6 +5,7 @@ import {
   ArrowRight,
   BadgeCheck,
   BellRing,
+  BrainCircuit,
   CalendarClock,
   Check,
   CheckCheck,
@@ -44,6 +45,8 @@ import {
   SlidersHorizontal,
   TicketPlus,
   Target,
+  ThumbsDown,
+  ThumbsUp,
   UserRound,
   Users,
   Waypoints,
@@ -56,6 +59,7 @@ import type {
   DailyFinding,
   FindingWorkflowStatus,
 } from "../lib/daily-findings";
+import type { AiAnalysisEnvelope, AiAnalysisMode } from "../lib/ai-security-analyst";
 import {
   evidenceChecksForFinding,
   exposureTruthForFinding,
@@ -354,6 +358,17 @@ function downloadCsv(items: DailyFinding[]) {
   URL.revokeObjectURL(url);
 }
 
+async function requestAiAnalysis(mode: AiAnalysisMode, findings: DailyFinding[], question = "") {
+  const response = await fetch("/api/ai/analysis", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "analyze", mode, findings, question }),
+  });
+  const payload = await response.json() as { analysis?: AiAnalysisEnvelope; error?: string };
+  if (!response.ok || !payload.analysis) throw new Error(payload.error ?? "AI analysis could not be completed.");
+  return payload.analysis;
+}
+
 export default function DailyFindingsView({
   onOpenGroup,
   onToast,
@@ -395,6 +410,9 @@ export default function DailyFindingsView({
   const [queueMode, setQueueMode] = useState<QueueMode>("security-groups");
   const [naturalLanguageOpen, setNaturalLanguageOpen] = useState(false);
   const [naturalLanguageInput, setNaturalLanguageInput] = useState("");
+  const [aiOverview, setAiOverview] = useState<AiAnalysisEnvelope | null>(null);
+  const [aiOverviewLoading, setAiOverviewLoading] = useState(false);
+  const [aiOverviewError, setAiOverviewError] = useState("");
   const [density, setDensity] = useState<QueueDensity>(() => {
     if (typeof window === "undefined") return "compact";
     const stored = window.localStorage.getItem("gatewatch.findings-density");
@@ -655,6 +673,36 @@ export default function DailyFindingsView({
     onToast(`${label} hunt applied.`);
   }
 
+  async function runAiHunt() {
+    if (!data?.items[0] || !naturalLanguageInput.trim()) return;
+    setAiOverviewLoading(true);
+    setAiOverviewError("");
+    try {
+      const result = await requestAiAnalysis("hunt", [data.items[0]], naturalLanguageInput);
+      setAiOverview(result);
+      if (result.analysis.searchQuery) applyHunt(result.analysis.searchQuery, "AI-assisted");
+      else setAiOverviewError("The request needs more detail before Gatewatch can create a safe query.");
+    } catch (caught) {
+      setAiOverviewError(caught instanceof Error ? caught.message : "AI search translation failed.");
+    } finally {
+      setAiOverviewLoading(false);
+    }
+  }
+
+  async function runAiOverview(mode: "digest" | "cluster", findings: DailyFinding[] = data?.items ?? []) {
+    if (!findings.length) return;
+    setAiOverviewLoading(true);
+    setAiOverviewError("");
+    try {
+      setAiOverview(await requestAiAnalysis(mode, findings.slice(0, 25)));
+      onToast(mode === "digest" ? "AI daily digest prepared." : "AI cluster brief prepared.");
+    } catch (caught) {
+      setAiOverviewError(caught instanceof Error ? caught.message : "AI overview failed.");
+    } finally {
+      setAiOverviewLoading(false);
+    }
+  }
+
   function applyExposureSlice(lane: ExposureLane, criticality?: "critical" | "important" | "standard") {
     updateFilter("internet", lane === "confirmed" ? "internet" : lane === "unknown" ? "unknown" : "no-internet");
     const criticalityQuery = criticality === "critical"
@@ -773,6 +821,12 @@ export default function DailyFindingsView({
         <button className="button button-primary" onClick={() => setActiveFinding(clusters[0].lead)}>Investigate <ArrowRight size={14} /></button>
       </section> : null}
 
+      <section className="ai-overview-card" aria-label="Gatewatch AI analyst overview">
+        <header><span><BrainCircuit size={19} /></span><div><p>Bedrock analyst</p><h2>{aiOverview ? aiOverview.analysis.title : "Summarize the current evidence-backed queue"}</h2></div><button className="button button-secondary" disabled={aiOverviewLoading || !data?.items.length} onClick={() => void runAiOverview("digest")}><Sparkles size={14} />{aiOverviewLoading ? "Analyzing…" : "Generate daily digest"}</button></header>
+        {aiOverview ? <div className="ai-overview-content"><p>{aiOverview.analysis.executiveSummary}</p><div>{aiOverview.analysis.recommendedActions.slice(0, 3).map((action) => <span key={`${action.priority}:${action.action}`}><strong>{action.priority}</strong>{action.action}</span>)}</div><footer><span className={`ai-source ai-source-${aiOverview.source}`}>{aiOverview.source === "bedrock" ? "Amazon Bedrock" : "Deterministic fallback"}</span><span>{aiOverview.analysis.confidence}% confidence</span><span>{aiOverview.cacheHit ? "Cached" : `${aiOverview.usage.inputTokens + aiOverview.usage.outputTokens} tokens`}</span><button onClick={() => setAiOverview(null)}>Dismiss</button></footer></div> : <p>Gatewatch sends at most 25 compact, normalized findings—not raw logs—and keeps deterministic reachability and risk decisions authoritative.</p>}
+        {aiOverviewError ? <div className="ai-inline-error" role="alert"><CircleAlert size={14} />{aiOverviewError}</div> : null}
+      </section>
+
       <details className="scope-disclosure">
         <summary><FolderTree size={15} /> Organization scope <span>{filters.ou || filters.account || filters.region || "All monitored AWS accounts"}</span></summary>
         <section className="daily-scope-bar" aria-label="Organization scope">
@@ -793,7 +847,7 @@ export default function DailyFindingsView({
           {naturalLanguageOpen ? <div className="natural-hunt-builder">
             <label><span>Describe the AWS security groups you want to find</span><textarea value={naturalLanguageInput} onChange={(event) => setNaturalLanguageInput(event.target.value)} maxLength={300} placeholder="Show production security groups with public database access, observed traffic, and no approval in the last 7 days." /></label>
             <div className={naturalLanguagePreview.recognized ? "recognized" : "unrecognized"}><span>Structured preview</span><code>{naturalLanguagePreview.query || "Add an environment, exposure, port, workflow state, account, or time window."}</code>{naturalLanguagePreview.explanations.length ? <small>{naturalLanguagePreview.explanations.join(" · ")}</small> : null}</div>
-            <button className="button button-primary" disabled={!naturalLanguagePreview.recognized} onClick={() => applyHunt(naturalLanguagePreview.query, "Described")}>Run transparent query <ArrowRight size={14} /></button>
+            <div className="natural-hunt-actions"><button className="button button-secondary" disabled={!naturalLanguagePreview.recognized} onClick={() => applyHunt(naturalLanguagePreview.query, "Described")}>Run transparent query <ArrowRight size={14} /></button><button className="button button-primary" disabled={!naturalLanguageInput.trim() || !data?.items.length || aiOverviewLoading} onClick={() => void runAiHunt()}><BrainCircuit size={14} />{aiOverviewLoading ? "Translating…" : "Ask Bedrock"}</button></div>
           </div> : null}
         </section>
 
@@ -1145,7 +1199,7 @@ export default function DailyFindingsView({
                     <p className="cluster-priority-reason">{cluster.reason}</p>
                     <div className="cluster-truth-strip" aria-label={`Exposure evidence for ${lead.securityGroupName}`}>{truth.map((step, index) => <div className={`truth-step truth-${step.state}`} key={step.key}><span>{step.label}</span><strong title={step.value}>{step.value}</strong>{index < truth.length - 1 ? <ArrowRight size={12} /> : null}</div>)}</div>
                     <div className="cluster-findings">{cluster.findings.map((item) => <button key={item.fingerprint} onClick={() => setActiveFinding(item)}><span className={`daily-severity severity-${item.severity}`} />{item.title}<ChevronRight size={13} /></button>)}</div>
-                    <footer><span>{cluster.findings.length} contributing signal{cluster.findings.length === 1 ? "" : "s"} · {cluster.ruleCount} rule{cluster.ruleCount === 1 ? "" : "s"} · {cluster.recurrence} observation{cluster.recurrence === 1 ? "" : "s"}</span><button onClick={() => { const fingerprints = cluster.findings.map((item) => item.fingerprint); setSelected(new Set(fingerprints)); openAction("follow-up", fingerprints); }}>Follow up as group</button></footer>
+                    <footer><span>{cluster.findings.length} contributing signal{cluster.findings.length === 1 ? "" : "s"} · {cluster.ruleCount} rule{cluster.ruleCount === 1 ? "" : "s"} · {cluster.recurrence} observation{cluster.recurrence === 1 ? "" : "s"}</span><div><button onClick={() => void runAiOverview("cluster", cluster.findings)}><BrainCircuit size={12} />AI cluster brief</button><button onClick={() => { const fingerprints = cluster.findings.map((item) => item.fingerprint); setSelected(new Set(fingerprints)); openAction("follow-up", fingerprints); }}>Follow up as group</button></div></footer>
                   </article>;
                 })}
               </div>
@@ -1345,9 +1399,13 @@ function FindingInvestigationPane({
   onAction: (action: TriageAction) => void;
   onToast: (message: string) => void;
 }) {
-  const [tab, setTab] = useState<"summary" | "path" | "resources" | "remediation" | "history" | "raw">("summary");
+  const [tab, setTab] = useState<"summary" | "ai" | "path" | "resources" | "remediation" | "history" | "raw">("summary");
   const [events, setEvents] = useState<FindingHistoryEvent[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [aiAnalysis, setAiAnalysis] = useState<AiAnalysisEnvelope | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const [aiFeedback, setAiFeedback] = useState("");
 
   useEffect(() => {
     if (tab !== "history") return;
@@ -1360,6 +1418,20 @@ function FindingInvestigationPane({
     }, 0);
     return () => window.clearTimeout(timer);
   }, [finding.fingerprint, tab]);
+
+  useEffect(() => {
+    if (tab !== "ai" || aiAnalysis || aiLoading) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      fetch(`/api/ai/analysis?fingerprint=${encodeURIComponent(finding.fingerprint)}&mode=finding`, { signal: controller.signal })
+        .then((response) => response.json())
+        .then((payload: { analysis?: AiAnalysisEnvelope | null }) => {
+          if (payload.analysis) setAiAnalysis(payload.analysis);
+        })
+        .catch(() => undefined);
+    }, 0);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [aiAnalysis, aiLoading, finding.fingerprint, tab]);
 
   const eligible = decisionEligible(finding, source);
   const links = awsConsoleLinks(finding);
@@ -1377,6 +1449,27 @@ function FindingInvestigationPane({
   async function copyValue(label: string, value: string) {
     await navigator.clipboard.writeText(value);
     onToast(`${label} copied.`);
+  }
+
+  async function generateAiAnalysis() {
+    setAiLoading(true);
+    setAiError("");
+    try {
+      setAiAnalysis(await requestAiAnalysis("finding", [finding]));
+      onToast("Evidence-cited AI analysis prepared.");
+    } catch (caught) {
+      setAiError(caught instanceof Error ? caught.message : "AI analysis could not be completed.");
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  async function submitAiFeedback(rating: "useful" | "incorrect" | "incomplete") {
+    if (!aiAnalysis) return;
+    const response = await fetch("/api/ai/analysis", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "feedback", analysisId: aiAnalysis.id, rating }) });
+    if (!response.ok) { setAiError("AI feedback could not be saved."); return; }
+    setAiFeedback(rating);
+    onToast("AI feedback saved for evaluation.");
   }
 
   return (
@@ -1416,6 +1509,7 @@ function FindingInvestigationPane({
         </div>
         <div className="drawer-tabs" role="tablist">
           <button className={tab === "summary" ? "active" : ""} role="tab" aria-selected={tab === "summary"} onClick={() => setTab("summary")}><ShieldCheck size={14} />Summary</button>
+          <button className={tab === "ai" ? "active" : ""} role="tab" aria-selected={tab === "ai"} onClick={() => setTab("ai")}><BrainCircuit size={14} />AI analysis</button>
           <button className={tab === "path" ? "active" : ""} role="tab" aria-selected={tab === "path"} onClick={() => setTab("path")}><Waypoints size={14} />Exposure path</button>
           <button className={tab === "resources" ? "active" : ""} role="tab" aria-selected={tab === "resources"} onClick={() => setTab("resources")}><FolderTree size={14} />Impact</button>
           <button className={tab === "remediation" ? "active" : ""} role="tab" aria-selected={tab === "remediation"} onClick={() => setTab("remediation")}><Wrench size={14} />Remediation</button>
@@ -1423,7 +1517,23 @@ function FindingInvestigationPane({
           <button className={tab === "raw" ? "active" : ""} role="tab" aria-selected={tab === "raw"} onClick={() => setTab("raw")}><FileCheck2 size={14} />Raw evidence</button>
         </div>
         <div className="finding-drawer-body">
-          {tab === "summary" ? (
+          {tab === "ai" ? (
+            <section className="ai-analysis-panel">
+              <header className="drawer-section-heading"><div><p>Amazon Bedrock · advisory</p><h3>{aiAnalysis?.analysis.title ?? "Explain this finding from normalized evidence"}</h3></div>{aiAnalysis ? <span className={`ai-source ai-source-${aiAnalysis.source}`}>{aiAnalysis.source === "bedrock" ? "Bedrock" : "Deterministic fallback"}</span> : <BrainCircuit size={20} />}</header>
+              <aside className="ai-authority-boundary"><ShieldCheck size={16} /><p><strong>Evidence remains authoritative</strong><span>AI cannot change the reachability verdict, risk score, workflow state, or AWS configuration. Every generated action requires analyst approval.</span></p></aside>
+              {!aiAnalysis ? <div className="ai-first-run"><span><BrainCircuit size={25} /></span><h3>Generate an evidence-cited explanation</h3><p>Gatewatch sends a bounded normalized package for this security group. Raw uploaded logs, credentials, and unrelated account evidence are excluded.</p><button className="button button-primary" disabled={aiLoading} onClick={() => void generateAiAnalysis()}>{aiLoading ? <RefreshCw className="spin" size={14} /> : <Sparkles size={14} />}{aiLoading ? "Analyzing…" : "Analyze finding"}</button></div> : <>
+                <div className="ai-analysis-hero"><div><span>Executive summary</span><p>{aiAnalysis.analysis.executiveSummary}</p></div><strong>{aiAnalysis.analysis.confidence}<small>confidence</small></strong></div>
+                <section className="ai-why"><h3>Why it matters</h3><p>{aiAnalysis.analysis.whyItMatters}</p><small>{aiAnalysis.analysis.confidenceRationale}</small></section>
+                <section className="ai-claims"><header><h3>Claims and evidence</h3><span>{aiAnalysis.analysis.claims.length}</span></header>{aiAnalysis.analysis.claims.length ? aiAnalysis.analysis.claims.map((claim, index) => <article key={`${claim.statement}:${index}`}><span className={`ai-basis basis-${claim.basis}`}>{claim.basis}</span><div><p>{claim.statement}</p><small>{claim.evidenceRefs.join(" · ")} · {claim.confidence}%</small></div></article>) : <p>No additional claims were produced.</p>}</section>
+                <div className="ai-gap-grid"><section><h3>Contradictions</h3>{aiAnalysis.analysis.contradictions.length ? aiAnalysis.analysis.contradictions.map((item) => <p key={item}><ShieldQuestion size={13} />{item}</p>) : <p><Check size={13} />No contradiction identified.</p>}</section><section><h3>Evidence gaps</h3>{aiAnalysis.analysis.evidenceGaps.map((item) => <p key={item}><CircleAlert size={13} />{item}</p>)}</section></div>
+                <section className="ai-actions"><h3>Reviewable actions</h3>{aiAnalysis.analysis.recommendedActions.map((action) => <article key={`${action.priority}:${action.action}`}><span>{action.priority}</span><div><strong>{action.action}</strong><p>{action.reason}</p></div><em>{action.requiresApproval ? "Approval required" : "Review"}</em></article>)}</section>
+                <details className="ai-remediation-draft"><summary><Wrench size={14} /><span><strong>AI remediation draft</strong><small>Review-only CloudFormation and Terraform suggestions</small></span><ChevronRight size={13} /></summary><div><p>{aiAnalysis.analysis.remediation.summary}</p>{([["CloudFormation", aiAnalysis.analysis.remediation.cloudFormation], ["Terraform", aiAnalysis.analysis.remediation.terraform]] as const).map(([label, value]) => value ? <article key={label}><header><strong>{label}</strong><button onClick={() => void copyValue(`${label} AI draft`, value)}><Clipboard size={12} />Copy</button></header><pre><code>{value}</code></pre></article> : null)}<h4>Validation</h4>{aiAnalysis.analysis.remediation.validation.map((item, index) => <p key={item}><span>{index + 1}</span>{item}</p>)}<aside><RotateCcw size={13} />{aiAnalysis.analysis.remediation.rollback}</aside></div></details>
+                <footer className="ai-provenance"><div><span>Model</span><strong>{aiAnalysis.modelId}</strong></div><div><span>Guardrail</span><strong>{aiAnalysis.guardrail.configured ? aiAnalysis.guardrail.action : "Application controls"}</strong></div><div><span>Usage</span><strong>{aiAnalysis.usage.inputTokens + aiAnalysis.usage.outputTokens} tokens · {aiAnalysis.usage.latencyMs} ms</strong></div><div><span>Cache</span><strong>{aiAnalysis.cacheHit ? "Reused" : "Fresh"}</strong></div></footer>
+                <div className="ai-feedback"><span>Was this analysis useful?</span><button className={aiFeedback === "useful" ? "active" : ""} onClick={() => void submitAiFeedback("useful")}><ThumbsUp size={13} />Useful</button><button className={aiFeedback === "incorrect" ? "active" : ""} onClick={() => void submitAiFeedback("incorrect")}><ThumbsDown size={13} />Incorrect</button><button className={aiFeedback === "incomplete" ? "active" : ""} onClick={() => void submitAiFeedback("incomplete")}><CircleAlert size={13} />Incomplete</button></div>
+              </>}
+              {aiError ? <div className="ai-inline-error" role="alert"><CircleAlert size={14} />{aiError}</div> : null}
+            </section>
+          ) : tab === "summary" ? (
             <>
               <section className="finding-explanation">
                 <AlertTriangle size={18} />

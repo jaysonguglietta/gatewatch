@@ -1,8 +1,8 @@
 # Gatewatch threat model
 
-**Version:** 1.1
+**Version:** 1.2
 
-**Last reviewed:** August 3, 2026
+**Last reviewed:** August 9, 2026
 
 **Scope:** Current AWS web and collector deployment plus the planned SQS/Lambda/Aurora ingestion platform
 
@@ -36,6 +36,7 @@ flowchart LR
     Bridge -->|"Get snapshot"| S3["Encrypted versioned S3"]
     Bridge -->|"Assume source role"| STS["AWS STS"]
     Bridge -->|"HTTPS API token"| Jira["Jira Cloud"]
+    Bridge -->|"Converse, strict schema, versioned Guardrail"| Bedrock["Amazon Bedrock"]
     Schedule["EventBridge schedule"] --> SFN["Step Functions Distributed Map"]
     SFN --> Collector["Isolated account workers"]
     Collector -->|"Assume read role"| Members["Organization member accounts"]
@@ -79,6 +80,15 @@ The bridge has access to Secrets Manager, STS, S3, and Jira. Its bearer token is
 service credential, not a user authorization mechanism. Web and bridge workloads
 must have separate least-privilege roles and isolation boundaries.
 
+### Normalized evidence to Bedrock
+
+AWS resource names, tags, intent, and actor text are hostile prompt input. The
+application sends only the compact evidence package, delimits and escapes it,
+applies the prompt-attack Guardrail, requires structured output, validates every
+property and evidence reference, preserves the deterministic verdict, and falls
+back locally on any failure. The model receives no raw logs or mutation
+permissions. Model output remains untrusted content rendered as text.
+
 ### Gatewatch account to source accounts
 
 Source-account operators deploy a role trusted by Gatewatch. Generated templates,
@@ -107,6 +117,7 @@ separation even when application queries are wrong.
 | Web and service credentials | Permit application and integration access | Rotation, short lifetime, least privilege, no disclosure |
 | Cross-account roles | Scale a compromise across AWS accounts | Read-only policies, boundaries, external IDs, Access Analyzer |
 | Jira integration | Creates external records and contains an API token | Admin-only configuration, quotas, rotation, audit |
+| Bedrock evidence package and output | May reveal posture or influence analyst decisions | Minimization, schema, citations, guardrails, budgets, audit, human approval |
 | Release artifacts | Become executable production code | Signing, immutable versions, checksum verification, provenance |
 | Audit evidence | Supports incident response and compliance | Unique identity, completeness, append-only external storage |
 
@@ -161,6 +172,9 @@ credentials in a way that cannot be attributed.
 | Container retrieves instance credentials | Privilege containment | Separate task roles and blocked IMDS |
 | Large or repeated requests exhaust the instance | Availability | Streaming limits, quotas, WAF and rate limiting |
 | Workspace predicate is omitted | Tenant isolation | PostgreSQL RLS and least-privilege database roles |
+| AWS tag injects model instructions | Decision integrity/data confidentiality | Inert evidence boundary, prompt-attack filter, strict schema, citation/verdict checks, fallback |
+| Parallel model calls exhaust budget | Availability/cost | Atomic per-user and workspace reservations, caching, request/output caps |
+| Model proposes a dangerous change | AWS integrity | No mutation API/IAM, visible review-only drafts, approval forced server-side |
 
 ## Assumptions requiring validation
 
@@ -182,4 +196,5 @@ Repeat this threat model when any of the following changes:
 - ingestion format, parser, upload limits, or snapshot signing;
 - database engine, workspace model, or retention requirements;
 - Jira or any new outbound integration;
+- model, prompt, schema, Guardrail, inference Region, or AI evidence package;
 - release, artifact, CI/CD, or secret-rotation process.

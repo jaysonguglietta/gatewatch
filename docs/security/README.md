@@ -25,6 +25,12 @@ closed until independently validated in AWS. Shared identity, complete central
 authorization, production runtime isolation, origin TLS/abuse controls, immutable
 audit, enforced retention, and database RLS remain production blockers.
 
+The August 9 Bedrock review found no confirmed AI-specific path to AWS mutation,
+authorization bypass, code execution, or secret disclosure. The advisory path is
+minimized, schema constrained, citation/verdict checked, Guardrail protected,
+budgeted, cached, audited, and unable to execute changes. It does not reduce the
+inherited shared-identity and compatibility-runtime blockers.
+
 Gatewatch should be treated as **pre-production for authoritative multi-account
 governance** until the priority-zero exit criteria are met.
 
@@ -37,6 +43,7 @@ governance** until the priority-zero exit criteria are met.
 | [Remediation roadmap](REMEDIATION_ROADMAP.md) | Priorities, work packages, dependencies, and acceptance criteria |
 | [Security test plan](SECURITY_TEST_PLAN.md) | Automated and manual validation required before production |
 | [August 3 implementation update](SECURITY_UPDATE_2026-08-03.md) | Implemented controls, evidence, residual work, and remaining release blockers |
+| [August 9 Bedrock security review](SECURITY_UPDATE_2026-08-09.md) | AI trust boundaries, adversarial findings, exploit chains, controls, residual risk, and tests |
 | [Repository security policy](../../SECURITY.md) | Private reporting and secret-handling expectations |
 
 ## How to use these documents

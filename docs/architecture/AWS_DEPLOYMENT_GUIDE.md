@@ -147,6 +147,14 @@ production runtime as described in the security roadmap.
 - [ ] Monitor transitions create durable runs and notification outbox entries.
 - [ ] Active legal holds prevent matching evidence and export deletion.
 - [ ] Active risk-policy weights change finding scores deterministically.
+- [ ] The web stack outputs the approved Bedrock model, Guardrail ID, and immutable
+  Guardrail version.
+- [ ] The EC2 role can invoke the approved inference profile but not an unrelated model.
+- [ ] A finding AI analysis returns schema `1.0`, valid evidence references, the exact
+  deterministic verdict, and an `ai.analysis.generated` audit event.
+- [ ] Prompt-like AWS metadata is blocked or safely analyzed without changing the verdict.
+- [ ] Disabling Bedrock produces a labeled deterministic fallback and does not affect findings.
+- [ ] Parallel requests stop at the per-user/workspace daily counters.
 
 ## Rollback
 

@@ -91,6 +91,8 @@ all existing capabilities without presenting nineteen equal-priority choices.
 4. Use the investigation tabs:
 
    - **Summary:** decision context, explainable risk, intent, and exact change.
+   - **AI analysis:** optional evidence-cited explanation, contradictions,
+     evidence gaps, review actions, provenance, and review-only IaC drafts.
    - **Exposure path:** decisive path evidence and the missing-evidence checklist.
    - **Impact:** attached resources, public/private addresses, criticality, and tags.
    - **Remediation:** current/proposed access, blast radius, reviewable CLI,
@@ -118,6 +120,23 @@ all existing capabilities without presenting nineteen equal-priority choices.
   or incomplete. Follow-up is available to assign evidence collection.
 - Remediation code is an analyst-reviewed package. Gatewatch does not silently
   execute the generated AWS CLI, CloudFormation, or Terraform change.
+
+## Using the Bedrock analyst
+
+Select **AI analysis** inside a finding to generate an explanation. Claims marked
+`observed` must cite one or more evidence IDs; `inferred` claims are explicitly
+separate. Check the model, Guardrail result, token use, cache status, confidence
+rationale, contradictions, and evidence gaps before acting.
+
+Use **Generate daily digest** for up to 25 visible findings or **AI cluster brief**
+for the contributing signals associated with one security group. **Ask Bedrock**
+can help translate a hunt, but Gatewatch always displays and evaluates the final
+query through its deterministic parser.
+
+Bedrock does not change the finding verdict, score, evidence state, assignee,
+decision, or AWS configuration. Every suggested action requires approval. If the
+model, Guardrail, network, schema, or budget is unavailable, the UI clearly labels
+the deterministic fallback and the normal workspace continues to work.
 
 ## Reviewing CloudFormation and Terraform
 

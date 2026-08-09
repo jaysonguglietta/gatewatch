@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { createHash, timingSafeEqual } from "node:crypto";
+import { BedrockRuntimeClient, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
 import { GetObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
 import {
@@ -17,11 +18,16 @@ const snapshotManifestKey = process.env.GATEWATCH_SNAPSHOT_MANIFEST_KEY ?? "mani
 const snapshotRegion = process.env.GATEWATCH_SNAPSHOT_REGION ?? process.env.AWS_REGION ?? "us-east-1";
 const organizationEvidenceBucket = process.env.GATEWATCH_ORGANIZATION_EVIDENCE_BUCKET ?? "";
 const organizationManifestKey = process.env.GATEWATCH_ORGANIZATION_MANIFEST_KEY ?? "manifests/latest.json";
-const maxRequestBytes = 80_000;
+const maxRequestBytes = 96_000;
 const maxSnapshotBytes = 25 * 1024 * 1024;
 const maxManifestBytes = 8 * 1024 * 1024;
 const jiraSecretArn = process.env.GATEWATCH_JIRA_SECRET_ARN ?? "";
 const secrets = new SecretsManagerClient({ region: process.env.AWS_REGION ?? "us-east-1" });
+const bedrockEnabled = process.env.GATEWATCH_BEDROCK_ENABLED === "true";
+const bedrockModelId = process.env.GATEWATCH_BEDROCK_MODEL_ID ?? "us.amazon.nova-2-lite-v1:0";
+const bedrockGuardrailId = process.env.GATEWATCH_BEDROCK_GUARDRAIL_ID ?? "";
+const bedrockGuardrailVersion = process.env.GATEWATCH_BEDROCK_GUARDRAIL_VERSION ?? "";
+const bedrock = new BedrockRuntimeClient({ region: process.env.AWS_REGION ?? "us-east-1" });
 
 if (!token || !snapshotBucket) {
   throw new Error("The AWS bridge requires its private token and snapshot bucket.");
@@ -54,6 +60,74 @@ async function requestBody(request) {
 
 function text(value, max = 500) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
+}
+
+function bedrockStatus() {
+  return {
+    enabled: bedrockEnabled,
+    modelId: bedrockEnabled ? bedrockModelId : "",
+    region: process.env.AWS_REGION ?? "us-east-1",
+    guardrailConfigured: Boolean(bedrockGuardrailId && bedrockGuardrailVersion),
+    guardrailVersion: bedrockGuardrailVersion,
+  };
+}
+
+async function analyzeWithBedrock(input) {
+  if (!bedrockEnabled) throw new Error("BEDROCK_NOT_CONFIGURED");
+  const mode = text(input.mode, 20);
+  const system = text(input.system, 4_000);
+  const prompt = text(input.prompt, 60_000);
+  const schema = input.schema && typeof input.schema === "object" && !Array.isArray(input.schema) ? input.schema : null;
+  const schemaText = schema ? JSON.stringify(schema) : "";
+  if (!new Set(["finding", "hunt", "digest", "cluster", "remediation"]).has(mode) || !system || !prompt || !schema || schemaText.length > 16_000 || schema.additionalProperties !== false) {
+    throw new Error("BEDROCK_REQUEST_INVALID");
+  }
+  const started = Date.now();
+  const traceId = createHash("sha256").update(`${mode}|${prompt}`, "utf8").digest("hex").slice(0, 24);
+  const result = await bedrock.send(new ConverseCommand({
+    modelId: bedrockModelId,
+    system: [{ text: system }],
+    messages: [{
+      role: "user",
+      content: [{ guardContent: { text: { text: prompt, qualifiers: ["guard_content"] } } }],
+    }],
+    inferenceConfig: { maxTokens: 4_000, temperature: 0, topP: 0.2 },
+    ...(bedrockGuardrailId && bedrockGuardrailVersion ? {
+      guardrailConfig: {
+        guardrailIdentifier: bedrockGuardrailId,
+        guardrailVersion: bedrockGuardrailVersion,
+        trace: "enabled",
+      },
+    } : {}),
+    toolConfig: {
+      tools: [{
+        toolSpec: {
+          name: "submit_gatewatch_analysis",
+          description: "Return the evidence-cited Gatewatch security analysis. This tool records advisory output and never executes a change.",
+          inputSchema: { json: schema },
+        },
+      }],
+      toolChoice: { tool: { name: "submit_gatewatch_analysis" } },
+    },
+    requestMetadata: { application: "gatewatch", mode, traceId },
+  }));
+  const toolUse = result.output?.message?.content?.find((item) => item.toolUse?.name === "submit_gatewatch_analysis")?.toolUse;
+  if (!toolUse?.input || Buffer.byteLength(JSON.stringify(toolUse.input), "utf8") > 64_000) throw new Error("BEDROCK_OUTPUT_INVALID");
+  const analysis = toolUse.input;
+  return {
+    analysis,
+    modelId: bedrockModelId,
+    usage: {
+      inputTokens: Number(result.usage?.inputTokens ?? 0),
+      outputTokens: Number(result.usage?.outputTokens ?? 0),
+      latencyMs: Number(result.metrics?.latencyMs ?? Date.now() - started),
+    },
+    guardrail: {
+      configured: Boolean(bedrockGuardrailId && bedrockGuardrailVersion),
+      action: text(result.stopReason, 80) || "completed",
+      traceId,
+    },
+  };
 }
 
 async function jiraSecret() {
@@ -492,6 +566,12 @@ createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/coverage") {
       return json(response, 200, await organizationCoverage());
     }
+    if (request.method === "GET" && request.url === "/bedrock/status") {
+      return json(response, 200, bedrockStatus());
+    }
+    if (request.method === "POST" && request.url === "/bedrock/analyze") {
+      return json(response, 200, await analyzeWithBedrock(await requestBody(request)));
+    }
     if (request.method === "POST" && request.url === "/test-source") {
       return json(response, 200, await testSource(await requestBody(request)));
     }
@@ -524,8 +604,9 @@ createServer(async (request, response) => {
       error instanceof Error ? error.name : "UnknownError",
     );
     const isJiraRequest = request.url?.startsWith("/jira/");
+    const isBedrockRequest = request.url?.startsWith("/bedrock/");
     return json(response, 502, {
-      error: isJiraRequest ? publicJiraError(error) : "AWS operation failed",
+      error: isJiraRequest ? publicJiraError(error) : isBedrockRequest ? "Bedrock analysis failed" : "AWS operation failed",
     });
   }
 }).listen(port, host, () => {

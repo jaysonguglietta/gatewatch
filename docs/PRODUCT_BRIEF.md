@@ -1,5 +1,27 @@
 # Gatewatch AWS ingestion product brief
 
+## Bedrock AI analyst release (August 2026)
+
+- **Target users:** cloud-security analysts reviewing consolidated findings from
+  hundreds of AWS accounts.
+- **Core problem:** normalized evidence can still be time-consuming to explain,
+  compare, search, and turn into a safe remediation plan.
+- **Primary workflow:** request an evidence-cited explanation, verify every claim
+  against its evidence reference, review contradictions/gaps, then use the normal
+  human-controlled finding or remediation workflow.
+- **Main views:** daily digest, natural-language hunt translation, cluster brief,
+  finding AI tab, remediation draft, and administrator health/usage panel.
+- **Key models:** bounded evidence package, strict analysis contract, cited claim,
+  evidence gap, review action, cache record, feedback, and usage reservation.
+- **Edge cases:** prompt injection in AWS names/tags, missing Bedrock access,
+  guardrail intervention, malformed or ungrounded output, stale evidence,
+  duplicate requests, cross-account identity collision, cost abuse, and timeout.
+- **Assumptions:** deterministic Gatewatch evidence remains authoritative; AI has
+  no AWS mutation permission; raw logs and credentials never enter the prompt.
+- **Done:** Bedrock is backend-only, least privileged, schema constrained,
+  citation checked, budgeted, cached, audited, clearly labeled, and safely
+  replaced by a deterministic fallback on every failure path.
+
 ## Exposure triage release (August 2026)
 
 - **Target users:** cloud-security analysts and account owners finding and fixing

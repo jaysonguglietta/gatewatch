@@ -7,6 +7,7 @@ import {
   ArrowRight,
   BadgeCheck,
   BellRing,
+  BrainCircuit,
   Check,
   ChevronRight,
   CircleAlert,
@@ -121,6 +122,23 @@ type NotificationSettings = {
   digest: "immediate" | "daily";
 };
 
+type AiAnalystStatus = {
+  status: {
+    enabled: boolean;
+    modelId: string;
+    region: string;
+    guardrailConfigured: boolean;
+    guardrailVersion: string;
+  };
+  usage: {
+    personal: { requests: number; inputTokens: number; outputTokens: number };
+    workspaceRequests: number;
+  };
+  limits: { personal: number; workspace: number };
+  promptVersion: string;
+  schemaVersion: string;
+};
+
 type SourceDraft = {
   name: string;
   sourceType: SourceType;
@@ -233,6 +251,8 @@ export default function AdminView({
   });
   const [jira, setJira] = useState<JiraStatus | null>(null);
   const [jiraError, setJiraError] = useState("");
+  const [aiAnalyst, setAiAnalyst] = useState<AiAnalystStatus | null>(null);
+  const [aiAnalystError, setAiAnalystError] = useState("");
   const [jiraDraft, setJiraDraft] = useState({
     baseUrl: "",
     email: "",
@@ -295,10 +315,23 @@ export default function AdminView({
     }
   }
 
+  async function loadAiAnalyst() {
+    try {
+      const response = await fetch("/api/ai/analysis", { cache: "no-store" });
+      const payload = (await response.json()) as AiAnalystStatus & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Bedrock analyst status is unavailable.");
+      setAiAnalyst(payload);
+      setAiAnalystError("");
+    } catch (caught) {
+      setAiAnalystError(caught instanceof Error ? caught.message : "Bedrock analyst status is unavailable.");
+    }
+  }
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void load();
       void loadJira();
+      void loadAiAnalyst();
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
@@ -887,6 +920,14 @@ export default function AdminView({
 
       {data && tab === "integrations" ? (
         <div className="admin-two-column jira-admin-grid">
+          <section className="panel ai-admin-panel">
+            <div className="panel-header"><div><h2>Amazon Bedrock analyst</h2><p>Evidence-cited assistance with deterministic security controls</p></div><span className={`admin-status ${aiAnalyst?.status.enabled ? "status-live" : "status-draft"}`}><i />{aiAnalyst?.status.enabled ? "Available" : "Fallback only"}</span></div>
+            <div className="ai-admin-identity"><span><BrainCircuit size={23} /></span><div><strong>{aiAnalyst?.status.modelId || "Deterministic Gatewatch fallback"}</strong><p>{aiAnalyst?.status.enabled ? `${aiAnalyst.status.region} · versioned Bedrock Guardrail ${aiAnalyst.status.guardrailConfigured ? aiAnalyst.status.guardrailVersion : "not configured"}` : "AWS inference is disabled or unavailable; core findings remain fully operational."}</p></div></div>
+            {aiAnalystError ? <div className="form-error" role="alert"><CircleAlert size={15} />{aiAnalystError}</div> : null}
+            <dl className="ai-admin-metrics"><div><dt>Your usage today</dt><dd>{aiAnalyst?.usage.personal.requests ?? 0} / {aiAnalyst?.limits.personal ?? 100}</dd></div><div><dt>Workspace usage</dt><dd>{aiAnalyst?.usage.workspaceRequests ?? 0} / {aiAnalyst?.limits.workspace ?? 500}</dd></div><div><dt>Output contract</dt><dd>Schema {aiAnalyst?.schemaVersion ?? "1.0"}</dd></div></dl>
+            <div className="jira-permission-list"><div><CircleCheck size={14} /><span>Only normalized, bounded evidence packages leave the application</span></div><div><CircleCheck size={14} /><span>Strict JSON schema and evidence-reference validation</span></div><div><CircleCheck size={14} /><span>AI cannot alter risk, reachability, workflow, or AWS resources</span></div><div><CircleCheck size={14} /><span>Seven-day cache, daily budgets, audit trail, and analyst feedback</span></div></div>
+            <footer><small>Model and guardrail changes are deployment-controlled to prevent browser-side policy bypass.</small><button className="button button-secondary" onClick={() => void loadAiAnalyst()}><RefreshCw size={14} />Refresh status</button></footer>
+          </section>
           <section className="panel jira-configuration-panel">
             <div className="panel-header"><div><h2>Jira Cloud</h2><p>Create traceable remediation work directly from selected findings</p></div><span className={`admin-status ${jira?.configured ? "status-live" : "status-draft"}`}><i />{jira?.configured ? "Connected" : "Not configured"}</span></div>
             <div className="jira-security-note"><LockKeyhole size={17} /><p><strong>Token protected by AWS</strong><span>The API token is stored only in Secrets Manager and never returned to the browser or application database.</span></p></div>

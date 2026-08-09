@@ -31,5 +31,9 @@ declare module "cloudflare:workers" {
     GATEWATCH_ORGANIZATION_MANIFEST_KEY?: string;
     GATEWATCH_JIRA_SECRET_ARN?: string;
     GATEWATCH_IAC_WEBHOOK_TOKEN?: string;
+    GATEWATCH_BEDROCK_ENABLED?: string;
+    GATEWATCH_BEDROCK_MODEL_ID?: string;
+    GATEWATCH_BEDROCK_GUARDRAIL_ID?: string;
+    GATEWATCH_BEDROCK_GUARDRAIL_VERSION?: string;
   };
 }

@@ -13,6 +13,26 @@
 6. Use accepted risk only with administrator approval, a ticket, future expiry,
    and compensating controls.
 7. Create or reconcile Jira tickets for findings requiring engineering work.
+8. If using the Bedrock digest or finding analysis, verify claims against cited
+   evidence; do not treat model confidence as evidence completeness.
+
+## Bedrock analyst health
+
+Open **Administration → Integrations → Amazon Bedrock analyst** to check the
+approved model, Region, versioned Guardrail, and daily usage. A `Fallback only`
+state does not affect deterministic findings.
+
+| Symptom | Check | Response |
+|---|---|---|
+| Every request uses fallback | Bridge status, EC2 environment, role policy, model profile access | Verify stack outputs and `bedrock:InvokeModel`; redeploy rather than adding wildcard IAM |
+| Guardrail fallback | Guardrail action and malicious metadata warning | Inspect normalized evidence for prompt-like tags/names; preserve it as evidence and correct the source if appropriate |
+| Schema/citation fallback | Application log error class and prompt/schema versions | Reproduce with a sanitized fixture; do not expose prompt/output in logs |
+| HTTP 429 | Personal/workspace counters | Wait for UTC reset or deliberately change reviewed limits in code; do not bypass the conditional reservation |
+| High latency/cost | Cache-hit rate, token totals, evidence count | Reduce requested scope; retain the compact package and output cap |
+
+After a model, prompt, schema, or Guardrail change, invoke one confirmed,
+internal, and evidence-incomplete fixture. Confirm exact verdict preservation,
+valid citations, audit events, usage, fallback, and no AWS mutation path.
 
 ## Collection health triage
 
@@ -110,3 +130,9 @@ If a collector or application identity is suspected compromised:
 6. inspect source-account AssumeRole events and unexpected Describe activity;
 7. redeploy from a previously signed/version-pinned release;
 8. document all gaps caused by unavailable evidence.
+
+If Bedrock output is suspected of leaking or mishandling evidence, set
+`BedrockEnabled=false` through CloudFormation, preserve analysis IDs, evidence
+hashes, audit events, model/prompt/schema versions, and CloudTrail InvokeModel
+events, and continue with deterministic findings. Do not copy prompts or raw AWS
+records into an incident ticket unless the ticket system is approved for that data.

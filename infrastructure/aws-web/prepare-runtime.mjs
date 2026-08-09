@@ -25,6 +25,14 @@ configuration.vars = {
     process.env.GATEWATCH_ORGANIZATION_MANIFEST_KEY ?? "manifests/latest.json",
   GATEWATCH_JIRA_SECRET_ARN:
     process.env.GATEWATCH_JIRA_SECRET_ARN ?? "",
+  GATEWATCH_BEDROCK_ENABLED:
+    process.env.GATEWATCH_BEDROCK_ENABLED ?? "false",
+  GATEWATCH_BEDROCK_MODEL_ID:
+    process.env.GATEWATCH_BEDROCK_MODEL_ID ?? "us.amazon.nova-2-lite-v1:0",
+  GATEWATCH_BEDROCK_GUARDRAIL_ID:
+    process.env.GATEWATCH_BEDROCK_GUARDRAIL_ID ?? "",
+  GATEWATCH_BEDROCK_GUARDRAIL_VERSION:
+    process.env.GATEWATCH_BEDROCK_GUARDRAIL_VERSION ?? "",
 };
 
 await writeFile(destination, `${JSON.stringify(configuration)}\n`, "utf8");

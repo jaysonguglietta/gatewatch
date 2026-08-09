@@ -911,3 +911,59 @@ export const semanticEvidenceEvents = sqliteTable(
     index("semantic_evidence_group_time_idx").on(table.workspaceId, table.securityGroupArn, table.observedAt),
   ],
 );
+
+export const aiAnalyses = sqliteTable(
+  "ai_analyses",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default("default"),
+    fingerprint: text("fingerprint").notNull().default(""),
+    mode: text("mode").notNull(),
+    evidenceHash: text("evidence_hash").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    schemaVersion: text("schema_version").notNull(),
+    source: text("source").notNull(),
+    modelId: text("model_id").notNull().default(""),
+    resultJson: text("result_json").notNull(),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    latencyMs: integer("latency_ms").notNull().default(0),
+    guardrailAction: text("guardrail_action").notNull().default(""),
+    guardrailTraceId: text("guardrail_trace_id").notNull().default(""),
+    generatedBy: text("generated_by").notNull(),
+    generatedAt: text("generated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    expiresAt: text("expires_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("ai_analyses_cache_idx").on(table.workspaceId, table.mode, table.evidenceHash, table.promptVersion),
+    index("ai_analyses_finding_idx").on(table.workspaceId, table.fingerprint, table.generatedAt),
+  ],
+);
+
+export const aiFeedback = sqliteTable(
+  "ai_feedback",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default("default"),
+    analysisId: text("analysis_id").notNull(),
+    rating: text("rating").notNull(),
+    reason: text("reason").notNull().default(""),
+    actor: text("actor").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [uniqueIndex("ai_feedback_actor_idx").on(table.workspaceId, table.analysisId, table.actor)],
+);
+
+export const aiUsageDaily = sqliteTable(
+  "ai_usage_daily",
+  {
+    workspaceId: text("workspace_id").notNull().default("default"),
+    usageDate: text("usage_date").notNull(),
+    actor: text("actor").notNull(),
+    requests: integer("requests").notNull().default(0),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [uniqueIndex("ai_usage_daily_actor_idx").on(table.workspaceId, table.usageDate, table.actor)],
+);
