@@ -1,4 +1,5 @@
-import { audit, acceptsJson, apiJson, requireAdmin, sameOrigin } from "../../../../lib/server-admin";
+import { HttpInputError, readBoundedJson } from "../../../../lib/http-security";
+import { audit, apiJson, requireAdmin, sameOrigin } from "../../../../lib/server-admin";
 import { callJiraBridge, type JiraStatus } from "../../../../lib/jira-bridge";
 import { cleanText } from "../../../../lib/admin-sources";
 
@@ -31,9 +32,8 @@ export async function POST(request: Request) {
   const auth = await requireAdmin(request);
   if (!auth.allowed) return apiJson({ error: "Administrator access is required." }, 403);
   if (!sameOrigin(request)) return apiJson({ error: "Origin is not allowed." }, 403);
-  if (!acceptsJson(request, 10_000)) return apiJson({ error: "A bounded JSON request is required." }, 415);
   try {
-    const input = (await request.json()) as Record<string, unknown>;
+    const input = await readBoundedJson(request, 10_000);
     const action = cleanText(input.action, 20);
     if (!new Set(["test", "save"]).has(action)) {
       return apiJson({ error: "Choose test or save." }, 400);
@@ -55,6 +55,7 @@ export async function POST(request: Request) {
     );
     return apiJson({ ...result });
   } catch (error) {
+    if (error instanceof HttpInputError) return apiJson({ error: error.message }, error.status);
     return apiJson({
       error: error instanceof Error ? error.message.slice(0, 240) : "Jira configuration failed.",
     }, 502);

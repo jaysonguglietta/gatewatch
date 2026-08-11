@@ -93,16 +93,19 @@ test("links findings to Jira without creating duplicate tickets", async () => {
 });
 
 test("persists notes, bulk triage, accepted risk, history, and saved views safely", async () => {
-  const [route, schema, migration] = await Promise.all([
+  const [route, schema, migration, httpSecurity] = await Promise.all([
     source("app/api/findings/route.ts"),
     source("db/schema.ts"),
     source("drizzle/0007_happy_human_fly.sql"),
+    source("lib/http-security.ts"),
   ]);
 
   assert.match(route, /pageSize/);
   assert.match(route, /slice\(0, 100\)/);
   assert.match(route, /sameOrigin/);
-  assert.match(route, /TextEncoder/);
+  assert.match(route, /readBoundedJson/);
+  assert.match(httpSecurity, /value\.byteLength/);
+  assert.match(httpSecurity, /TextDecoder/);
   assert.match(route, /requireAdmin/);
   assert.match(route, /Acknowledgement requires a reason, explanation, and future review date/);
   assert.match(route, /compensating controls/);
