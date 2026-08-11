@@ -236,8 +236,8 @@ Resources:
       AutoVerifiedAttributes:
         - email
       MfaConfiguration: "ON"
-      SoftwareTokenMfaConfiguration:
-        Enabled: true
+      EnabledMfas:
+        - SOFTWARE_TOKEN_MFA
       DeletionProtection: ACTIVE
       AdminCreateUserConfig:
         AllowAdminCreateUserOnly: true
@@ -359,6 +359,11 @@ Resources:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3045
     Properties:
       AccessControl: LogDeliveryWrite
       BucketEncryption:

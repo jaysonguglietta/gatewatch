@@ -12,7 +12,7 @@ test("requires named Cognito users, MFA, short-lived tokens, and authorization c
   ]);
 
   assert.match(template, /GatewatchUserPool:[\s\S]*MfaConfiguration: "ON"/);
-  assert.match(template, /SoftwareTokenMfaConfiguration:[\s\S]*Enabled: true/);
+  assert.match(template, /EnabledMfas:[\s\S]*- SOFTWARE_TOKEN_MFA/);
   assert.match(template, /AdminCreateUserConfig:[\s\S]*AllowAdminCreateUserOnly: true/);
   assert.match(template, /GatewatchUserPoolClient:[\s\S]*GenerateSecret: false/);
   assert.match(template, /AllowedOAuthFlows:[\s\S]*- code/);
