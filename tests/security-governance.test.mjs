@@ -61,6 +61,8 @@ test("adds deletion protection, recoverable backups, managed master credentials,
   assert.match(platform, /GovernanceMaintenanceDeadLetterQueue/);
   assert.match(platform, /MaximumRetryAttempts: 6/);
   assert.match(platform, /GovernanceMaintenanceAlarm/);
+  assert.match(platform, /PlatformKeyArn:[\s\S]*Value: !GetAtt PlatformKey\.Arn/);
+  assert.match(platform, /WorkspaceId:[\s\S]*Value: !Ref WorkspaceId/);
 });
 
 test("pins CI actions and gates secrets, SAST, dependencies, and IaC", async () => {

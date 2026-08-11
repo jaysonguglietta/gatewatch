@@ -882,6 +882,12 @@ Resources:
         - !Ref AWS::NoValue
 
 Outputs:
+  PlatformKeyArn:
+    Description: KMS key used by platform data and the cross-stack application audit writer.
+    Value: !GetAtt PlatformKey.Arn
+  WorkspaceId:
+    Description: Immutable workspace identity bound to this platform deployment.
+    Value: !Ref WorkspaceId
   DatabaseClusterArn:
     Value: !GetAtt DatabaseCluster.DBClusterArn
   DatabaseSecretArn:
