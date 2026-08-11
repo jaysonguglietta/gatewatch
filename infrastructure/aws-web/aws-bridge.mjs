@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { BedrockRuntimeClient, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
-import { GetObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
 import {
   GetSecretValueCommand,
@@ -18,6 +18,8 @@ const snapshotManifestKey = process.env.GATEWATCH_SNAPSHOT_MANIFEST_KEY ?? "mani
 const snapshotRegion = process.env.GATEWATCH_SNAPSHOT_REGION ?? process.env.AWS_REGION ?? "us-east-1";
 const organizationEvidenceBucket = process.env.GATEWATCH_ORGANIZATION_EVIDENCE_BUCKET ?? "";
 const organizationManifestKey = process.env.GATEWATCH_ORGANIZATION_MANIFEST_KEY ?? "manifests/latest.json";
+const auditArchiveBucket = process.env.GATEWATCH_AUDIT_ARCHIVE_BUCKET ?? "";
+const workspaceId = process.env.GATEWATCH_WORKSPACE_ID ?? "";
 const maxRequestBytes = 96_000;
 const maxSnapshotBytes = 25 * 1024 * 1024;
 const maxManifestBytes = 8 * 1024 * 1024;
@@ -29,8 +31,8 @@ const bedrockGuardrailId = process.env.GATEWATCH_BEDROCK_GUARDRAIL_ID ?? "";
 const bedrockGuardrailVersion = process.env.GATEWATCH_BEDROCK_GUARDRAIL_VERSION ?? "";
 const bedrock = new BedrockRuntimeClient({ region: process.env.AWS_REGION ?? "us-east-1" });
 
-if (!token || !snapshotBucket) {
-  throw new Error("The AWS bridge requires its private token and snapshot bucket.");
+if (!token || !snapshotBucket || !auditArchiveBucket || !/^[a-f0-9-]{36}$/.test(workspaceId)) {
+  throw new Error("The AWS bridge requires its private token, snapshot bucket, audit archive, and workspace identity.");
 }
 
 function json(response, status, value) {
@@ -70,6 +72,53 @@ function bedrockStatus() {
     guardrailConfigured: Boolean(bedrockGuardrailId && bedrockGuardrailVersion),
     guardrailVersion: bedrockGuardrailVersion,
   };
+}
+
+async function archiveAuditEvent(input) {
+  const event = {
+    schemaVersion: input?.schemaVersion === "1.0" ? "1.0" : "",
+    id: text(input?.id, 36),
+    workspaceId: text(input?.workspaceId, 64),
+    actorSubject: text(input?.actorSubject, 255),
+    action: text(input?.action, 120),
+    targetType: text(input?.targetType, 120),
+    targetId: text(input?.targetId, 500),
+    summary: text(input?.summary, 800),
+    metadata: input?.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata)
+      ? input.metadata
+      : {},
+    createdAt: text(input?.createdAt, 40),
+  };
+  const created = new Date(event.createdAt);
+  if (
+    event.schemaVersion !== "1.0"
+    || !/^[a-f0-9-]{36}$/.test(event.id)
+    || event.workspaceId !== "default"
+    || !/^[A-Za-z0-9:_-]{8,255}$/.test(event.actorSubject)
+    || !/^[a-z0-9._-]{2,120}$/.test(event.action)
+    || !event.targetType
+    || !event.targetId
+    || !event.summary
+    || !Number.isFinite(created.getTime())
+  ) {
+    throw new Error("AUDIT_EVENT_INVALID");
+  }
+  const body = Buffer.from(`${JSON.stringify({ ...event, workspaceId })}\n`, "utf8");
+  if (body.length > 16_384) throw new Error("AUDIT_EVENT_TOO_LARGE");
+  const digest = createHash("sha256").update(body).digest("hex");
+  const key = `audit/application/workspace=${workspaceId}/date=${created.toISOString().slice(0, 10)}/${event.id}.json`;
+  const result = await new S3Client({ region: process.env.AWS_REGION ?? "us-east-1" }).send(
+    new PutObjectCommand({
+      Bucket: auditArchiveBucket,
+      Key: key,
+      Body: body,
+      ContentType: "application/x-ndjson",
+      ChecksumSHA256: createHash("sha256").update(body).digest("base64"),
+      Metadata: { "content-sha256": digest, "event-id": event.id },
+    }),
+  );
+  if (!result.VersionId) throw new Error("AUDIT_ARCHIVE_VERSION_REQUIRED");
+  return { archived: true, versionId: result.VersionId, digest };
 }
 
 async function analyzeWithBedrock(input) {
@@ -572,6 +621,9 @@ createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/bedrock/analyze") {
       return json(response, 200, await analyzeWithBedrock(await requestBody(request)));
     }
+    if (request.method === "POST" && request.url === "/audit/events") {
+      return json(response, 200, await archiveAuditEvent(await requestBody(request)));
+    }
     if (request.method === "POST" && request.url === "/test-source") {
       return json(response, 200, await testSource(await requestBody(request)));
     }
@@ -605,8 +657,15 @@ createServer(async (request, response) => {
     );
     const isJiraRequest = request.url?.startsWith("/jira/");
     const isBedrockRequest = request.url?.startsWith("/bedrock/");
+    const isAuditRequest = request.url?.startsWith("/audit/");
     return json(response, 502, {
-      error: isJiraRequest ? publicJiraError(error) : isBedrockRequest ? "Bedrock analysis failed" : "AWS operation failed",
+      error: isJiraRequest
+        ? publicJiraError(error)
+        : isBedrockRequest
+          ? "Bedrock analysis failed"
+          : isAuditRequest
+            ? "Audit archival failed; the event remains queued for retry"
+            : "AWS operation failed",
     });
   }
 }).listen(port, host, () => {

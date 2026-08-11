@@ -121,6 +121,13 @@ the exact S3 VersionId, and passes both VersionId and SHA-256 to CloudFormation.
 The SSM installer downloads that version and verifies the digest before unzip or
 execution.
 
+The data-platform stack must be deployed first. The web deployment reads its
+`AuditArchiveBucketName`, `PlatformKeyArn`, and `WorkspaceId` outputs. The AWS
+bridge receives write-only permission to the application audit prefix. Each
+privileged action records the immutable Cognito subject locally and atomically
+queues the same event for Object Lock archival; failed deliveries remain in a
+bounded backoff outbox and are retried on subsequent audited activity.
+
 The stack creates a Cognito user pool with named users, mandatory TOTP MFA,
 15-minute access and ID tokens, authorization-code flow, PKCE, and token
 revocation. CloudFront is protected by managed WAF rules and rate limiting;
@@ -176,6 +183,14 @@ production AWS adapter as a remaining runtime-hardening item.
 - [ ] WAF rate limits abusive clients and redacts authorization and cookie data
   from security logs.
 - [ ] CloudFront access logs arrive in the retained encrypted log bucket.
+- [ ] Two Cognito users produce distinct `sub` actor values even if a display
+  name changes, and a spoofed viewer identity header never reaches the app.
+- [ ] Removing the bootstrap administrator's stored role removes access; the
+  deployment email is not a permanent authorization bypass.
+- [ ] Denying audit-bucket `PutObject` leaves an outbox row; restoring access
+  archives a version and records its version ID without duplicating the local event.
+- [ ] Web and bridge IAM cannot read, overwrite in place, shorten retention, or
+  delete an archived audit object version.
 - [ ] `app.workspace_id` is set on every Aurora application transaction and a
   cross-workspace query is rejected by row-level security.
 - [ ] Account catalog changes appear in findings facets and groupings.

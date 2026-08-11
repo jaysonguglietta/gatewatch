@@ -93,6 +93,16 @@ Parameters:
     Type: String
     Default: ""
     AllowedPattern: "^$|^arn:[a-z0-9-]+:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]+$"
+  AuditArchiveBucket:
+    Type: String
+    AllowedPattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+    Description: Compliance Object Lock bucket created by the Gatewatch data platform.
+  AuditArchiveKmsKeyArn:
+    Type: String
+    AllowedPattern: "^arn:[a-z0-9-]+:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]+$"
+  WorkspaceId:
+    Type: String
+    AllowedPattern: "^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
   InstanceType:
     Type: String
     Default: t4g.small
@@ -557,7 +567,18 @@ Resources:
                   - !If [HasOrganizationEvidenceKmsKey, !Ref OrganizationEvidenceKmsKeyArn, !Ref AWS::NoValue]
                 Condition:
                   StringEquals:
-                    kms:ViaService: !Sub s3.${AWS::Region}.amazonaws.com
+                    kms:ViaService: !Sub s3.${AWS::Region}.${AWS::URLSuffix}
+              - Sid: AppendApplicationAuditArchive
+                Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${AuditArchiveBucket}/audit/application/workspace=${WorkspaceId}/*
+              - Sid: EncryptApplicationAuditArchive
+                Effect: Allow
+                Action: kms:GenerateDataKey
+                Resource: !Ref AuditArchiveKmsKeyArn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub s3.${AWS::Region}.${AWS::URLSuffix}
               - Sid: ReadRuntimeSecrets
                 Effect: Allow
                 Action: secretsmanager:GetSecretValue
@@ -825,6 +846,8 @@ Resources:
                 '${SnapshotRegion}' \
                 '${OrganizationEvidenceBucket}' \
                 '${OrganizationManifestKey}' \
+                '${AuditArchiveBucket}' \
+                '${WorkspaceId}' \
                 '${ApplicationLogGroup}' \
                 "$RELEASE_ID" \
                 '${BedrockEnabled}' \
