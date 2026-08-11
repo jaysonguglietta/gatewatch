@@ -1,0 +1,16 @@
+{
+  "name": "gatewatch-governance-maintenance",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "package": "npm ci --omit=dev && zip -qr gatewatch-governance-maintenance.zip index.mjs package.json node_modules"
+  },
+  "dependencies": {
+    "@aws-sdk/client-rds-data": "^3.1099.0",
+    "@aws-sdk/client-s3": "^3.1099.0"
+  }
+}

@@ -70,26 +70,45 @@ Apply the migrations in filename order through a controlled migration identity:
 3. [`0003_finding_search.sql`](../../db/postgres/0003_finding_search.sql) adds
    queue-ordering, observation-history, universal-evidence, resource-name,
    tag, JSONB, and trigram indexes for bounded organization-scale search.
+4. [`0004_bedrock_ai_analyst.sql`](../../db/postgres/0004_bedrock_ai_analyst.sql)
+   adds bounded AI analysis, feedback, and usage records.
+5. [`0005_security_governance.sql`](../../db/postgres/0005_security_governance.sql)
+   forces RLS on every workspace table, creates non-owner workload roles,
+   makes database audit history append-only, and installs bounded,
+   legal-hold-aware retention.
 
-The second migration enables row-level security on every organization-operations
-table. Each application transaction must set `app.workspace_id`; a missing or
-incorrect workspace context therefore fails closed. The Lambda runtime must not
-own tables or have schema-administration privileges.
+The final migration discovers every workspace-scoped table, enables and forces
+row-level security, and replaces its workspace policy. Each application
+transaction must set `app.workspace_id`; a missing or incorrect workspace
+context therefore fails closed. The deployment creates separate non-owner login
+principals for ingestion and maintenance. Workload credentials must never be
+changed to the Aurora master secret or granted `BYPASSRLS`, table ownership, or
+schema-administration privileges.
 
 ## 3. Deploy the data platform
 
-Package `infrastructure/lambda/ingest` and `backfill` with lockfile-based
-installs. Pass the organization evidence bucket and key outputs to
+Package `infrastructure/lambda/ingest`, `backfill`, and
+`governance-maintenance` with lockfile-based installs. Upload each artifact
+under an immutable versioned key. Pass the organization evidence bucket and key outputs to
 `gatewatch-aws-platform.yaml`:
 
 ```text
 OrganizationEvidenceBucketName=<collector EvidenceBucketName>
 OrganizationEvidenceKeyArn=<collector EvidenceKeyArn>
+WorkspaceId=<workspace UUID from migration 0001>
+GovernanceMaintenanceArtifactKey=<versioned maintenance zip key>
 ```
 
 The platform creates the EventBridge rule that forwards only canonical shard
 and run-manifest object keys to SQS. Confirm the queue policy source ARN and
-source account after deployment.
+source account after deployment. The platform also creates deletion-protected
+Aurora with 35-day recovery, RDS-managed master credentials, separate non-owner
+workload credentials, a compliance-mode Object Lock audit bucket, and an hourly
+single-concurrency maintenance worker with retries, a DLQ, and an alarm. The
+worker archives unexported audit rows before enforcing retention.
+
+The Object Lock retention value is irreversible for protected object versions.
+Validate the compliance requirement and cost before deployment.
 
 ## 4. Deploy the transitional web stack
 
@@ -142,6 +161,15 @@ production runtime as described in the security roadmap.
   after OIDC implementation).
 - [ ] `app.workspace_id` is set on every Aurora application transaction and a
   cross-workspace query is rejected by row-level security.
+- [ ] Ingestion and maintenance database principals report `rolsuper=false`,
+  `rolbypassrls=false`, and own no application tables.
+- [ ] Workload attempts to update, delete, or truncate `audit_events` fail.
+- [ ] Every audit event has an immutable S3 version and archive-ledger row before
+  it becomes eligible for database retention.
+- [ ] Expired evidence is deleted in bounded batches while matching legal holds
+  preserve workspace, account, security-group, finding, and export records.
+- [ ] Aurora deletion is refused, the restorable time advances, and a quarterly
+  point-in-time restore to an isolated cluster passes consistency checks.
 - [ ] Account catalog changes appear in findings facets and groupings.
 - [ ] Revoked correlation mappings are excluded from reprocessing.
 - [ ] Monitor transitions create durable runs and notification outbox entries.

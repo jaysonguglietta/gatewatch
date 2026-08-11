@@ -36,6 +36,19 @@ Parameters:
   BackfillArtifactKey:
     Type: String
     Description: Versioned object key for the packaged backfill Lambda zip.
+  GovernanceMaintenanceArtifactKey:
+    Type: String
+    Description: Versioned object key for the governance maintenance Lambda zip.
+  WorkspaceId:
+    Type: String
+    AllowedPattern: "^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+    Description: Immutable workspace UUID owned by this platform deployment.
+  AuditArchiveRetentionDays:
+    Type: Number
+    Default: 2555
+    MinValue: 365
+    MaxValue: 3650
+    Description: Compliance-mode Object Lock retention for external audit archives.
   AlarmTopicArn:
     Type: String
     Default: ""
@@ -102,24 +115,91 @@ Resources:
               ArnLike:
                 kms:EncryptionContext:aws:logs:arn: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*
 
-  DatabaseSecret:
-    Type: AWS::SecretsManager::Secret
+  AuditArchiveBucket:
+    Type: AWS::S3::Bucket
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      Description: Gatewatch Aurora administrator credential
-      KmsKeyId: !GetAtt PlatformKey.Arn
-      GenerateSecretString:
-        SecretStringTemplate: '{"username":"gatewatch_admin"}'
-        GenerateStringKey: password
-        ExcludeCharacters: '"@/\'
-        PasswordLength: 40
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !GetAtt PlatformKey.Arn
+              SSEAlgorithm: aws:kms
+      ObjectLockEnabled: true
+      ObjectLockConfiguration:
+        ObjectLockEnabled: Enabled
+        Rule:
+          DefaultRetention:
+            Days: !Ref AuditArchiveRetentionDays
+            Mode: COMPLIANCE
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Application
+          Value: Gatewatch
+        - Key: DataClassification
+          Value: SecurityAudit
+
+  AuditArchiveBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AuditArchiveBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt AuditArchiveBucket.Arn
+              - !Sub ${AuditArchiveBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: false
 
   DatabaseSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
       DBSubnetGroupDescription: Gatewatch private database subnets
       SubnetIds: !Ref DatabaseSubnetIds
+
+  RuntimeDatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Gatewatch non-owner ingestion database credential
+      KmsKeyId: !GetAtt PlatformKey.Arn
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"gatewatch_runtime_login"}'
+        GenerateStringKey: password
+        ExcludeCharacters: >-
+          '"@/\
+        PasswordLength: 40
+
+  MaintenanceDatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Gatewatch non-owner governance-maintenance database credential
+      KmsKeyId: !GetAtt PlatformKey.Arn
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"gatewatch_maintenance_login"}'
+        GenerateStringKey: password
+        ExcludeCharacters: >-
+          '"@/\
+        PasswordLength: 40
 
   DatabaseSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -136,17 +216,22 @@ Resources:
     DeletionPolicy: Snapshot
     UpdateReplacePolicy: Snapshot
     Properties:
+      BackupRetentionPeriod: 35
+      CopyTagsToSnapshot: true
       DatabaseName: !Ref DatabaseName
       DBClusterIdentifier: !Sub gatewatch-${EnvironmentName}
       DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      DeletionProtection: true
       Engine: aurora-postgresql
       EngineMode: provisioned
       EnableHttpEndpoint: true
       EnableCloudwatchLogsExports:
         - postgresql
       KmsKeyId: !GetAtt PlatformKey.Arn
-      MasterUsername: !Sub "{{resolve:secretsmanager:${DatabaseSecret}:SecretString:username}}"
-      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}"
+      ManageMasterUserPassword: true
+      MasterUsername: gatewatch_admin
+      MasterUserSecret:
+        KmsKeyId: !GetAtt PlatformKey.Arn
       Port: 5432
       ServerlessV2ScalingConfiguration:
         MinCapacity: !Ref MinAuroraCapacity
@@ -163,12 +248,110 @@ Resources:
       Engine: aurora-postgresql
       PubliclyAccessible: false
 
-  DatabaseSecretAttachment:
-    Type: AWS::SecretsManager::SecretTargetAttachment
+  DatabasePrincipalBootstrapRole:
+    Type: AWS::IAM::Role
     Properties:
-      SecretId: !Ref DatabaseSecret
-      TargetId: !Ref DatabaseCluster
-      TargetType: AWS::RDS::DBCluster
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BootstrapNonOwnerDatabasePrincipals
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub ${DatabasePrincipalBootstrapLogGroup.Arn}:*
+              - Effect: Allow
+                Action: rds-data:ExecuteStatement
+                Resource: !GetAtt DatabaseCluster.DBClusterArn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !GetAtt DatabaseCluster.MasterUserSecret.SecretArn
+                  - !Ref RuntimeDatabaseSecret
+                  - !Ref MaintenanceDatabaseSecret
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: !GetAtt PlatformKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub secretsmanager.${AWS::Region}.${AWS::URLSuffix}
+
+  DatabasePrincipalBootstrapLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/gatewatch-${EnvironmentName}-database-principals
+      RetentionInDays: 90
+      KmsKeyId: !GetAtt PlatformKey.Arn
+
+  DatabasePrincipalBootstrapFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: DatabasePrincipalBootstrapLogGroup
+    Properties:
+      FunctionName: !Sub gatewatch-${EnvironmentName}-database-principals
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt DatabasePrincipalBootstrapRole.Arn
+      Timeout: 120
+      Code:
+        ZipFile: |
+          import json, urllib.request, boto3
+          rds = boto3.client("rds-data")
+          secrets = boto3.client("secretsmanager")
+          def respond(event, context, status, reason=""):
+              body = json.dumps({"Status": status, "Reason": reason[:1000], "PhysicalResourceId": "gatewatch-database-principals", "StackId": event["StackId"], "RequestId": event["RequestId"], "LogicalResourceId": event["LogicalResourceId"]}).encode()
+              request = urllib.request.Request(event["ResponseURL"], data=body, method="PUT", headers={"content-type": "", "content-length": str(len(body))})
+              urllib.request.urlopen(request, timeout=10).read()
+          def sql(props, statement):
+              return rds.execute_statement(resourceArn=props["ClusterArn"], secretArn=props["MasterSecretArn"], database=props["DatabaseName"], sql=statement)
+          def credential(secret_arn):
+              value = json.loads(secrets.get_secret_value(SecretId=secret_arn)["SecretString"])
+              if not value.get("password") or "'" in value["password"]:
+                  raise ValueError("generated database password is invalid")
+              return value
+          def handler(event, context):
+              try:
+                  if event["RequestType"] != "Delete":
+                      props = event["ResourceProperties"]
+                      runtime = credential(props["RuntimeSecretArn"])
+                      maintenance = credential(props["MaintenanceSecretArn"])
+                      statement = f"""
+                      DO $gatewatch$
+                      BEGIN
+                        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='gatewatch_ingest') THEN CREATE ROLE gatewatch_ingest NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS; END IF;
+                        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='gatewatch_maintenance') THEN CREATE ROLE gatewatch_maintenance NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS; END IF;
+                        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='gatewatch_runtime_login') THEN CREATE ROLE gatewatch_runtime_login LOGIN; END IF;
+                        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='gatewatch_maintenance_login') THEN CREATE ROLE gatewatch_maintenance_login LOGIN; END IF;
+                      END $gatewatch$;
+                      ALTER ROLE gatewatch_runtime_login WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '{runtime['password']}';
+                      ALTER ROLE gatewatch_maintenance_login WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '{maintenance['password']}';
+                      GRANT gatewatch_ingest TO gatewatch_runtime_login;
+                      GRANT gatewatch_maintenance TO gatewatch_maintenance_login;
+                      """
+                      sql(props, statement)
+                  respond(event, context, "SUCCESS")
+              except Exception as error:
+                  respond(event, context, "FAILED", f"{type(error).__name__}: {error}")
+
+  DatabasePrincipals:
+    Type: Custom::GatewatchDatabasePrincipals
+    DependsOn: DatabaseInstance
+    Properties:
+      ServiceToken: !GetAtt DatabasePrincipalBootstrapFunction.Arn
+      ClusterArn: !GetAtt DatabaseCluster.DBClusterArn
+      DatabaseName: !Ref DatabaseName
+      MasterSecretArn: !GetAtt DatabaseCluster.MasterUserSecret.SecretArn
+      RuntimeSecretArn: !Ref RuntimeDatabaseSecret
+      MaintenanceSecretArn: !Ref MaintenanceDatabaseSecret
 
   DeadLetterQueue:
     Type: AWS::SQS::Queue
@@ -291,7 +474,7 @@ Resources:
               - Sid: DatabaseSecret
                 Effect: Allow
                 Action: secretsmanager:GetSecretValue
-                Resource: !Ref DatabaseSecret
+                Resource: !Ref RuntimeDatabaseSecret
               - Sid: DecryptRuntimeConfiguration
                 Effect: Allow
                 Action: kms:Decrypt
@@ -337,7 +520,9 @@ Resources:
 
   IngestionFunction:
     Type: AWS::Lambda::Function
-    DependsOn: IngestionLogGroup
+    DependsOn:
+      - IngestionLogGroup
+      - DatabasePrincipals
     Properties:
       FunctionName: !Sub gatewatch-${EnvironmentName}-ingest
       Runtime: nodejs22.x
@@ -355,7 +540,8 @@ Resources:
         Variables:
           DATABASE_NAME: !Ref DatabaseName
           DB_CLUSTER_ARN: !GetAtt DatabaseCluster.DBClusterArn
-          DB_SECRET_ARN: !Ref DatabaseSecret
+          DB_SECRET_ARN: !Ref RuntimeDatabaseSecret
+          WORKSPACE_ID: !Ref WorkspaceId
           ORGANIZATION_EVIDENCE_BUCKET: !Ref OrganizationEvidenceBucketName
       KmsKeyArn: !GetAtt PlatformKey.Arn
       TracingConfig:
@@ -372,7 +558,9 @@ Resources:
 
   BackfillFunction:
     Type: AWS::Lambda::Function
-    DependsOn: BackfillLogGroup
+    DependsOn:
+      - BackfillLogGroup
+      - DatabasePrincipals
     Properties:
       FunctionName: !Sub gatewatch-${EnvironmentName}-backfill
       Runtime: nodejs22.x
@@ -390,11 +578,174 @@ Resources:
         Variables:
           DATABASE_NAME: !Ref DatabaseName
           DB_CLUSTER_ARN: !GetAtt DatabaseCluster.DBClusterArn
-          DB_SECRET_ARN: !Ref DatabaseSecret
+          DB_SECRET_ARN: !Ref RuntimeDatabaseSecret
           INGESTION_QUEUE_URL: !Ref IngestionQueue
+          WORKSPACE_ID: !Ref WorkspaceId
       KmsKeyArn: !GetAtt PlatformKey.Arn
       TracingConfig:
         Mode: Active
+
+  GovernanceMaintenanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: GatewatchGovernanceMaintenance
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub ${GovernanceMaintenanceLogGroup.Arn}:*
+              - Sid: DataApi
+                Effect: Allow
+                Action:
+                  - rds-data:BeginTransaction
+                  - rds-data:CommitTransaction
+                  - rds-data:ExecuteStatement
+                  - rds-data:RollbackTransaction
+                Resource: !GetAtt DatabaseCluster.DBClusterArn
+              - Sid: ReadDatabaseSecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref MaintenanceDatabaseSecret
+              - Sid: DecryptDatabaseSecret
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt PlatformKey.Arn
+                Condition:
+                  ForAnyValue:StringEquals:
+                    kms:ViaService:
+                      - !Sub lambda.${AWS::Region}.${AWS::URLSuffix}
+                      - !Sub s3.${AWS::Region}.${AWS::URLSuffix}
+                      - !Sub secretsmanager.${AWS::Region}.${AWS::URLSuffix}
+              - Sid: AppendAuditArchive
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub ${AuditArchiveBucket.Arn}/audit/workspace=${WorkspaceId}/*
+
+  GovernanceMaintenanceLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/gatewatch-${EnvironmentName}-governance-maintenance
+      RetentionInDays: 365
+      KmsKeyId: !GetAtt PlatformKey.Arn
+
+  GovernanceMaintenanceFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - GovernanceMaintenanceLogGroup
+      - DatabasePrincipals
+    Properties:
+      FunctionName: !Sub gatewatch-${EnvironmentName}-governance-maintenance
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt GovernanceMaintenanceRole.Arn
+      Architectures:
+        - arm64
+      MemorySize: 512
+      Timeout: 300
+      ReservedConcurrentExecutions: 1
+      Code:
+        S3Bucket: !Ref LambdaArtifactBucket
+        S3Key: !Ref GovernanceMaintenanceArtifactKey
+      Environment:
+        Variables:
+          AUDIT_ARCHIVE_BUCKET: !Ref AuditArchiveBucket
+          DATABASE_NAME: !Ref DatabaseName
+          DB_CLUSTER_ARN: !GetAtt DatabaseCluster.DBClusterArn
+          DB_SECRET_ARN: !Ref MaintenanceDatabaseSecret
+          RETENTION_BATCH_SIZE: "500"
+          RETENTION_MAX_BATCHES: "20"
+          WORKSPACE_ID: !Ref WorkspaceId
+      KmsKeyArn: !GetAtt PlatformKey.Arn
+      TracingConfig:
+        Mode: Active
+
+  GovernanceMaintenanceDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      KmsMasterKeyId: alias/aws/sqs
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  GovernanceMaintenanceSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Archives immutable audit events and enforces legal-hold-aware retention.
+      ScheduleExpression: rate(1 hour)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt GovernanceMaintenanceFunction.Arn
+          Id: GatewatchGovernanceMaintenance
+          DeadLetterConfig:
+            Arn: !GetAtt GovernanceMaintenanceDeadLetterQueue.Arn
+          RetryPolicy:
+            MaximumEventAgeInSeconds: 21600
+            MaximumRetryAttempts: 6
+
+  GovernanceMaintenanceQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref GovernanceMaintenanceDeadLetterQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EventBridgeDeadLetters
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt GovernanceMaintenanceDeadLetterQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt GovernanceMaintenanceSchedule.Arn
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  GovernanceMaintenancePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref GovernanceMaintenanceFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt GovernanceMaintenanceSchedule.Arn
+
+  GovernanceMaintenanceAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Gatewatch audit archival or retention enforcement failed.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref GovernanceMaintenanceFunction
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If
+        - HasAlarmTopic
+        - - !Ref AlarmTopicArn
+        - !Ref AWS::NoValue
 
   BackfillStateMachineRole:
     Type: AWS::IAM::Role
@@ -534,7 +885,7 @@ Outputs:
   DatabaseClusterArn:
     Value: !GetAtt DatabaseCluster.DBClusterArn
   DatabaseSecretArn:
-    Value: !Ref DatabaseSecret
+    Value: !GetAtt DatabaseCluster.MasterUserSecret.SecretArn
   IngestionQueueArn:
     Value: !GetAtt IngestionQueue.Arn
   IngestionQueueUrl:
@@ -543,6 +894,10 @@ Outputs:
     Value: !GetAtt IngestionFunction.Arn
   BackfillStateMachineArn:
     Value: !Ref BackfillStateMachine
+  GovernanceMaintenanceFunctionArn:
+    Value: !GetAtt GovernanceMaintenanceFunction.Arn
+  AuditArchiveBucketName:
+    Value: !Ref AuditArchiveBucket
   DeadLetterQueueUrl:
     Value: !Ref DeadLetterQueue
   OrganizationEvidenceRuleArn:

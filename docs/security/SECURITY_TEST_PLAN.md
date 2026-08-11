@@ -300,6 +300,21 @@ data loss. Define alert thresholds before production.
 Expected: events contain immutable actor, request/correlation ID, source, target,
 old/new state, result, and time. The application cannot rewrite the central archive.
 
+Execute the Aurora governance regression with two synthetic workspaces and the
+actual non-owner login secrets:
+
+1. Create expired, current, held, and unheld records for both workspaces.
+2. Test correct, wrong, missing, empty, and malformed workspace settings as each
+   workload role. Access outside the selected workspace must fail closed.
+3. Attempt to disable RLS, change ownership, set `row_security=off`, update or
+   delete an audit event, and truncate the table. Every attempt must fail.
+4. Run governance maintenance twice. Held/current rows must remain, eligible
+   rows must be removed only in bounded batches, and retries must be idempotent.
+5. Deny S3 `PutObject` and prove no unarchived audit row is purged.
+6. Verify each archived version's SHA-256 and NDJSON count against the ledger.
+7. Attempt archive deletion and retention reduction with every workload role;
+   compliance Object Lock must deny both.
+
 ## Automated release gates
 
 Required on every pull request:

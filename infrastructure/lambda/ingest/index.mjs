@@ -52,8 +52,13 @@ const sts = new STSClient({});
 const database = process.env.DATABASE_NAME;
 const resourceArn = process.env.DB_CLUSTER_ARN;
 const secretArn = process.env.DB_SECRET_ARN;
+const workspaceId = process.env.WORKSPACE_ID;
 const organizationEvidenceBucket = process.env.ORGANIZATION_EVIDENCE_BUCKET ?? "";
 const runtimeS3 = new S3Client({});
+
+if (!database || !resourceArn || !secretArn || !workspaceId) {
+  throw new Error("DATABASE_RUNTIME_CONFIGURATION_REQUIRED");
+}
 
 function parameters(values) {
   return Object.entries(values).map(([name, value]) => ({
@@ -67,7 +72,7 @@ function parameters(values) {
   }));
 }
 
-async function sql(statement, values = {}, transactionId = undefined) {
+async function executeSql(statement, values = {}, transactionId = undefined) {
   return rds.send(
     new ExecuteStatementCommand({
       database,
@@ -81,6 +86,12 @@ async function sql(statement, values = {}, transactionId = undefined) {
   );
 }
 
+async function sql(statement, values = {}, transactionId = undefined) {
+  if (transactionId) return executeSql(statement, values, transactionId);
+  return transaction((scopedTransactionId) =>
+    executeSql(statement, values, scopedTransactionId));
+}
+
 async function transaction(callback) {
   const begun = await rds.send(new BeginTransactionCommand({
     database,
@@ -89,6 +100,11 @@ async function transaction(callback) {
   }));
   if (!begun.transactionId) throw new Error("DATABASE_TRANSACTION_UNAVAILABLE");
   try {
+    await executeSql(
+      "SELECT set_config('app.workspace_id', :workspaceId, true)",
+      { workspaceId },
+      begun.transactionId,
+    );
     const result = await callback(begun.transactionId);
     await rds.send(new CommitTransactionCommand({
       resourceArn,
@@ -494,15 +510,18 @@ async function insertGenericEvidence(source, objectId, records) {
      NULLIF(:observedAt, '')::timestamptz, :accountId, :region, :resourceType,
      :resourceId, :eventName, :disposition, CAST(:normalizedPayload AS jsonb))
    ON CONFLICT DO NOTHING`;
-  for (let index = 0; index < normalized.length; index += 25) {
-    await rds.send(new BatchExecuteStatementCommand({
-      database,
-      resourceArn,
-      secretArn,
-      sql: statement,
-      parameterSets: normalized.slice(index, index + 25).map(parameters),
-    }));
-  }
+  await transaction(async (transactionId) => {
+    for (let index = 0; index < normalized.length; index += 25) {
+      await rds.send(new BatchExecuteStatementCommand({
+        database,
+        resourceArn,
+        secretArn,
+        transactionId,
+        sql: statement,
+        parameterSets: normalized.slice(index, index + 25).map(parameters),
+      }));
+    }
+  });
 }
 
 async function insertCloudTrail(source, objectId, events) {
@@ -516,26 +535,29 @@ async function insertCloudTrail(source, objectId, events) {
      NULLIF(:sourceIp, '')::inet, :successful, :direction, :effect,
      :internetWide, CAST(:request AS jsonb))
    ON CONFLICT DO NOTHING`;
-  for (let index = 0; index < events.length; index += 250) {
-    await rds.send(new BatchExecuteStatementCommand({
-      database, resourceArn, secretArn, sql: statement,
-      parameterSets: events.slice(index, index + 250).map((event) =>
-        parameters({ ...event, workspaceId: source.workspaceId, sourceId: source.id, objectId }),
-      ),
-    }));
-  }
-  for (const event of events) {
-    await sql(
-      `SELECT gatewatch_correlate_cloudtrail_event(
-        CAST(:workspaceId AS uuid), :eventId, CAST(:eventTime AS timestamptz)
-      )`,
-      {
-        workspaceId: source.workspaceId,
-        eventId: event.eventId,
-        eventTime: event.eventTime,
-      },
-    );
-  }
+  await transaction(async (transactionId) => {
+    for (let index = 0; index < events.length; index += 250) {
+      await rds.send(new BatchExecuteStatementCommand({
+        database, resourceArn, secretArn, transactionId, sql: statement,
+        parameterSets: events.slice(index, index + 250).map((event) =>
+          parameters({ ...event, workspaceId: source.workspaceId, sourceId: source.id, objectId }),
+        ),
+      }));
+    }
+    for (const event of events) {
+      await sql(
+        `SELECT gatewatch_correlate_cloudtrail_event(
+          CAST(:workspaceId AS uuid), :eventId, CAST(:eventTime AS timestamptz)
+        )`,
+        {
+          workspaceId: source.workspaceId,
+          eventId: event.eventId,
+          eventTime: event.eventTime,
+        },
+        transactionId,
+      );
+    }
+  });
 }
 
 async function insertConfig(source, objectId, items) {
@@ -548,18 +570,19 @@ async function insertConfig(source, objectId, items) {
      :resourceArn, :configurationStateId, CAST(:captureTime AS timestamptz),
      :status, CAST(:configuration AS jsonb), CAST(:relationships AS jsonb))
    ON CONFLICT DO NOTHING`;
-  for (let index = 0; index < items.length; index += 250) {
-    await rds.send(new BatchExecuteStatementCommand({
-      database, resourceArn, secretArn, sql: statement,
-      parameterSets: items.slice(index, index + 250).map((item) =>
-        parameters({ ...item, workspaceId: source.workspaceId, sourceId: source.id, objectId }),
-      ),
-    }));
-  }
-  for (const item of items.filter(
-    (candidate) => candidate.resourceType === "AWS::EC2::SecurityGroup",
-  )) {
-    await sql(
+  await transaction(async (transactionId) => {
+    for (let index = 0; index < items.length; index += 250) {
+      await rds.send(new BatchExecuteStatementCommand({
+        database, resourceArn, secretArn, transactionId, sql: statement,
+        parameterSets: items.slice(index, index + 250).map((item) =>
+          parameters({ ...item, workspaceId: source.workspaceId, sourceId: source.id, objectId }),
+        ),
+      }));
+    }
+    for (const item of items.filter(
+      (candidate) => candidate.resourceType === "AWS::EC2::SecurityGroup",
+    )) {
+      await sql(
       `SELECT gatewatch_apply_security_group_config(
         CAST(:workspaceId AS uuid), :accountId, :region, :resourceId,
         CAST(:captureTime AS timestamptz), :configItemId, :status,
@@ -574,9 +597,10 @@ async function insertConfig(source, objectId, items) {
         configItemId: item.id,
         status: item.status,
         configuration: item.configuration,
-      },
-    );
-    await sql(
+        },
+        transactionId,
+      );
+      await sql(
       `SELECT gatewatch_correlate_cloudtrail_event(
          workspace_id, event_id, event_time
        )
@@ -595,9 +619,11 @@ async function insertConfig(source, objectId, items) {
         region: item.region,
         resourceId: item.resourceId,
         captureTime: item.captureTime,
-      },
-    );
-  }
+        },
+        transactionId,
+      );
+    }
+  });
 }
 
 async function batchSql(statement, rows, transactionId) {
@@ -614,12 +640,7 @@ async function batchSql(statement, rows, transactionId) {
 }
 
 async function defaultWorkspaceId() {
-  const result = await sql(
-    "SELECT id::text FROM workspaces WHERE slug = 'default' LIMIT 1",
-  );
-  const value = fieldString(result.records?.[0]?.[0]);
-  if (!value) throw new Error("DEFAULT_WORKSPACE_NOT_FOUND");
-  return value;
+  return workspaceId;
 }
 
 async function readEvidenceObject(object) {
@@ -1034,11 +1055,12 @@ async function processRecord(record) {
   const source = await findSource(object.bucket, object.key);
   const ledger = await sql(
     `INSERT INTO ingested_objects
-      (source_id, bucket_name, object_key, version_id, etag, status, object_size)
-     VALUES (CAST(:sourceId AS uuid), :bucket, :key, :versionId, :etag, 'processing', :size)
+      (workspace_id, source_id, bucket_name, object_key, version_id, etag, status, object_size)
+     VALUES (CAST(:workspaceId AS uuid), CAST(:sourceId AS uuid), :bucket, :key,
+       :versionId, :etag, 'processing', :size)
      ON CONFLICT (source_id, object_key, version_id) DO NOTHING
      RETURNING id::text`,
-    { sourceId: source.id, ...object },
+    { workspaceId, sourceId: source.id, ...object },
   );
   const objectId = fieldString(ledger.records?.[0]?.[0]);
   if (!objectId) return { duplicate: true };
@@ -1074,8 +1096,9 @@ async function processRecord(record) {
     const checksum = createHash("sha256").update(content).digest("hex");
     await sql(
       `UPDATE ingested_objects SET status = 'processed', record_count = :count,
-       checksum_sha256 = :checksum, processed_at = now() WHERE id = CAST(:id AS uuid)`,
-      { id: objectId, count: records.length, checksum },
+       checksum_sha256 = :checksum, processed_at = now()
+       WHERE workspace_id = CAST(:workspaceId AS uuid) AND id = CAST(:id AS uuid)`,
+      { workspaceId, id: objectId, count: records.length, checksum },
     );
     await sql(
       `UPDATE ingestion_sources SET last_successful_object_at = now(),
@@ -1099,16 +1122,18 @@ async function processRecord(record) {
                   THEN now()
                   ELSE completed_at
                 END
-          WHERE id = CAST(:id AS uuid)`,
-        { id: object.runId, records: records.length },
+          WHERE workspace_id = CAST(:workspaceId AS uuid) AND id = CAST(:id AS uuid)`,
+        { workspaceId, id: object.runId, records: records.length },
       );
     }
     return { duplicate: false, records: records.length };
   } catch (error) {
     await sql(
       `UPDATE ingested_objects SET status = 'failed', failure_code = :code,
-       failure_detail = :detail, processed_at = now() WHERE id = CAST(:id AS uuid)`,
+       failure_detail = :detail, processed_at = now()
+       WHERE workspace_id = CAST(:workspaceId AS uuid) AND id = CAST(:id AS uuid)`,
       {
+        workspaceId,
         id: objectId,
         code: error instanceof Error ? error.message.slice(0, 120) : "UNKNOWN",
         detail: "Object processing failed. See the Lambda request log for the correlated request ID.",

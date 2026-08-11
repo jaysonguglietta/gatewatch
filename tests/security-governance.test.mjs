@@ -1,0 +1,75 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const root = new URL("../", import.meta.url);
+const source = (path) => readFile(new URL(path, root), "utf8");
+
+test("forces tenant isolation and keeps runtime database roles non-owner", async () => {
+  const [migration, platform, ingest, backfill] = await Promise.all([
+    source("db/postgres/0005_security_governance.sql"),
+    source("infrastructure/cloudformation/gatewatch-aws-platform.yaml"),
+    source("infrastructure/lambda/ingest/index.mjs"),
+    source("infrastructure/lambda/backfill/index.mjs"),
+  ]);
+
+  assert.match(migration, /ALTER TABLE public\.%I FORCE ROW LEVEL SECURITY/);
+  assert.match(migration, /current_setting\(''app\.workspace_id'', true\)/);
+  assert.match(migration, /NOBYPASSRLS/);
+  assert.match(migration, /REVOKE CREATE ON SCHEMA public FROM PUBLIC/);
+  assert.match(platform, /gatewatch_runtime_login/);
+  assert.match(platform, /gatewatch_maintenance_login/);
+  assert.match(platform, /DB_SECRET_ARN: !Ref RuntimeDatabaseSecret/);
+  assert.match(platform, /DB_SECRET_ARN: !Ref MaintenanceDatabaseSecret/);
+  assert.doesNotMatch(platform, /DB_SECRET_ARN: !GetAtt DatabaseCluster\.MasterUserSecret/);
+  assert.match(ingest, /set_config\('app\.workspace_id', :workspaceId, true\)/);
+  assert.match(backfill, /set_config\('app\.workspace_id', :workspaceId, true\)/);
+  assert.match(backfill, /WHERE workspace_id = CAST\(:workspaceId AS uuid\)/);
+});
+
+test("makes audit history append-only and archives before retention deletion", async () => {
+  const [migration, worker, platform] = await Promise.all([
+    source("db/postgres/0005_security_governance.sql"),
+    source("infrastructure/lambda/governance-maintenance/index.mjs"),
+    source("infrastructure/cloudformation/gatewatch-aws-platform.yaml"),
+  ]);
+
+  assert.match(migration, /audit_events_append_only/);
+  assert.match(migration, /audit history is append-only/);
+  assert.match(migration, /JOIN audit_archive_ledger archive/);
+  assert.match(migration, /app\.retention_authorized/);
+  assert.match(worker, /pendingAuditEvents/);
+  assert.match(worker, /PutObjectCommand/);
+  assert.match(worker, /AUDIT_ARCHIVE_VERSION_REQUIRED/);
+  assert.match(worker, /gatewatch_apply_retention_batch/);
+  assert.match(platform, /ObjectLockEnabled: true/);
+  assert.match(platform, /Mode: COMPLIANCE/);
+  assert.match(platform, /ReservedConcurrentExecutions: 1/);
+  assert.doesNotMatch(
+    platform.match(/Sid: AppendAuditArchive[\s\S]*?Resource: !Sub[^\n]*/)?.[0] ?? "",
+    /s3:DeleteObject/,
+  );
+});
+
+test("adds deletion protection, recoverable backups, managed master credentials, and maintenance alarms", async () => {
+  const platform = await source("infrastructure/cloudformation/gatewatch-aws-platform.yaml");
+
+  assert.match(platform, /BackupRetentionPeriod: 35/);
+  assert.match(platform, /DeletionProtection: true/);
+  assert.match(platform, /DeletionPolicy: Snapshot/);
+  assert.match(platform, /ManageMasterUserPassword: true/);
+  assert.match(platform, /GovernanceMaintenanceDeadLetterQueue/);
+  assert.match(platform, /MaximumRetryAttempts: 6/);
+  assert.match(platform, /GovernanceMaintenanceAlarm/);
+});
+
+test("pins CI actions and gates secrets, SAST, dependencies, and IaC", async () => {
+  const workflow = await source(".github/workflows/ci.yml");
+
+  assert.doesNotMatch(workflow, /uses: [^\n]+@(v\d+|master)\s*$/m);
+  assert.match(workflow, /gitleaks\/gitleaks-action@[a-f0-9]{40}/);
+  assert.match(workflow, /github\/codeql-action\/analyze@[a-f0-9]{40}/);
+  assert.match(workflow, /aquasecurity\/trivy-action@[a-f0-9]{40}/);
+  assert.match(workflow, /npm audit --omit=dev --audit-level=high/);
+  assert.match(workflow, /cfn-lint/);
+});
