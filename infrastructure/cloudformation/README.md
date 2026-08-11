@@ -17,10 +17,19 @@ deployment order, diagrams, data contracts, capacity guidance, and runbooks.
 
 ## AWS web and Bedrock analyst
 
-`gatewatch-aws-web.yaml` deploys the current CloudFront/EC2 web runtime. It also
-creates a versioned Bedrock Guardrail with a high-strength prompt-attack input
-filter and grants the instance role access only to the approved US Nova 2 Lite
-inference profile, its three US destination model ARNs, and that Guardrail.
+`gatewatch-aws-web.yaml` deploys the CloudFront/ALB/EC2 web runtime in
+`us-east-1`. It creates individual Cognito identities with mandatory TOTP MFA,
+an oauth2-proxy PKCE login boundary, TLS to the viewer and origin, WAF managed
+rules and rate limiting, retained edge logs, and separate generated origin,
+bridge, and cookie secrets. Direct instance access is blocked by security-group
+rules and every non-health origin request must carry the generated CloudFront
+verification header.
+
+The template also creates a versioned Bedrock Guardrail with a high-strength
+prompt-attack input filter and grants the instance role access only to the
+approved US Nova 2 Lite inference profile, its three US destination model ARNs,
+and that Guardrail. KMS decrypt access is scoped to the explicitly supplied
+collector keys.
 
 `BedrockEnabled` defaults to `true`. `BedrockModelId` is allowlisted to
 `us.amazon.nova-2-lite-v1:0`. Set `BedrockEnabled=false` to retain the complete

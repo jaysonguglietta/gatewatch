@@ -1699,6 +1699,10 @@ Outputs:
     Description: Encrypted, versioned bucket containing Gatewatch inventory exports.
     Value: !Ref SnapshotBucket
 
+  SnapshotKeyArn:
+    Description: KMS key used to encrypt Gatewatch snapshot objects.
+    Value: !GetAtt SnapshotKey.Arn
+
   SnapshotDownloadCommand:
     Description: AWS CLI command to download the latest complete JSON snapshot.
     Value: !Sub aws s3 cp s3://${SnapshotBucket}/exports/latest.json gatewatch-security-groups.json

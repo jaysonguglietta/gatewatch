@@ -9,6 +9,20 @@ STACK_NAME="${GATEWATCH_WEB_STACK_NAME:-gatewatch-personal-web}"
 COLLECTOR_STACK_NAME="${GATEWATCH_STACK_NAME:-gatewatch-personal-sg-collector}"
 ORGANIZATION_COLLECTOR_STACK_NAME="${GATEWATCH_ORGANIZATION_STACK_NAME:-gatewatch-organization-collector}"
 TEMPLATE="infrastructure/cloudformation/gatewatch-aws-web.yaml"
+PUBLIC_DOMAIN_NAME="${GATEWATCH_PUBLIC_DOMAIN_NAME:?Set GATEWATCH_PUBLIC_DOMAIN_NAME to the managed HTTPS hostname.}"
+ORIGIN_DOMAIN_NAME="${GATEWATCH_ORIGIN_DOMAIN_NAME:?Set GATEWATCH_ORIGIN_DOMAIN_NAME to the dedicated ALB origin hostname.}"
+HOSTED_ZONE_ID="${GATEWATCH_HOSTED_ZONE_ID:?Set GATEWATCH_HOSTED_ZONE_ID to the Route 53 hosted zone ID.}"
+PUBLIC_CERTIFICATE_ARN="${GATEWATCH_PUBLIC_CERTIFICATE_ARN:?Set GATEWATCH_PUBLIC_CERTIFICATE_ARN to the us-east-1 ACM certificate ARN.}"
+ORIGIN_CERTIFICATE_ARN="${GATEWATCH_ORIGIN_CERTIFICATE_ARN:?Set GATEWATCH_ORIGIN_CERTIFICATE_ARN to the regional ACM certificate ARN.}"
+BOOTSTRAP_ADMIN_EMAIL="${GATEWATCH_BOOTSTRAP_ADMIN_EMAIL:?Set GATEWATCH_BOOTSTRAP_ADMIN_EMAIL to the first named administrator.}"
+COGNITO_DOMAIN_PREFIX="${GATEWATCH_COGNITO_DOMAIN_PREFIX:?Set GATEWATCH_COGNITO_DOMAIN_PREFIX to a globally unique prefix.}"
+OAUTH2_PROXY_IMAGE="${GATEWATCH_OAUTH2_PROXY_IMAGE:?Set GATEWATCH_OAUTH2_PROXY_IMAGE to a digest-pinned image.}"
+NODE_RUNTIME_IMAGE="${GATEWATCH_NODE_RUNTIME_IMAGE:?Set GATEWATCH_NODE_RUNTIME_IMAGE to a digest-pinned Node image.}"
+
+if [[ "$REGION" != "us-east-1" ]]; then
+  echo "The Gatewatch web stack must be deployed in us-east-1 because it creates a CloudFront-scoped WAF." >&2
+  exit 1
+fi
 
 if [[ ! -f "$TEMPLATE" || ! -f package-lock.json ]]; then
   echo "Run this script from the Gatewatch repository root." >&2
@@ -28,9 +42,16 @@ SNAPSHOT_BUCKET="$(aws cloudformation describe-stacks \
   --query 'Stacks[0].Outputs[?OutputKey==`SnapshotBucketName`].OutputValue' \
   --output text \
   --no-cli-pager)"
+SNAPSHOT_KMS_KEY_ARN="$(aws cloudformation describe-stacks \
+  --profile "$PROFILE" \
+  --region "$REGION" \
+  --stack-name "$COLLECTOR_STACK_NAME" \
+  --query 'Stacks[0].Outputs[?OutputKey==`SnapshotKeyArn`].OutputValue' \
+  --output text \
+  --no-cli-pager)"
 
-if [[ -z "$SNAPSHOT_BUCKET" || "$SNAPSHOT_BUCKET" == "None" ]]; then
-  echo "Deploy the Gatewatch collector before deploying the web dashboard." >&2
+if [[ -z "$SNAPSHOT_BUCKET" || "$SNAPSHOT_BUCKET" == "None" || -z "$SNAPSHOT_KMS_KEY_ARN" || "$SNAPSHOT_KMS_KEY_ARN" == "None" ]]; then
+  echo "Deploy the current Gatewatch collector before deploying the web dashboard." >&2
   exit 1
 fi
 
@@ -43,6 +64,16 @@ ORGANIZATION_EVIDENCE_BUCKET="$(aws cloudformation describe-stacks \
   --no-cli-pager 2>/dev/null || true)"
 if [[ "$ORGANIZATION_EVIDENCE_BUCKET" == "None" ]]; then
   ORGANIZATION_EVIDENCE_BUCKET=""
+fi
+ORGANIZATION_EVIDENCE_KMS_KEY_ARN=""
+if [[ -n "$ORGANIZATION_EVIDENCE_BUCKET" ]]; then
+  ORGANIZATION_EVIDENCE_KMS_KEY_ARN="$(aws cloudformation describe-stacks \
+    --profile "$PROFILE" \
+    --region "$REGION" \
+    --stack-name "$ORGANIZATION_COLLECTOR_STACK_NAME" \
+    --query 'Stacks[0].Outputs[?OutputKey==`EvidenceKeyArn`].OutputValue' \
+    --output text \
+    --no-cli-pager)"
 fi
 
 if ! aws s3api head-bucket \
@@ -191,6 +222,17 @@ aws cloudformation deploy \
     OrganizationEvidenceBucket="$ORGANIZATION_EVIDENCE_BUCKET" \
     OrganizationManifestKey=manifests/latest.json \
     CloudFrontOriginPrefixListId="$CLOUDFRONT_PREFIX_LIST" \
+    PublicDomainName="$PUBLIC_DOMAIN_NAME" \
+    OriginDomainName="$ORIGIN_DOMAIN_NAME" \
+    HostedZoneId="$HOSTED_ZONE_ID" \
+    PublicCertificateArn="$PUBLIC_CERTIFICATE_ARN" \
+    OriginCertificateArn="$ORIGIN_CERTIFICATE_ARN" \
+    BootstrapAdminEmail="$BOOTSTRAP_ADMIN_EMAIL" \
+    CognitoDomainPrefix="$COGNITO_DOMAIN_PREFIX" \
+    OAuth2ProxyImage="$OAUTH2_PROXY_IMAGE" \
+    NodeRuntimeImage="$NODE_RUNTIME_IMAGE" \
+    SnapshotKmsKeyArn="$SNAPSHOT_KMS_KEY_ARN" \
+    OrganizationEvidenceKmsKeyArn="$ORGANIZATION_EVIDENCE_KMS_KEY_ARN" \
     InstanceType=t4g.small
 
 DASHBOARD_URL="$(aws cloudformation describe-stacks \
@@ -200,28 +242,10 @@ DASHBOARD_URL="$(aws cloudformation describe-stacks \
   --query 'Stacks[0].Outputs[?OutputKey==`DashboardUrl`].OutputValue' \
   --output text \
   --no-cli-pager)"
-AUTH_SECRET_ARN="$(aws cloudformation describe-stacks \
-  --profile "$PROFILE" \
-  --region "$REGION" \
-  --stack-name "$STACK_NAME" \
-  --query 'Stacks[0].Outputs[?OutputKey==`WebAuthenticationSecretArn`].OutputValue' \
-  --output text \
-  --no-cli-pager)"
-AUTH_JSON="$(aws secretsmanager get-secret-value \
-  --profile "$PROFILE" \
-  --region "$REGION" \
-  --secret-id "$AUTH_SECRET_ARN" \
-  --query SecretString \
-  --output text \
-  --no-cli-pager)"
-AUTH_USERNAME="$(jq -er '.username' <<<"$AUTH_JSON")"
-AUTH_PASSWORD="$(jq -er '.password' <<<"$AUTH_JSON")"
-
 for ATTEMPT in $(seq 1 40); do
   STATUS_CODE="$(curl --silent --output /dev/null --write-out '%{http_code}' \
     --max-time 20 \
-    --user "$AUTH_USERNAME:$AUTH_PASSWORD" \
-    "$DASHBOARD_URL/api/aws-inventory" || true)"
+    "$DASHBOARD_URL/healthz" || true)"
   if [[ "$STATUS_CODE" == "200" ]]; then
     break
   fi
@@ -229,11 +253,9 @@ for ATTEMPT in $(seq 1 40); do
 done
 
 if [[ "$STATUS_CODE" != "200" ]]; then
-  echo "The stack completed, but the authenticated inventory endpoint returned HTTP $STATUS_CODE." >&2
+  echo "The stack completed, but the protected edge health endpoint returned HTTP $STATUS_CODE." >&2
   exit 1
 fi
 
 echo "Gatewatch is available at $DASHBOARD_URL"
-echo "Username: $AUTH_USERNAME"
-echo "Retrieve the password with:"
-echo "aws secretsmanager get-secret-value --profile $PROFILE --region $REGION --secret-id '$AUTH_SECRET_ARN' --query SecretString --output text"
+echo "Cognito sent a temporary password to $BOOTSTRAP_ADMIN_EMAIL. MFA enrollment is required at first sign-in."

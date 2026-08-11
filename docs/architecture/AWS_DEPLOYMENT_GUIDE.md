@@ -12,6 +12,11 @@ infrastructure but do not copy local AWS credentials into Gatewatch.
 - AWS CLI v2 and an authenticated profile with MFA/session credentials.
 - Node.js 22.13+, `zip`, `jq`, and `shasum` locally.
 - VPC and at least two private subnets for Aurora when deploying the platform.
+- A Route 53 public hosted zone, a public application hostname, and a separate
+  origin hostname.
+- An ACM certificate in `us-east-1` for the public hostname and a regional ACM
+  certificate for the origin hostname.
+- Reviewed digest-pinned Node.js and oauth2-proxy container image references.
 - A reviewed organization root/OU allowlist and account exclusion list.
 
 Do not use a profile affected by an identity-policy explicit deny that blocks
@@ -91,11 +96,23 @@ The platform creates the EventBridge rule that forwards only canonical shard
 and run-manifest object keys to SQS. Confirm the queue policy source ARN and
 source account after deployment.
 
-## 4. Deploy the transitional web stack
+## 4. Deploy the identity and web stack
 
-For the existing small-team web path:
+The CloudFront-scoped WAF requires this stack to run in `us-east-1`. Configure
+the named administrator, DNS, certificates, and immutable container images:
 
 ```bash
+export AWS_PROFILE=personal
+export AWS_REGION=us-east-1
+export GATEWATCH_PUBLIC_DOMAIN_NAME=gatewatch.example.com
+export GATEWATCH_ORIGIN_DOMAIN_NAME=gatewatch-origin.example.com
+export GATEWATCH_HOSTED_ZONE_ID=Z0123456789EXAMPLE
+export GATEWATCH_PUBLIC_CERTIFICATE_ARN=arn:aws:acm:us-east-1:111122223333:certificate/...
+export GATEWATCH_ORIGIN_CERTIFICATE_ARN=arn:aws:acm:us-east-1:111122223333:certificate/...
+export GATEWATCH_BOOTSTRAP_ADMIN_EMAIL=security-admin@example.com
+export GATEWATCH_COGNITO_DOMAIN_PREFIX=gatewatch-example
+export GATEWATCH_OAUTH2_PROXY_IMAGE=quay.io/oauth2-proxy/oauth2-proxy@sha256:...
+export GATEWATCH_NODE_RUNTIME_IMAGE=node@sha256:...
 ./scripts/deploy-aws-web.sh
 ```
 
@@ -104,11 +121,23 @@ the exact S3 VersionId, and passes both VersionId and SHA-256 to CloudFormation.
 The SSM installer downloads that version and verifies the digest before unzip or
 execution.
 
-This web stack still uses a shared Basic Auth administrator and an HTTP origin.
-It is suitable only as a transitional, access-restricted environment. Before
-authoritative multi-account governance, replace it with individual OIDC/MFA,
-TLS to the origin, separate web/bridge task roles, WAF/rate limiting, and a
-production runtime as described in the security roadmap.
+The stack creates a Cognito user pool with named users, mandatory TOTP MFA,
+15-minute access and ID tokens, authorization-code flow, PKCE, and token
+revocation. CloudFront is protected by managed WAF rules and rate limiting;
+both viewer-to-edge and edge-to-ALB connections require TLS. The EC2 web
+security group accepts traffic only from the ALB, and Nginx verifies a generated
+origin header on every non-health request.
+
+CloudFormation creates the bootstrap user and Cognito sends a temporary
+password. The user must choose a new password and enroll TOTP on first sign-in.
+Create additional named users through the controlled administrator process; do
+not share the bootstrap identity.
+
+The application image is built in a separate stage and the final image installs
+production dependencies only. The current vinext AWS adapter launches its
+generated workerd bundle through Wrangler local mode; the inspector and
+interactive development session are disabled. Treat replacement with a native
+production AWS adapter as a remaining runtime-hardening item.
 
 ## 5. Connect AWS-native evidence
 
@@ -138,8 +167,15 @@ production runtime as described in the security roadmap.
 - [ ] The platform queue cannot be written by an unapproved principal/rule.
 - [ ] Artifact checksum/version mismatch causes web deployment to fail.
 - [ ] Snapshot checksum mismatch causes `/api/aws-inventory` to fail closed.
-- [ ] Administrator and workflow audit events identify unique users (required
-  after OIDC implementation).
+- [ ] Administrator and workflow audit events identify the Cognito subject and
+  verified email for each unique user.
+- [ ] Cognito rejects sign-in until the bootstrap user enrolls TOTP MFA.
+- [ ] Revoked Cognito refresh tokens cannot obtain a new session.
+- [ ] Direct requests to the ALB fail unless they arrive from CloudFront and
+  contain the generated origin verification header.
+- [ ] WAF rate limits abusive clients and redacts authorization and cookie data
+  from security logs.
+- [ ] CloudFront access logs arrive in the retained encrypted log bucket.
 - [ ] `app.workspace_id` is set on every Aurora application transaction and a
   cross-workspace query is rejected by row-level security.
 - [ ] Account catalog changes appear in findings facets and groupings.
