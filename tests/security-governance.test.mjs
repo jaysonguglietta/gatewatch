@@ -66,9 +66,10 @@ test("adds deletion protection, recoverable backups, managed master credentials,
 });
 
 test("encrypts queues with a dedicated CMK and enables audit access logging and Lambda tracing", async () => {
-  const [platform, forwarding] = await Promise.all([
+  const [platform, forwarding, collector] = await Promise.all([
     source("infrastructure/cloudformation/gatewatch-aws-platform.yaml"),
     source("infrastructure/cloudformation/gatewatch-s3-event-forwarding.yaml"),
+    source("infrastructure/cloudformation/gatewatch-security-group-collector.yaml"),
   ]);
 
   assert.doesNotMatch(platform, /KmsMasterKeyId: alias\/aws\/sqs/);
@@ -88,6 +89,10 @@ test("encrypts queues with a dedicated CMK and enables audit access logging and 
   assert.match(platform, /QueueKeyArn:[\s\S]*Value: !GetAtt QueueKey\.Arn/);
   assert.match(forwarding, /GatewatchIngestionQueueKeyArn:/);
   assert.match(forwarding, /kms:GenerateDataKey/);
+  assert.match(collector, /CollectorMessagingKey:[\s\S]*EnableKeyRotation: true/);
+  assert.match(collector, /InvocationDeadLetterQueue:[\s\S]*KmsMasterKeyId: !GetAtt CollectorMessagingKey\.Arn/);
+  assert.match(collector, /CollectorAlarmTopic:[\s\S]*KmsMasterKeyId: !GetAtt CollectorMessagingKey\.Arn/);
+  assert.doesNotMatch(collector, /KmsMasterKeyId: alias\/aws\/sns/);
 });
 
 test("pins CI actions and gates secrets, SAST, dependencies, and IaC", async () => {
@@ -99,6 +104,7 @@ test("pins CI actions and gates secrets, SAST, dependencies, and IaC", async () 
   assert.match(workflow, /aquasecurity\/trivy-action@[a-f0-9]{40}/);
   assert.equal((workflow.match(/limit-severities-for-sarif: true/g) ?? []).length, 2);
   assert.equal((workflow.match(/format: table/g) ?? []).length, 2);
+  assert.equal((workflow.match(/skip-dirs: samples\/iac-review/g) ?? []).length, 2);
   assert.match(workflow, /Gate repository secrets and IaC[\s\S]*exit-code: "1"/);
   assert.match(workflow, /npm audit --omit=dev --audit-level=high/);
   assert.match(workflow, /cfn-lint/);

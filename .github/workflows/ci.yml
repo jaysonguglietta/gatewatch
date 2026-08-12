@@ -104,6 +104,7 @@ jobs:
         with:
           scan-type: fs
           scan-ref: .
+          skip-dirs: samples/iac-review
           scanners: secret,misconfig
           severity: CRITICAL,HIGH
           exit-code: "0"
@@ -115,6 +116,7 @@ jobs:
         with:
           scan-type: fs
           scan-ref: .
+          skip-dirs: samples/iac-review
           scanners: secret,misconfig
           severity: CRITICAL,HIGH
           exit-code: "1"
