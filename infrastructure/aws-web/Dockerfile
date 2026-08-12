@@ -21,16 +21,15 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --no-audit --no-fund \
-    && npm cache clean --force
-
 COPY --from=build --chown=node:node /app/.next/standalone ./
 COPY --from=build --chown=node:node /app/.next/static ./.next/static
 COPY --from=build --chown=node:node /app/public ./public
 COPY --chown=node:node infrastructure/aws-web/aws-bridge.mjs ./infrastructure/aws-web/
 
-RUN mkdir -p /data \
+RUN rm -rf /usr/local/lib/node_modules/npm \
+    /usr/local/bin/npm \
+    /usr/local/bin/npx \
+    && mkdir -p /data \
     && chown -R node:node /app /data
 
 USER node
