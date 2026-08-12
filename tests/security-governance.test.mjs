@@ -5,6 +5,18 @@ import test from "node:test";
 const root = new URL("../", import.meta.url);
 const source = (path) => readFile(new URL(path, root), "utf8");
 
+test("constrains secret-scan exceptions to exact synthetic analyzer IDs and paths", async () => {
+  const config = await source(".gitleaks.toml");
+
+  assert.match(config, /useDefault = true/);
+  assert.match(config, /condition = "AND"/);
+  assert.match(config, /id = "generic-api-key"/);
+  assert.match(config, /\^nisa-0a41f2e91b71\$/);
+  assert.match(config, /\^nis-0a41f2e91b71\$/);
+  assert.doesNotMatch(config, /commits\s*=/);
+  assert.doesNotMatch(config, /samples\/\.\*/);
+});
+
 test("forces tenant isolation and keeps runtime database roles non-owner", async () => {
   const [migration, platform, ingest, backfill] = await Promise.all([
     source("db/postgres/0005_security_governance.sql"),
