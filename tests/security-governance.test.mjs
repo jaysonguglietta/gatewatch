@@ -48,7 +48,8 @@ test("forces tenant isolation and keeps runtime database roles non-owner", async
   assert.match(migration, /REVOKE CREATE ON SCHEMA public FROM PUBLIC/);
   assert.match(platform, /gatewatch_runtime_login/);
   assert.match(platform, /gatewatch_maintenance_login/);
-  assert.match(platform, /for statement in statements:/);
+  assert.match(platform, /for index, statement in enumerate\(statements\):/);
+  assert.match(platform, /database principal statement \{index \+ 1\} failed/);
   assert.match(platform, /rolsuper OR rolcreatedb OR rolcreaterole OR rolbypassrls/);
   assert.doesNotMatch(platform, /statement = f"""[\s\S]*ALTER ROLE gatewatch_runtime_login/);
   assert.doesNotMatch(platform, /ALTER ROLE gatewatch_runtime_login[^\n]*NOBYPASSRLS/);
