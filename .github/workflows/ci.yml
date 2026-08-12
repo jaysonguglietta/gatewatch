@@ -77,7 +77,19 @@ jobs:
           cache: npm
       - name: Install production dependency graph only
         run: npm ci --omit=dev --ignore-scripts
-      - name: Scan production dependencies
+      - name: Create production dependency SARIF
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # v0.36.0, Trivy v0.73.0
+        with:
+          scan-type: fs
+          scan-ref: node_modules
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+          format: sarif
+          output: trivy-dependencies.sarif
+          limit-severities-for-sarif: true
+      - name: Gate production dependencies
         uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # v0.36.0, Trivy v0.73.0
         with:
           scan-type: fs
@@ -86,10 +98,19 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
+          format: table
+      - name: Create repository security SARIF
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # v0.36.0, Trivy v0.73.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret,misconfig
+          severity: CRITICAL,HIGH
+          exit-code: "0"
           format: sarif
-          output: trivy-dependencies.sarif
+          output: trivy-repository.sarif
           limit-severities-for-sarif: true
-      - name: Scan repository secrets and IaC
+      - name: Gate repository secrets and IaC
         uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # v0.36.0, Trivy v0.73.0
         with:
           scan-type: fs
@@ -97,9 +118,7 @@ jobs:
           scanners: secret,misconfig
           severity: CRITICAL,HIGH
           exit-code: "1"
-          format: sarif
-          output: trivy-repository.sarif
-          limit-severities-for-sarif: true
+          format: table
       - name: Publish Trivy dependency results
         if: always() && hashFiles('trivy-dependencies.sarif') != ''
         uses: github/codeql-action/upload-sarif@c4dd10e44af883a891fe31ced449bcb4a6728b9b # v3
