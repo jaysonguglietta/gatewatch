@@ -346,6 +346,13 @@ Required after deployment:
 - alert delivery and on-call acknowledgement;
 - release digest matches the approved artifact.
 
+The web acceptance run must additionally prove the ALB is `internal`, both ALB
+subnets have no internet-gateway default route, the instance has no public IPv4
+address, and the CloudFront origin references the expected VPC origin ID. Invoke
+the private audit-outbox route concurrently and prove one lease owner archives
+each event while retries preserve undelivered records and raise the configured
+failure alarm.
+
 ## Evidence retention
 
 Store machine-readable test output, deployed template, image digest, SBOM,

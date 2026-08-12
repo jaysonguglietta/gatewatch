@@ -19,6 +19,13 @@ analysis. These remain **in progress** until the PRs merge and AWS acceptance
 tests produce retained evidence. See
 [SECURITY_UPDATE_2026-08-11.md](SECURITY_UPDATE_2026-08-11.md).
 
+**Implementation update (August 12, 2026):** The application, AWS runtime,
+governance, and audit-outbox work is integrated and passes the complete local
+suite plus GitHub secret, SAST, dependency, IaC, and final-image release gates.
+The remaining closure work is target-AWS deployment and retained acceptance
+evidence. See
+[SECURITY_UPDATE_2026-08-12.md](SECURITY_UPDATE_2026-08-12.md).
+
 ## Status model
 
 - **Open:** No effective fix has been merged and deployed.

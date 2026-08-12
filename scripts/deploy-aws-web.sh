@@ -8,6 +8,7 @@ REGION="${REGION:-us-east-1}"
 STACK_NAME="${GATEWATCH_WEB_STACK_NAME:-gatewatch-personal-web}"
 COLLECTOR_STACK_NAME="${GATEWATCH_STACK_NAME:-gatewatch-personal-sg-collector}"
 ORGANIZATION_COLLECTOR_STACK_NAME="${GATEWATCH_ORGANIZATION_STACK_NAME:-gatewatch-organization-collector}"
+PLATFORM_STACK_NAME="${GATEWATCH_PLATFORM_STACK_NAME:-gatewatch-production-platform}"
 TEMPLATE="infrastructure/cloudformation/gatewatch-aws-web.yaml"
 PUBLIC_DOMAIN_NAME="${GATEWATCH_PUBLIC_DOMAIN_NAME:?Set GATEWATCH_PUBLIC_DOMAIN_NAME to the managed HTTPS hostname.}"
 ORIGIN_DOMAIN_NAME="${GATEWATCH_ORIGIN_DOMAIN_NAME:?Set GATEWATCH_ORIGIN_DOMAIN_NAME to the dedicated ALB origin hostname.}"
@@ -125,6 +126,32 @@ if [[ -n "$ORGANIZATION_EVIDENCE_BUCKET" ]]; then
     --query 'Stacks[0].Outputs[?OutputKey==`EvidenceKeyArn`].OutputValue' \
     --output text \
     --no-cli-pager)"
+fi
+
+AUDIT_ARCHIVE_BUCKET="$(aws cloudformation describe-stacks \
+  --profile "$PROFILE" \
+  --region "$REGION" \
+  --stack-name "$PLATFORM_STACK_NAME" \
+  --query 'Stacks[0].Outputs[?OutputKey==`AuditArchiveBucketName`].OutputValue' \
+  --output text \
+  --no-cli-pager)"
+AUDIT_ARCHIVE_KMS_KEY_ARN="$(aws cloudformation describe-stacks \
+  --profile "$PROFILE" \
+  --region "$REGION" \
+  --stack-name "$PLATFORM_STACK_NAME" \
+  --query 'Stacks[0].Outputs[?OutputKey==`PlatformKeyArn`].OutputValue' \
+  --output text \
+  --no-cli-pager)"
+WORKSPACE_ID="$(aws cloudformation describe-stacks \
+  --profile "$PROFILE" \
+  --region "$REGION" \
+  --stack-name "$PLATFORM_STACK_NAME" \
+  --query 'Stacks[0].Outputs[?OutputKey==`WorkspaceId`].OutputValue' \
+  --output text \
+  --no-cli-pager)"
+if [[ -z "$AUDIT_ARCHIVE_BUCKET" || -z "$AUDIT_ARCHIVE_KMS_KEY_ARN" || -z "$WORKSPACE_ID" ]]; then
+  echo "Deploy the Gatewatch data platform with audit-archive outputs before the web stack." >&2
+  exit 1
 fi
 
 if ! aws s3api head-bucket \
@@ -330,6 +357,9 @@ aws cloudformation deploy \
     OAuth2ProxyImage="$OAUTH2_PROXY_IMAGE" \
     SnapshotKmsKeyArn="$SNAPSHOT_KMS_KEY_ARN" \
     OrganizationEvidenceKmsKeyArn="$ORGANIZATION_EVIDENCE_KMS_KEY_ARN" \
+    AuditArchiveBucket="$AUDIT_ARCHIVE_BUCKET" \
+    AuditArchiveKmsKeyArn="$AUDIT_ARCHIVE_KMS_KEY_ARN" \
+    WorkspaceId="$WORKSPACE_ID" \
     SourceOrganizationId="$SOURCE_ORGANIZATION_ID" \
     InstanceType=t4g.small
 

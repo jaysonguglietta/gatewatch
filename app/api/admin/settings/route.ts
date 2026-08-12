@@ -51,7 +51,7 @@ export async function POST(request: Request) {
         typeof payload.email === "string"
           ? payload.email.trim().toLowerCase().slice(0, 254)
           : "";
-      if (email === auth.user) {
+      if (email === auth.email) {
         return apiJson({ error: "You cannot remove your own administrator assignment." }, 409);
       }
       await env.DB.prepare(

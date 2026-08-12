@@ -145,7 +145,7 @@ export async function GET(request: Request) {
       settings.results.map((item) => [String(item.key), safeJson(item.value, {})]),
     );
     return apiJson({
-      currentUser: { email: auth.user, role: "admin" },
+      currentUser: { email: auth.email, subject: auth.user, role: "admin" },
       sources: (sources.results as unknown as SourceRow[]).map(mapSource),
       runs: runs.results,
       audits: audits.results.map((item) => ({

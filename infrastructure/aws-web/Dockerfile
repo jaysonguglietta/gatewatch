@@ -17,7 +17,15 @@ RUN npm run build:aws \
     && cd /runtime-deps \
     && npm ci --omit=dev --no-audit --no-fund
 
-FROM ${NODE_RUNTIME_IMAGE} AS runtime
+FROM ${NODE_RUNTIME_IMAGE} AS runtime-root
+
+RUN rm -rf /usr/local/lib/node_modules/npm \
+    /usr/local/bin/npm \
+    /usr/local/bin/npx
+
+FROM scratch AS runtime
+
+COPY --from=runtime-root / /
 
 ENV NODE_ENV=production \
     WRANGLER_WRITE_LOGS=false \
@@ -31,10 +39,7 @@ COPY --from=build --chown=node:node /app/.next/static ./.next/static
 COPY --from=build --chown=node:node /app/public ./public
 COPY --chown=node:node infrastructure/aws-web/aws-bridge.mjs ./infrastructure/aws-web/
 
-RUN rm -rf /usr/local/lib/node_modules/npm \
-    /usr/local/bin/npm \
-    /usr/local/bin/npx \
-    && mkdir -p /data \
+RUN mkdir -p /data \
     && chown -R node:node /app /data
 
 USER node

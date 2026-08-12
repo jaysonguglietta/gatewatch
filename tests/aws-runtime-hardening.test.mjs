@@ -111,6 +111,8 @@ test("builds a minimal digest-pinned standalone production image without a devel
 
   assert.match(dockerfile, /ARG NODE_RUNTIME_IMAGE/);
   assert.equal((dockerfile.match(/FROM \$\{NODE_RUNTIME_IMAGE\}/g) ?? []).length, 2);
+  assert.match(dockerfile, /FROM scratch AS runtime/);
+  assert.match(dockerfile, /COPY --from=runtime-root \/ \/[\s\S]*COPY --from=build/);
   assert.match(dockerfile, /\/runtime-deps[\s\S]*npm ci --omit=dev/);
   assert.match(dockerfile, /COPY --from=build --chown=node:node \/runtime-deps\/node_modules \.\/node_modules/);
   assert.match(dockerfile, /rm -rf \/usr\/local\/lib\/node_modules\/npm/);

@@ -100,6 +100,16 @@ Parameters:
     Type: String
     Default: ""
     AllowedPattern: "^$|^arn:[a-z0-9-]+:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]+$"
+  AuditArchiveBucket:
+    Type: String
+    AllowedPattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+    Description: Compliance Object Lock bucket created by the Gatewatch data platform.
+  AuditArchiveKmsKeyArn:
+    Type: String
+    AllowedPattern: "^arn:[a-z0-9-]+:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]+$"
+  WorkspaceId:
+    Type: String
+    AllowedPattern: "^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
   SourceOrganizationId:
     Type: String
     AllowedPattern: "^o-[a-z0-9]{10,32}$"
@@ -745,6 +755,17 @@ Resources:
                 Condition:
                   StringEquals:
                     kms:ViaService: !Sub s3.${AWS::Region}.${AWS::URLSuffix}
+              - Sid: AppendApplicationAuditArchive
+                Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${AuditArchiveBucket}/audit/application/workspace=${WorkspaceId}/*
+              - Sid: EncryptApplicationAuditArchive
+                Effect: Allow
+                Action: kms:GenerateDataKey
+                Resource: !Ref AuditArchiveKmsKeyArn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub s3.${AWS::Region}.${AWS::URLSuffix}
               - Sid: ManageJiraIntegrationSecret
                 Effect: Allow
                 Action:
@@ -1031,6 +1052,8 @@ Resources:
                 '${SnapshotRegion}' \
                 '${OrganizationEvidenceBucket}' \
                 '${OrganizationManifestKey}' \
+                '${AuditArchiveBucket}' \
+                '${WorkspaceId}' \
                 '${AwsBridgeRuntimeRole.Arn}' \
                 '${ApplicationLogGroup}' \
                 "$RELEASE_ID" \
@@ -1042,6 +1065,57 @@ Resources:
                 '${ApplicationImageRef}' \
                 '/tmp/gatewatch-web.tar.gz' \
                 '${ImageArtifactSha256}'
+
+  AuditOutboxDeliveryAssociation:
+    Type: AWS::SSM::Association
+    DependsOn: WebDeploymentAssociation
+    Properties:
+      Name: AWS-RunShellScript
+      AssociationName: !Sub gatewatch-${EnvironmentName}-audit-outbox-delivery
+      ApplyOnlyAtCronInterval: true
+      ScheduleExpression: rate(5 minutes)
+      Targets:
+        - Key: InstanceIds
+          Values:
+            - !Ref WebInstance
+      Parameters:
+        commands:
+          - !Sub |
+              set -euo pipefail
+              TOKEN=$(aws secretsmanager get-secret-value \
+                --region '${AWS::Region}' \
+                --secret-id '${AwsBridgeSecret}' \
+                --query SecretString \
+                --output text)
+              curl --fail --silent --show-error \
+                --request POST \
+                --header "Authorization: Bearer $TOKEN" \
+                --max-time 60 \
+                http://127.0.0.1:3000/api/internal/audit-outbox >/dev/null
+
+  AuditOutboxFailureMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      FilterPattern: '{ $.event = "audit_outbox_delivery_failed" }'
+      MetricTransformations:
+        - MetricNamespace: Gatewatch/Security
+          MetricName: AuditOutboxDeliveryFailures
+          MetricValue: "1"
+
+  AuditOutboxFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Gatewatch could not archive one or more application audit events.
+      Namespace: Gatewatch/Security
+      MetricName: AuditOutboxDeliveryFailures
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
 
   NoCachePolicy:
     Type: AWS::CloudFront::CachePolicy
