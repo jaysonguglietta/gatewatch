@@ -169,7 +169,7 @@ Resources:
     Properties:
       AvailabilityZone: !Select [0, !GetAZs ""]
       CidrBlock: 10.83.0.0/26
-      MapPublicIpOnLaunch: true
+      MapPublicIpOnLaunch: false
       VpcId: !Ref WebVpc
       Tags:
         - Key: Name
@@ -180,11 +180,22 @@ Resources:
     Properties:
       AvailabilityZone: !Select [1, !GetAZs ""]
       CidrBlock: 10.83.0.64/26
-      MapPublicIpOnLaunch: true
+      MapPublicIpOnLaunch: false
       VpcId: !Ref WebVpc
       Tags:
         - Key: Name
           Value: !Sub gatewatch-${EnvironmentName}-public-b
+
+  WebPrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: 10.83.0.128/26
+      MapPublicIpOnLaunch: false
+      VpcId: !Ref WebVpc
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-private-a
 
   WebRouteTable:
     Type: AWS::EC2::RouteTable
@@ -213,6 +224,46 @@ Resources:
     Properties:
       RouteTableId: !Ref WebRouteTable
       SubnetId: !Ref WebSubnetB
+
+  WebNatElasticIp:
+    Type: AWS::EC2::EIP
+    DependsOn: WebInternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-nat
+
+  WebNatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt WebNatElasticIp.AllocationId
+      ConnectivityType: public
+      SubnetId: !Ref WebSubnet
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-nat
+
+  WebPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref WebVpc
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-private
+
+  WebPrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref WebNatGateway
+      RouteTableId: !Ref WebPrivateRouteTable
+
+  WebPrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref WebPrivateRouteTable
+      SubnetId: !Ref WebPrivateSubnet
 
   CloudFrontOriginSecret:
     Type: AWS::SecretsManager::Secret
@@ -768,12 +819,12 @@ Resources:
       FileSystemId: !Ref WebFileSystem
       SecurityGroups:
         - !Ref WebFileSystemSecurityGroup
-      SubnetId: !Ref WebSubnet
+      SubnetId: !Ref WebPrivateSubnet
 
   WebInstance:
     Type: AWS::EC2::Instance
     DependsOn:
-      - WebDefaultRoute
+      - WebPrivateDefaultRoute
       - WebFileSystemMountTarget
     Properties:
       ImageId: !Ref LatestAmiId
@@ -786,12 +837,12 @@ Resources:
         HttpPutResponseHopLimit: 2
         InstanceMetadataTags: enabled
       NetworkInterfaces:
-        - AssociatePublicIpAddress: true
+        - AssociatePublicIpAddress: false
           DeleteOnTermination: true
           DeviceIndex: "0"
           GroupSet:
             - !Ref WebSecurityGroup
-          SubnetId: !Ref WebSubnet
+          SubnetId: !Ref WebPrivateSubnet
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs:

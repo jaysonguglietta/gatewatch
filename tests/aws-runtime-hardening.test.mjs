@@ -86,6 +86,11 @@ test("uses separate generated secrets and resource-scoped KMS permissions", asyn
   assert.match(template, /SourceOrganizationId/);
   assert.match(template, /aws:ResourceOrgID: !Ref SourceOrganizationId/);
   assert.match(template, /WebEgressToFileSystem/);
+  assert.match(template, /WebPrivateSubnet:/);
+  assert.match(template, /WebNatGateway:/);
+  assert.match(template, /NatGatewayId: !Ref WebNatGateway/);
+  assert.match(template, /WebInstance:[\s\S]*AssociatePublicIpAddress: false[\s\S]*SubnetId: !Ref WebPrivateSubnet/);
+  assert.doesNotMatch(template, /MapPublicIpOnLaunch: true/);
   assert.doesNotMatch(template, /Description: AWS APIs, package repositories, and container registry[\s\S]*IpProtocol: "-1"/);
 });
 

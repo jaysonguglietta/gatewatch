@@ -142,6 +142,10 @@ revocation. CloudFront is protected by managed WAF rules and rate limiting;
 both viewer-to-edge and edge-to-ALB connections require TLS. The EC2 web
 security group accepts traffic only from the ALB, and Nginx verifies a generated
 origin header on every non-health request.
+The ALB spans two public subnets, while the EC2 runtime and encrypted EFS mount
+remain in a private subnet without public addresses. A managed NAT gateway
+provides outbound-only TLS for AWS APIs, Cognito, Jira, and the pinned OIDC
+image registry; security-group egress is limited to TCP 443 and the EFS mount.
 
 CloudFormation creates the bootstrap user and Cognito sends a temporary
 password. The user must choose a new password and enroll TOTP on first sign-in.
