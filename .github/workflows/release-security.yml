@@ -74,7 +74,7 @@ jobs:
       - name: Package immutable image artifact
         run: |
           test "$(docker image inspect --format '{{.Architecture}}' "$RELEASE_IMAGE")" = arm64
-          docker save "$RELEASE_IMAGE" | gzip -9 > gatewatch-web.tar.gz
+          docker save "$RELEASE_IMAGE" | gzip > gatewatch-web.tar.gz
           sha256sum gatewatch-web.tar.gz > gatewatch-web.tar.gz.sha256
       - name: Upload image, digest, SBOM, and scan evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
