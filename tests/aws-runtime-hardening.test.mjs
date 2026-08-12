@@ -104,7 +104,8 @@ test("builds a minimal digest-pinned standalone production image without a devel
 
   assert.match(dockerfile, /ARG NODE_RUNTIME_IMAGE/);
   assert.equal((dockerfile.match(/FROM \$\{NODE_RUNTIME_IMAGE\}/g) ?? []).length, 2);
-  assert.match(dockerfile, /npm ci --omit=dev/);
+  assert.equal((dockerfile.match(/npm ci/g) ?? []).length, 1);
+  assert.match(dockerfile, /rm -rf \/usr\/local\/lib\/node_modules\/npm/);
   assert.doesNotMatch(dockerfile, /--inspector/);
   assert.doesNotMatch(dockerfile, /wrangler dev|vinext start/);
   assert.match(dockerfile, /CMD \["node", "server\.js"\]/);
