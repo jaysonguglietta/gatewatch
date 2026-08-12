@@ -1,8 +1,8 @@
 # Gatewatch threat model
 
-**Version:** 1.2
+**Version:** 1.3
 
-**Last reviewed:** August 9, 2026
+**Last reviewed:** August 11, 2026
 
 **Scope:** Current AWS web and collector deployment plus the planned SQS/Lambda/Aurora ingestion platform
 
@@ -45,6 +45,8 @@ flowchart LR
     S3 --> Queue["EventBridge + ingestion SQS"]
     Queue --> Ingest["Bounded normalization Lambda"]
     Ingest --> Aurora["Aurora PostgreSQL observations"]
+    Maintain["Scheduled governance maintenance"] --> Aurora
+    Maintain -->|"Write only, compliance retention"| AuditArchive["S3 Object Lock audit archive"]
 ```
 
 The current production data store is the D1-compatible local database persisted
@@ -106,6 +108,18 @@ version or unmodified content. Snapshot manifests require verification and signi
 Organization member accounts can forward events toward a central queue. Messages
 must be bound to a registered source and workspace. Aurora must enforce workspace
 separation even when application queries are wrong.
+
+The reviewed target data plane binds each stack to one immutable workspace UUID.
+Every Data API transaction sets that context, every workspace table has forced
+RLS, and ingestion and maintenance use distinct non-owner, non-`BYPASSRLS`
+database principals. Database audit rows reject ordinary mutation. The scheduled
+maintenance principal can invoke only the bounded retention function; audit rows
+must have a versioned Object Lock archive ledger entry before deletion.
+
+The Aurora master credential is RDS-managed and is restricted to migration and
+database-principal bootstrap. It is not a workload credential. Restores and
+schema migrations remain privileged administrative boundaries requiring separate
+approval and retained evidence.
 
 ## High-value assets
 

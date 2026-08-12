@@ -75,21 +75,13 @@ Parameters:
   PublicDomainName:
     Type: String
     AllowedPattern: "^[a-z0-9](?:[a-z0-9.-]{1,251}[a-z0-9])$"
-    Description: Public Gatewatch DNS name covered by PublicCertificateArn.
+    Description: Public Gatewatch DNS name; the stack provisions and validates its ACM certificate.
   OriginDomainName:
     Type: String
     AllowedPattern: "^[a-z0-9](?:[a-z0-9.-]{1,251}[a-z0-9])$"
-    Description: Dedicated ALB origin DNS name covered by OriginCertificateArn.
+    Description: Dedicated private ALB origin DNS name; the stack provisions and validates its ACM certificate.
   HostedZoneId:
     Type: AWS::Route53::HostedZone::Id
-  PublicCertificateArn:
-    Type: String
-    AllowedPattern: "^arn:[a-z0-9-]+:acm:us-east-1:[0-9]{12}:certificate/[a-f0-9-]+$"
-    Description: ACM certificate for PublicDomainName; CloudFront requires us-east-1.
-  OriginCertificateArn:
-    Type: String
-    AllowedPattern: "^arn:[a-z0-9-]+:acm:[a-z0-9-]+:[0-9]{12}:certificate/[a-f0-9-]+$"
-    Description: Regional ACM certificate for OriginDomainName.
   BootstrapAdminEmail:
     Type: String
     AllowedPattern: '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'
@@ -179,7 +171,7 @@ Resources:
     Properties:
       AvailabilityZone: !Select [0, !GetAZs ""]
       CidrBlock: 10.83.0.0/26
-      MapPublicIpOnLaunch: true
+      MapPublicIpOnLaunch: false
       VpcId: !Ref WebVpc
       Tags:
         - Key: Name
@@ -190,11 +182,33 @@ Resources:
     Properties:
       AvailabilityZone: !Select [1, !GetAZs ""]
       CidrBlock: 10.83.0.64/26
-      MapPublicIpOnLaunch: true
+      MapPublicIpOnLaunch: false
       VpcId: !Ref WebVpc
       Tags:
         - Key: Name
           Value: !Sub gatewatch-${EnvironmentName}-public-b
+
+  WebPrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: 10.83.0.128/26
+      MapPublicIpOnLaunch: false
+      VpcId: !Ref WebVpc
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-private-a
+
+  WebPrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: 10.83.0.192/26
+      MapPublicIpOnLaunch: false
+      VpcId: !Ref WebVpc
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-private-b
 
   WebRouteTable:
     Type: AWS::EC2::RouteTable
@@ -224,6 +238,52 @@ Resources:
       RouteTableId: !Ref WebRouteTable
       SubnetId: !Ref WebSubnetB
 
+  WebNatElasticIp:
+    Type: AWS::EC2::EIP
+    DependsOn: WebInternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-nat
+
+  WebNatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt WebNatElasticIp.AllocationId
+      ConnectivityType: public
+      SubnetId: !Ref WebSubnet
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-nat
+
+  WebPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref WebVpc
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-private
+
+  WebPrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref WebNatGateway
+      RouteTableId: !Ref WebPrivateRouteTable
+
+  WebPrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref WebPrivateRouteTable
+      SubnetId: !Ref WebPrivateSubnet
+
+  WebPrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref WebPrivateRouteTable
+      SubnetId: !Ref WebPrivateSubnetB
+
   CloudFrontOriginSecret:
     Type: AWS::SecretsManager::Secret
     DeletionPolicy: Retain
@@ -233,6 +293,30 @@ Resources:
       GenerateSecretString:
         PasswordLength: 48
         ExcludePunctuation: true
+
+  PublicCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref PublicDomainName
+      DomainValidationOptions:
+        - DomainName: !Ref PublicDomainName
+          HostedZoneId: !Ref HostedZoneId
+      ValidationMethod: DNS
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-public
+
+  OriginCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref OriginDomainName
+      DomainValidationOptions:
+        - DomainName: !Ref OriginDomainName
+          HostedZoneId: !Ref HostedZoneId
+      ValidationMethod: DNS
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-private-origin
 
   AwsBridgeSecret:
     Type: AWS::SecretsManager::Secret
@@ -412,7 +496,7 @@ Resources:
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
-        IgnorePublicAcls: false
+        IgnorePublicAcls: true
         RestrictPublicBuckets: true
       VersioningConfiguration:
         Status: Enabled
@@ -789,12 +873,12 @@ Resources:
       FileSystemId: !Ref WebFileSystem
       SecurityGroups:
         - !Ref WebFileSystemSecurityGroup
-      SubnetId: !Ref WebSubnet
+      SubnetId: !Ref WebPrivateSubnet
 
   WebInstance:
     Type: AWS::EC2::Instance
     DependsOn:
-      - WebDefaultRoute
+      - WebPrivateDefaultRoute
       - WebFileSystemMountTarget
     Properties:
       ImageId: !Ref LatestAmiId
@@ -807,12 +891,12 @@ Resources:
         HttpPutResponseHopLimit: 2
         InstanceMetadataTags: enabled
       NetworkInterfaces:
-        - AssociatePublicIpAddress: true
+        - AssociatePublicIpAddress: false
           DeleteOnTermination: true
           DeviceIndex: "0"
           GroupSet:
             - !Ref WebSecurityGroup
-          SubnetId: !Ref WebSubnet
+          SubnetId: !Ref WebPrivateSubnet
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs:
@@ -847,13 +931,13 @@ Resources:
   OriginLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      IpAddressType: dualstack
-      Scheme: internet-facing
+      IpAddressType: ipv4
+      Scheme: internal
       SecurityGroups:
         - !Ref OriginLoadBalancerSecurityGroup
       Subnets:
-        - !Ref WebSubnet
-        - !Ref WebSubnetB
+        - !Ref WebPrivateSubnet
+        - !Ref WebPrivateSubnetB
       Type: application
       LoadBalancerAttributes:
         - Key: deletion_protection.enabled
@@ -889,7 +973,7 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
       Certificates:
-        - CertificateArn: !Ref OriginCertificateArn
+        - CertificateArn: !Ref OriginCertificate
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref OriginTargetGroup
@@ -1103,6 +1187,21 @@ Resources:
               Value: camera=(), geolocation=(), microphone=(), payment=(), usb=()
               Override: true
 
+  PrivateWebVpcOrigin:
+    Type: AWS::CloudFront::VpcOrigin
+    Properties:
+      VpcOriginEndpointConfig:
+        Arn: !Ref OriginLoadBalancer
+        HTTPPort: 80
+        HTTPSPort: 443
+        Name: !Sub gatewatch-${EnvironmentName}-private-origin
+        OriginProtocolPolicy: https-only
+        OriginSSLProtocols:
+          - TLSv1.2
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-private-origin
+
   WebDistribution:
     Type: AWS::CloudFront::Distribution
     DependsOn:
@@ -1130,12 +1229,8 @@ Resources:
             OriginCustomHeaders:
               - HeaderName: X-Gatewatch-Origin
                 HeaderValue: !Sub '{{resolve:secretsmanager:${CloudFrontOriginSecret}}}'
-            CustomOriginConfig:
-              HTTPPort: 80
-              HTTPSPort: 443
-              OriginProtocolPolicy: https-only
-              OriginSSLProtocols:
-                - TLSv1.2
+            VpcOriginConfig:
+              VpcOriginId: !GetAtt PrivateWebVpcOrigin.Id
               OriginReadTimeout: 120
               OriginKeepaliveTimeout: 5
         DefaultCacheBehavior:
@@ -1157,7 +1252,7 @@ Resources:
           ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
           Compress: true
         ViewerCertificate:
-          AcmCertificateArn: !Ref PublicCertificateArn
+          AcmCertificateArn: !Ref PublicCertificate
           MinimumProtocolVersion: TLSv1.2_2021
           SslSupportMethod: sni-only
 

@@ -7,19 +7,25 @@ on:
 
 permissions:
   contents: read
+  security-events: write
+
+concurrency:
+  group: gatewatch-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   application:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.13.0
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run lint
+      - run: npx tsc --noEmit
       - run: npm test
       - run: npm audit --omit=dev --audit-level=high
 
@@ -27,8 +33,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
       - run: python -m py_compile infrastructure/lambda/organization-collector/index.py
@@ -42,3 +48,90 @@ jobs:
             echo "Organization collector contains a write-capable security-group action." >&2
             exit 1
           fi
+
+  security-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Scan repository history for secrets
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@c4dd10e44af883a891fe31ced449bcb4a6728b9b # v3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+      - name: Build CodeQL database
+        uses: github/codeql-action/autobuild@c4dd10e44af883a891fe31ced449bcb4a6728b9b # v3
+      - name: Run CodeQL analysis
+        uses: github/codeql-action/analyze@c4dd10e44af883a891fe31ced449bcb4a6728b9b # v3
+        with:
+          category: /language:javascript-typescript
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - name: Install production dependency graph only
+        run: npm ci --omit=dev --ignore-scripts
+      - name: Create production dependency SARIF
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # v0.36.0, Trivy v0.73.0
+        with:
+          scan-type: fs
+          scan-ref: node_modules
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+          format: sarif
+          output: trivy-dependencies.sarif
+          limit-severities-for-sarif: true
+      - name: Gate production dependencies
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # v0.36.0, Trivy v0.73.0
+        with:
+          scan-type: fs
+          scan-ref: node_modules
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+      - name: Create repository security SARIF
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # v0.36.0, Trivy v0.73.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          skip-dirs: samples/iac-review
+          trivyignores: .trivyignore.yaml
+          scanners: secret,misconfig
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+          format: sarif
+          output: trivy-repository.sarif
+          limit-severities-for-sarif: true
+      - name: Gate repository secrets and IaC
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # v0.36.0, Trivy v0.73.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          skip-dirs: samples/iac-review
+          trivyignores: .trivyignore.yaml
+          scanners: secret,misconfig
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          format: table
+      - name: Publish Trivy dependency results
+        if: always() && hashFiles('trivy-dependencies.sarif') != ''
+        uses: github/codeql-action/upload-sarif@c4dd10e44af883a891fe31ced449bcb4a6728b9b # v3
+        with:
+          sarif_file: trivy-dependencies.sarif
+          category: trivy-production-dependencies
+      - name: Publish Trivy repository results
+        if: always() && hashFiles('trivy-repository.sarif') != ''
+        uses: github/codeql-action/upload-sarif@c4dd10e44af883a891fe31ced449bcb4a6728b9b # v3
+        with:
+          sarif_file: trivy-repository.sarif
+          category: trivy-repository

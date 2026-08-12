@@ -44,6 +44,8 @@ governance** until the priority-zero exit criteria are met.
 | [Security test plan](SECURITY_TEST_PLAN.md) | Automated and manual validation required before production |
 | [August 3 implementation update](SECURITY_UPDATE_2026-08-03.md) | Implemented controls, evidence, residual work, and remaining release blockers |
 | [August 9 Bedrock security review](SECURITY_UPDATE_2026-08-09.md) | AI trust boundaries, adversarial findings, exploit chains, controls, residual risk, and tests |
+| [August 11 remediation update](SECURITY_UPDATE_2026-08-11.md) | Sanitized application, AWS edge, data-governance, and CI remediation status |
+| [Aurora recovery drill](AURORA_RESTORE_DRILL.md) | Change-controlled point-in-time restore and evidence procedure |
 | [Repository security policy](../../SECURITY.md) | Private reporting and secret-handling expectations |
 
 ## How to use these documents

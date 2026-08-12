@@ -86,6 +86,18 @@ test("uses separate generated secrets and resource-scoped KMS permissions", asyn
   assert.match(template, /SourceOrganizationId/);
   assert.match(template, /aws:ResourceOrgID: !Ref SourceOrganizationId/);
   assert.match(template, /WebEgressToFileSystem/);
+  assert.match(template, /WebPrivateSubnet:/);
+  assert.match(template, /WebPrivateSubnetB:/);
+  assert.match(template, /WebNatGateway:/);
+  assert.match(template, /NatGatewayId: !Ref WebNatGateway/);
+  assert.match(template, /WebInstance:[\s\S]*AssociatePublicIpAddress: false[\s\S]*SubnetId: !Ref WebPrivateSubnet/);
+  assert.match(template, /OriginLoadBalancer:[\s\S]*Scheme: internal[\s\S]*!Ref WebPrivateSubnetB/);
+  assert.match(template, /PrivateWebVpcOrigin:[\s\S]*Type: AWS::CloudFront::VpcOrigin/);
+  assert.match(template, /VpcOriginConfig:[\s\S]*VpcOriginId: !GetAtt PrivateWebVpcOrigin.Id/);
+  assert.match(template, /PublicCertificate:[\s\S]*ValidationMethod: DNS/);
+  assert.match(template, /OriginCertificate:[\s\S]*ValidationMethod: DNS/);
+  assert.doesNotMatch(template, /OriginLoadBalancer:[\s\S]*Scheme: internet-facing/);
+  assert.doesNotMatch(template, /MapPublicIpOnLaunch: true/);
   assert.doesNotMatch(template, /Description: AWS APIs, package repositories, and container registry[\s\S]*IpProtocol: "-1"/);
 });
 
@@ -99,7 +111,9 @@ test("builds a minimal digest-pinned standalone production image without a devel
 
   assert.match(dockerfile, /ARG NODE_RUNTIME_IMAGE/);
   assert.equal((dockerfile.match(/FROM \$\{NODE_RUNTIME_IMAGE\}/g) ?? []).length, 2);
-  assert.match(dockerfile, /npm ci --omit=dev/);
+  assert.match(dockerfile, /\/runtime-deps[\s\S]*npm ci --omit=dev/);
+  assert.match(dockerfile, /COPY --from=build --chown=node:node \/runtime-deps\/node_modules \.\/node_modules/);
+  assert.match(dockerfile, /rm -rf \/usr\/local\/lib\/node_modules\/npm/);
   assert.doesNotMatch(dockerfile, /--inspector/);
   assert.doesNotMatch(dockerfile, /wrangler dev|vinext start/);
   assert.match(dockerfile, /CMD \["node", "server\.js"\]/);
@@ -168,7 +182,8 @@ test("release CI scans the final image and emits SBOM and signed provenance", as
 
   assert.match(workflow, /NODE_RUNTIME_IMAGE: node:22-bookworm-slim@sha256:[a-f0-9]{64}/);
   assert.match(workflow, /docker buildx build[\s\S]*--platform linux\/arm64[\s\S]*infrastructure\/aws-web\/Dockerfile/);
-  assert.match(workflow, /docker\/setup-qemu-action@[a-f0-9]{40}/);
+  assert.match(workflow, /runs-on: ubuntu-24\.04-arm/);
+  assert.doesNotMatch(workflow, /docker\/setup-qemu-action/);
   assert.match(workflow, /docker\/setup-buildx-action@[a-f0-9]{40}/);
   assert.match(workflow, /image-ref: \$\{\{ env\.RELEASE_IMAGE \}\}/);
   assert.match(workflow, /severity: CRITICAL,HIGH/);

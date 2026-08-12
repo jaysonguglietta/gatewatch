@@ -261,6 +261,54 @@ Resources:
         - Key: DataClassification
           Value: SecurityConfiguration
 
+  CollectorMessagingKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Encrypts Gatewatch collector dead letters and alarm notifications.
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableAccountIAMPolicies
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+          - Sid: AllowEventBridgeDeadLetterEncryption
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/*
+          - Sid: AllowCloudWatchAlarmEncryption
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:*
+      Tags:
+        - Key: Application
+          Value: Gatewatch
+        - Key: DataClassification
+          Value: SecurityOperations
+
   SnapshotBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -354,6 +402,12 @@ Resources:
                 Effect: Allow
                 Action: sqs:SendMessage
                 Resource: !GetAtt InvocationDeadLetterQueue.Arn
+              - Sid: EncryptFailedAsyncInvocations
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt CollectorMessagingKey.Arn
               - Sid: PublishOperationalMetrics
                 Effect: Allow
                 Action: cloudwatch:PutMetricData
@@ -1553,7 +1607,8 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       MessageRetentionPeriod: 1209600
-      SqsManagedSseEnabled: true
+      KmsMasterKeyId: !GetAtt CollectorMessagingKey.Arn
+      KmsDataKeyReusePeriodSeconds: 300
       Tags:
         - Key: Application
           Value: Gatewatch
@@ -1603,7 +1658,7 @@ Resources:
   CollectorAlarmTopic:
     Type: AWS::SNS::Topic
     Properties:
-      KmsMasterKeyId: alias/aws/sns
+      KmsMasterKeyId: !GetAtt CollectorMessagingKey.Arn
       Tags:
         - Key: Application
           Value: Gatewatch
