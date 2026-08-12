@@ -190,6 +190,9 @@ test("release CI scans the final image and emits SBOM and signed provenance", as
   assert.match(workflow, /image-ref: \$\{\{ env\.RELEASE_IMAGE \}\}/);
   assert.match(workflow, /severity: CRITICAL,HIGH/);
   assert.match(workflow, /format: cyclonedx/);
+  assert.match(workflow, /Install checksum-pinned Trivy scanner/);
+  assert.match(workflow, /13833d97e8a1a5367471c372a173180157f593bece570e20d5d925fef552f5dd/);
+  assert.equal((workflow.match(/skip-setup-trivy: true/g) ?? []).length, 2);
   assert.match(workflow, /actions\/attest-build-provenance@[a-f0-9]{40}/);
   assert.doesNotMatch(workflow, /uses: [^\n]+@(v\d+|master)\s*$/m);
 });
