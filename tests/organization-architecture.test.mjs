@@ -110,7 +110,8 @@ test("mutating workflows use the centralized permission matrix", async () => {
   assert.match(server, /remediation\.write/);
   assert.match(findings, /requirePermission\(request, "findings\.triage"\)/);
   assert.match(reviews, /requirePermission\(request, "reviews\.write"\)/);
-  assert.match(governance, /requirePermission\(request, "governance\.write"\)/);
+  assert.match(governance, /"governance\.review"/);
+  assert.match(governance, /"governance\.manage"/);
   assert.match(intelligence, /requirePermission\(request, "intelligence\.write"\)/);
   assert.match(remediations, /requirePermission\(request, "remediation\.write"\)/);
 });

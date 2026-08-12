@@ -362,7 +362,12 @@ async function requestAiAnalysis(mode: AiAnalysisMode, findings: DailyFinding[],
   const response = await fetch("/api/ai/analysis", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action: "analyze", mode, findings, question }),
+    body: JSON.stringify({
+      action: "analyze",
+      mode,
+      fingerprints: findings.map((finding) => finding.fingerprint),
+      question,
+    }),
   });
   const payload = await response.json() as { analysis?: AiAnalysisEnvelope; error?: string };
   if (!response.ok || !payload.analysis) throw new Error(payload.error ?? "AI analysis could not be completed.");

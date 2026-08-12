@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { HttpInputError, readBoundedJson } from "../../../lib/http-security";
 import { requireAdmin, requirePermission } from "../../../lib/server-admin";
 
 type ReviewInput = {
@@ -215,14 +216,7 @@ export async function POST(request: Request) {
     if (!permission.allowed) {
       return json({ error: "Analyst or reviewer access is required to change reviews." }, 403);
     }
-    const contentLength = Number(request.headers.get("content-length") ?? "0");
-    if (contentLength > 20_000) {
-      return json({ error: "The review payload is too large." }, 413);
-    }
-    if (!request.headers.get("content-type")?.startsWith("application/json")) {
-      return json({ error: "Content-Type must be application/json." }, 415);
-    }
-    const payload = (await request.json()) as ReviewInput;
+    const payload = await readBoundedJson<ReviewInput>(request, 20_000);
     const resourceKey = cleanText(payload.resourceKey, 600);
     const securityGroupId = cleanText(payload.securityGroupId, 80);
     const accountId = cleanText(payload.accountId, 20);
@@ -362,9 +356,7 @@ export async function POST(request: Request) {
 
     return json({ review }, 201);
   } catch (error) {
-    if (error instanceof SyntaxError) {
-      return json({ error: "Request body must be valid JSON." }, 400);
-    }
+    if (error instanceof HttpInputError) return json({ error: error.message }, error.status);
     return json({ error: "The review could not be saved. Try again." }, 503);
   }
 }
