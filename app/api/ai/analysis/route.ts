@@ -14,7 +14,12 @@ import {
   type AiSecurityAnalysis,
 } from "../../../../lib/ai-security-analyst";
 import { callBedrockBridge, bedrockBridgeStatus } from "../../../../lib/bedrock-bridge";
-import type { DailyFinding } from "../../../../lib/daily-findings";
+import {
+  findingCatalogForGroups,
+  type DailyFinding,
+} from "../../../../lib/daily-findings";
+import { loadAwsInventory } from "../../../../lib/aws-inventory";
+import { HttpInputError, readBoundedJson } from "../../../../lib/http-security";
 import { translateNaturalLanguageHunt } from "../../../../lib/security-group-triage";
 import {
   apiJson,
@@ -96,34 +101,49 @@ async function ensureSchema() {
   ]);
 }
 
-async function boundedJson(request: Request) {
-  const declared = Number(request.headers.get("content-length") ?? "0");
-  if (!request.headers.get("content-type")?.startsWith("application/json")) throw new Response("Unsupported media type", { status: 415 });
-  if (declared > MAX_AI_REQUEST_BYTES) throw new Response("Request too large", { status: 413 });
-  const text = await request.text();
-  if (new TextEncoder().encode(text).byteLength > MAX_AI_REQUEST_BYTES) throw new Response("Request too large", { status: 413 });
-  return JSON.parse(text) as Record<string, unknown>;
-}
-
 async function sha256(value: string) {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function validFinding(value: unknown): value is DailyFinding {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const finding = value as Record<string, unknown>;
-  const evidence = finding.evidence as Record<string, unknown> | undefined;
-  return typeof finding.fingerprint === "string"
-    && typeof finding.securityGroupArn === "string"
-    && typeof finding.securityGroupId === "string"
-    && typeof finding.accountId === "string"
-    && typeof finding.region === "string"
-    && typeof finding.ruleSummary === "string"
-    && Array.isArray(finding.attachments)
-    && Boolean(evidence)
-    && Array.isArray(evidence?.sources)
-    && Array.isArray(evidence?.limitations);
+async function canonicalFindings(value: unknown) {
+  const raw = Array.isArray(value) ? value : value ? [value] : [];
+  const fingerprints = [...new Set(
+    raw.map((item) => String(item ?? "").trim().slice(0, 200)).filter(Boolean),
+  )].slice(0, MAX_AI_FINDINGS + 1);
+  if (!fingerprints.length || fingerprints.length > MAX_AI_FINDINGS) return null;
+
+  const inventory = await loadAwsInventory();
+  const catalog = findingCatalogForGroups(inventory.groups, {
+    live: true,
+    snapshotId: inventory.source.snapshotId,
+  });
+  const byFingerprint = new Map<string, DailyFinding>();
+  for (const finding of catalog) {
+    const canonical: DailyFinding = {
+      ...finding,
+      status: "new",
+      assignee: finding.owner || "Unassigned",
+      note: "",
+      ticketRef: "",
+      dueAt: "",
+      expiresAt: "",
+      compensatingControls: [],
+      reviewer: "",
+      updatedAt: finding.lastObserved,
+      reasonCode: "",
+      nextReviewAt: "",
+      approver: "",
+      resolutionEvidence: "",
+      lastSeenAt: finding.lastObserved,
+      observationCount: 1,
+      observationState: "active",
+    };
+    byFingerprint.set(finding.fingerprint, canonical);
+    byFingerprint.set(finding.legacyFingerprint, canonical);
+  }
+  const findings = fingerprints.map((fingerprint) => byFingerprint.get(fingerprint));
+  return findings.every(Boolean) ? findings as DailyFinding[] : [];
 }
 
 function fallbackHunt(question: string, finding: DailyFinding): AiSecurityAnalysis {
@@ -213,7 +233,7 @@ export async function POST(request: Request) {
     if (!permission.allowed) return apiJson({ error: "Analyst access is required for AI analysis." }, 403);
     if (!sameOrigin(request)) return apiJson({ error: "Origin is not allowed." }, 403);
     await ensureSchema();
-    const input = await boundedJson(request);
+    const input = await readBoundedJson(request, MAX_AI_REQUEST_BYTES);
     const action = String(input.action ?? "analyze");
     if (action === "feedback") {
       const analysisId = String(input.analysisId ?? "").slice(0, 100);
@@ -229,12 +249,13 @@ export async function POST(request: Request) {
     }
     const mode = String(input.mode ?? "finding") as AiAnalysisMode;
     if (!allowedModes.has(mode)) return apiJson({ error: "Choose a supported AI analysis mode." }, 400);
-    const findings = (Array.isArray(input.findings) ? input.findings : input.finding ? [input.finding] : []).slice(0, MAX_AI_FINDINGS);
-    if (!findings.length || findings.length > MAX_AI_FINDINGS || !findings.every(validFinding)) return apiJson({ error: `Provide between 1 and ${MAX_AI_FINDINGS} valid consolidated findings.` }, 400);
+    const findings = await canonicalFindings(input.fingerprints ?? input.fingerprint);
+    if (findings === null) return apiJson({ error: `Provide between 1 and ${MAX_AI_FINDINGS} finding fingerprints.` }, 400);
+    if (!findings.length) return apiJson({ error: "One or more findings are no longer present in the canonical Gatewatch inventory." }, 409);
     const question = String(input.question ?? "").replace(/[\u0000-\u001F\u007F]/g, " ").trim().slice(0, 500);
     if (mode === "hunt" && !question) return apiJson({ error: "Describe the security-group hunt to translate." }, 400);
     const status = await bedrockBridgeStatus();
-    const packages = (findings as DailyFinding[]).map(buildAiEvidencePackage);
+    const packages = findings.map(buildAiEvidencePackage);
     const evidenceHash = await sha256(JSON.stringify({ mode, packages, question, promptVersion: AI_PROMPT_VERSION, modelId: status.modelId, guardrailVersion: status.guardrailVersion }));
     const cached = await env.DB.prepare(`SELECT id, fingerprint, mode, evidence_hash AS evidenceHash, source, model_id AS modelId, result_json AS resultJson, input_tokens AS inputTokens, output_tokens AS outputTokens, latency_ms AS latencyMs, guardrail_action AS guardrailAction, guardrail_trace_id AS guardrailTraceId, generated_at AS generatedAt, expires_at AS expiresAt FROM ai_analyses WHERE workspace_id = 'default' AND mode = ? AND evidence_hash = ? AND prompt_version = ? AND expires_at > datetime('now') LIMIT 1`).bind(mode, evidenceHash, AI_PROMPT_VERSION).first<AnalysisRow>();
     if (cached) return apiJson({ analysis: envelope(cached, true, status.guardrailConfigured) });
@@ -258,12 +279,12 @@ export async function POST(request: Request) {
       guardrail = result.guardrail;
     } catch (error) {
       console.warn("Bedrock analysis fell back to deterministic guidance", error instanceof Error ? error.message : "unknown");
-      analysis = fallbackFor(mode, findings as DailyFinding[], question);
+      analysis = fallbackFor(mode, findings, question);
       modelUsage.latencyMs = Date.now() - started;
       guardrail.action = "fallback";
     }
     const id = `aia-${evidenceHash.slice(0, 24)}`;
-    const fingerprint = mode === "finding" || mode === "remediation" ? String((findings[0] as DailyFinding).fingerprint).slice(0, 200) : "";
+    const fingerprint = mode === "finding" || mode === "remediation" ? findings[0].fingerprint.slice(0, 200) : "";
     const generatedAt = new Date().toISOString();
     const expiresAt = new Date(Date.now() + (source === "bedrock" ? cacheDays * 86_400_000 : 5 * 60_000)).toISOString();
     await env.DB.batch([
@@ -274,7 +295,7 @@ export async function POST(request: Request) {
     const row: AnalysisRow = { id, fingerprint, mode, evidenceHash, source, modelId, resultJson: JSON.stringify(analysis), inputTokens: modelUsage.inputTokens, outputTokens: modelUsage.outputTokens, latencyMs: modelUsage.latencyMs, guardrailAction: guardrail.action, guardrailTraceId: guardrail.traceId, generatedAt, expiresAt };
     return apiJson({ analysis: envelope(row, false, guardrail.configured) });
   } catch (error) {
-    if (error instanceof Response) return apiJson({ error: error.status === 413 ? "The AI analysis request is too large." : "Content-Type must be application/json." }, error.status);
+    if (error instanceof HttpInputError) return apiJson({ error: error.message }, error.status);
     console.error("AI analysis request failed", error instanceof Error ? error.name : "UnknownError");
     return apiJson({ error: "AI analysis could not be completed. Deterministic findings remain available." }, 503);
   }

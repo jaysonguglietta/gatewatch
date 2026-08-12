@@ -16,6 +16,7 @@ import {
   configuredAwsInventory,
   loadAwsInventory,
 } from "../../../lib/aws-inventory";
+import { HttpInputError, readBoundedJson } from "../../../lib/http-security";
 import {
   apiJson,
   audit,
@@ -662,31 +663,6 @@ async function applyAccountCatalog(catalog: FindingCatalogItem[]) {
   }
 }
 
-async function parseBoundedJson(request: Request) {
-  const contentType = request.headers.get("content-type") ?? "";
-  if (!contentType.startsWith("application/json")) {
-    throw new Response(
-      JSON.stringify({ error: "Content-Type must be application/json." }),
-      { status: 415, headers: { "content-type": "application/json" } },
-    );
-  }
-  const declaredLength = Number(request.headers.get("content-length") ?? "0");
-  if (declaredLength > 50_000) {
-    throw new Response(JSON.stringify({ error: "The request is too large." }), {
-      status: 413,
-      headers: { "content-type": "application/json" },
-    });
-  }
-  const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > 50_000) {
-    throw new Response(JSON.stringify({ error: "The request is too large." }), {
-      status: 413,
-      headers: { "content-type": "application/json" },
-    });
-  }
-  return JSON.parse(body) as Record<string, unknown>;
-}
-
 export async function GET(request: Request) {
   try {
     const user = requestUser(request);
@@ -1031,7 +1007,7 @@ export async function POST(request: Request) {
     if (!sameOrigin(request)) return apiJson({ error: "Origin is not allowed." }, 403);
     await ensureSchema();
     await reopenExpiredExceptions();
-    const input = await parseBoundedJson(request);
+    const input = await readBoundedJson(request, 50_000);
     const current = await currentCatalog();
     const catalog = current.catalog;
     const action = cleanText(input.action, 30);
@@ -1468,10 +1444,7 @@ export async function POST(request: Request) {
     );
     return apiJson({ updated: fingerprints.length, undoToken, undoExpiresAt });
   } catch (error) {
-    if (error instanceof Response) return error;
-    if (error instanceof SyntaxError) {
-      return apiJson({ error: "Request body must be valid JSON." }, 400);
-    }
+    if (error instanceof HttpInputError) return apiJson({ error: error.message }, error.status);
     return apiJson({ error: "The findings workflow could not be saved." }, 503);
   }
 }

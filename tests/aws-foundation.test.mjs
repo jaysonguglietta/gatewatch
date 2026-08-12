@@ -69,15 +69,16 @@ test("ships bounded, duplicate-safe AWS ingestion and backfill infrastructure", 
   assert.match(configParser, /correlateConfigAndCloudTrail/);
 });
 
-test("does not enable the local administrator bypass in production", async () => {
+test("centralizes the local administrator bypass and disables it in production", async () => {
   const [admin, reviews, governance] = await Promise.all([
     source("lib/server-admin.ts"),
     source("app/api/reviews/route.ts"),
     source("app/api/governance/route.ts"),
   ]);
-  for (const implementation of [admin, reviews, governance]) {
-    assert.match(implementation, /process\.env\.NODE_ENV !== "production"/);
-  }
+  assert.match(admin, /process\.env\.NODE_ENV !== "production"/);
+  assert.match(reviews, /requirePermission/);
+  assert.match(governance, /requestUser\(request\)/);
+  assert.doesNotMatch(governance, /local-preview@gatewatch/);
 });
 
 test("collects resource-level security-group attachment evidence", async () => {

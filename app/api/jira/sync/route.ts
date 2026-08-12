@@ -4,7 +4,7 @@ import {
   apiJson,
   audit,
   ensureAdminSchema,
-  requestUser,
+  requirePermission,
   sameOrigin,
 } from "../../../../lib/server-admin";
 
@@ -36,8 +36,8 @@ async function ensureSyncColumns() {
 }
 
 export async function POST(request: Request) {
-  const user = requestUser(request);
-  if (!user) return apiJson({ error: "Authentication is required." }, 401);
+  const authorization = await requirePermission(request, "integrations.sync");
+  if (!authorization.allowed) return apiJson({ error: "Analyst access is required to synchronize Jira." }, 403);
   if (!sameOrigin(request)) return apiJson({ error: "Origin is not allowed." }, 403);
   try {
     await ensureAdminSchema();
@@ -68,7 +68,7 @@ export async function POST(request: Request) {
         ),
       );
     if (statements.length) await env.DB.batch(statements);
-    await audit(user, "jira.synced", "jira-cloud", "default", `Synchronized ${statements.length} Jira issues.`);
+    await audit(authorization.user, "jira.synced", "jira-cloud", "default", `Synchronized ${statements.length} Jira issues.`);
     return apiJson({
       synced: statements.length,
       failed: result.issues.filter((issue) => issue.error).length,

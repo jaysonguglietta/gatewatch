@@ -94,8 +94,3 @@ export function nextMonitorRun(schedule: string, from = new Date()) {
   else next.setUTCDate(next.getUTCDate() + 1);
   return next.toISOString();
 }
-
-export function csvCell(value: unknown) {
-  const text = String(value ?? "");
-  return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-}

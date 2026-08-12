@@ -3,7 +3,6 @@ import { configuredAwsInventory, loadAwsInventory } from "../../../lib/aws-inven
 import {
   accountContextFromGroups,
   accountEnvironments,
-  csvCell,
   defaultRiskWeights,
   exportFormats,
   isSecurityGroupArn,
@@ -12,11 +11,13 @@ import {
   nextMonitorRun,
   securityGroupArn,
 } from "../../../lib/organization-operations";
+import { csvCell } from "../../../lib/csv";
 import { securityGroups, type SecurityGroup } from "../../../lib/security-data";
 import { findingCatalogForGroups } from "../../../lib/daily-findings";
 import { dailyFindingMatchesQuery, parseDailyFindingQuery } from "../../../lib/daily-finding-query";
 import { internetExposureForVerdict } from "../../../lib/finding-exposure";
 import { cleanText } from "../../../lib/admin-sources";
+import { HttpInputError, readBoundedJson } from "../../../lib/http-security";
 import {
   apiJson,
   audit,
@@ -125,17 +126,6 @@ function jsonError(error: unknown, fallback: string) {
 function strings(value: unknown, maxItems = 10) {
   if (!Array.isArray(value)) return [];
   return value.slice(0, maxItems).map((item) => cleanText(item, 160)).filter(Boolean);
-}
-
-async function boundedJson(request: Request) {
-  if (!request.headers.get("content-type")?.startsWith("application/json")) {
-    throw new Response(JSON.stringify({ error: "Content-Type must be application/json." }), { status: 415 });
-  }
-  const declared = Number(request.headers.get("content-length") ?? "0");
-  if (declared > 50_000) throw new Response(JSON.stringify({ error: "The request is too large." }), { status: 413 });
-  const text = await request.text();
-  if (new TextEncoder().encode(text).byteLength > 50_000) throw new Response(JSON.stringify({ error: "The request is too large." }), { status: 413 });
-  return JSON.parse(text) as JsonBody;
 }
 
 function matchesQuery(group: SecurityGroup, query: string) {
@@ -288,7 +278,7 @@ export async function POST(request: Request) {
     if (!sameOrigin(request)) return apiJson({ error: "Origin is not allowed." }, 403);
     if (!request.headers.get("content-type")?.startsWith("application/json")) return apiJson({ error: "Send an application/json request." }, 415);
     await ensureSchema();
-    const body = await boundedJson(request);
+    const body = await readBoundedJson<JsonBody>(request, 50_000);
     const action = cleanText(body.action, 50);
     const adminActions = new Set(["sync-accounts", "account-update", "retention-update", "hold-create", "hold-release", "risk-policy-save", "risk-policy-activate"]);
     const permission = await requirePermission(request, adminActions.has(action) ? "administration.manage" : "intelligence.write");
@@ -511,7 +501,7 @@ export async function POST(request: Request) {
 
     return apiJson({ error: "Choose a supported organization operations action." }, 400);
   } catch (error) {
-    if (error instanceof Response) return new Response(error.body, { status: error.status, headers: { "content-type": "application/json", "cache-control": "no-store, private", "x-content-type-options": "nosniff" } });
+    if (error instanceof HttpInputError) return apiJson({ error: error.message }, error.status);
     return jsonError(error, "The organization operation could not be saved.");
   }
 }
