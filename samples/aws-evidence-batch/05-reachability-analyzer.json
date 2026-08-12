@@ -1,0 +1,53 @@
+{
+  "NetworkInsightsAnalyses": [
+    {
+      "NetworkInsightsAnalysisId": "nia-0a41f2e91b71",
+      "NetworkInsightsAnalysisArn": "arn:aws:ec2:us-east-1:428196730552:network-insights-analysis/nia-0a41f2e91b71",
+      "NetworkInsightsPathId": "nip-0a41f2e91b71",
+      "StartDate": "2026-08-07T12:14:00.000Z",
+      "Status": "succeeded",
+      "NetworkPathFound": true,
+      "ForwardPathComponents": [
+        {
+          "SequenceNumber": 1,
+          "Component": {
+            "Id": "igw-prod"
+          },
+          "InboundHeader": {
+            "Protocol": "6",
+            "SourceAddresses": [
+              "0.0.0.0/0"
+            ],
+            "DestinationAddresses": [
+              "10.20.1.10/32"
+            ],
+            "DestinationPortRanges": [
+              {
+                "From": 22,
+                "To": 22
+              }
+            ]
+          }
+        },
+        {
+          "SequenceNumber": 2,
+          "Component": {
+            "Id": "eni-0a41f2e91b71"
+          },
+          "SecurityGroupRule": {
+            "GroupId": "sg-0a41f2e91b71",
+            "SecurityGroupRuleId": "sgr-8f29",
+            "Direction": "ingress",
+            "Protocol": "tcp",
+            "PortRange": {
+              "From": 22,
+              "To": 22
+            },
+            "Cidr": "0.0.0.0/0"
+          }
+        }
+      ],
+      "ReturnPathComponents": []
+    }
+  ]
+}

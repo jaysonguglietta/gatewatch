@@ -1,0 +1,4 @@
+#Version: 1.0
+#Fields: date time x-edge-location sc-bytes c-ip cs-method cs-host cs-uri-stem sc-status x-edge-request-id x-host-header cs-protocol
+2026-08-07	12:16:10	IAD89-C3	2048	198.51.100.40	POST	d111111abcdef8.cloudfront.net	/authorize	200	cf-synthetic-1	dualstack.payments.example.com	https
+2026-08-07	12:16:11	IAD89-C3	512	203.0.113.99	GET	d111111abcdef8.cloudfront.net	/admin	403	cf-synthetic-2	dualstack.payments.example.com	https

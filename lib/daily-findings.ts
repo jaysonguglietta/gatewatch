@@ -1,6 +1,7 @@
 import {
   securityGroups,
   type ResourceAttachment,
+  type RiskFactor,
   type SecurityGroup,
   type Severity,
 } from "./security-data";
@@ -11,6 +12,7 @@ import {
   evidenceSnapshotJson,
   type EvidenceDescriptor,
 } from "./evidence-model";
+import { securityGroupArn } from "./organization-operations";
 
 export type FindingWorkflowStatus =
   | "new"
@@ -24,6 +26,7 @@ export type FindingCatalogItem = {
   fingerprint: string;
   legacyFingerprint: string;
   canonicalResourceKey: string;
+  securityGroupArn: string;
   findingKey: string;
   title: string;
   securityGroupId: string;
@@ -44,11 +47,37 @@ export type FindingCatalogItem = {
   firstSeenAt: string;
   lastObserved: string;
   ruleSummary: string;
+  ruleId: string;
+  ruleFlows30d: number;
   pathSummary: string;
+  pathStatus: "reachable" | "potential" | "blocked" | "unknown";
+  pathSteps: string[];
+  pathReason: string;
   trafficSummary: string;
+  trafficAccepted30d: number;
+  trafficRejected30d: number;
+  trafficCoverage: number;
   changeSummary: string;
   attachments: ResourceAttachment[];
   recommendation: string;
+  vpcId: string;
+  approvedIntent: string;
+  intentTicket: string;
+  intentStatus: "matched" | "broader-than-intent" | "undocumented" | "temporary";
+  intentJustification: string;
+  intentExpiresAt: string;
+  publicRuleCount: number;
+  policyName: string;
+  policyControl: string;
+  riskFactors: RiskFactor[];
+  projectedRisk: number;
+  changeEventId: string;
+  changeActor: string;
+  changeChannel: string;
+  changeTime: string;
+  changeBefore: string;
+  changeAfter: string;
+  changeApproved: boolean;
   evidenceSnapshot: string;
   evidence: EvidenceDescriptor;
 };
@@ -63,6 +92,10 @@ export type FindingWorkflowState = {
   compensatingControls: string[];
   reviewer: string;
   updatedAt: string;
+  reasonCode: string;
+  nextReviewAt: string;
+  approver: string;
+  resolutionEvidence: string;
   jiraIssueKey?: string;
   jiraIssueUrl?: string;
   jiraRemoteStatus?: string;
@@ -70,7 +103,11 @@ export type FindingWorkflowState = {
   jiraLastSyncedAt?: string;
 };
 
-export type DailyFinding = FindingCatalogItem & FindingWorkflowState;
+export type DailyFinding = FindingCatalogItem & FindingWorkflowState & {
+  lastSeenAt: string;
+  observationCount: number;
+  observationState: "active" | "reopened" | "resolved";
+};
 
 const accountHierarchy: Record<string, { organization: string; ou: string }> = {
   "428196730552": {
@@ -126,6 +163,25 @@ function primaryRule(group: SecurityGroup, findingIndex: number) {
   return findingRules[findingIndex % Math.max(findingRules.length, 1)] ?? group.rules[0];
 }
 
+function policyFor(group: SecurityGroup, rule: SecurityGroup["rules"][number] | undefined) {
+  if (rule?.source === "0.0.0.0/0" || rule?.source === "::/0") {
+    return {
+      name: "Restrict unrestricted network access",
+      control: "GW-SG-001 · CIS AWS 5.2",
+    };
+  }
+  if (group.intent.status === "broader-than-intent") {
+    return {
+      name: "Deployed access must match approved intent",
+      control: "GW-SG-004 · NIST AC-4",
+    };
+  }
+  return {
+    name: "Security groups must follow least privilege",
+    control: "GW-SG-007 · NIST AC-6",
+  };
+}
+
 function catalogItem(
   group: SecurityGroup,
   groupIndex: number,
@@ -154,16 +210,19 @@ function catalogItem(
     : new Date(Date.UTC(2026, 6, 30 - Math.min(ageDays, 29)));
   if (!options.live && ageDays > 29) firstSeen.setUTCMonth(firstSeen.getUTCMonth() - 1);
   const reachablePaths = group.paths.filter((path) => path.status === "reachable");
+  const primaryPath = reachablePaths[0] ?? group.paths.find((path) => path.status === "potential") ?? group.paths[0];
   const observedAt = Number.isNaN(Date.parse(rawObservedAt))
     ? new Date().toISOString()
     : rawObservedAt;
   const evidence = evidenceForGroup(group, options.snapshotId, observedAt);
   const riskScore = Math.max(22, group.riskScore - findingIndex * 7);
+  const policy = policyFor(group, rule);
 
   return {
     fingerprint: canonicalFindingFingerprint(group, title),
     legacyFingerprint: findingFingerprint(group.id, title),
     canonicalResourceKey: canonicalSecurityGroupKey(group),
+    securityGroupArn: securityGroupArn(group),
     findingKey: `${group.id}/${slug(title)}`,
     title,
     securityGroupId: group.id,
@@ -186,13 +245,39 @@ function catalogItem(
     ruleSummary: rule
       ? `${rule.direction} ${rule.protocol}/${rule.ports} from ${rule.source}`
       : `${group.inboundCount} ingress and ${group.outboundCount} egress rules`,
+    ruleId: rule?.id ?? "",
+    ruleFlows30d: rule?.flows30d ?? 0,
     pathSummary: reachablePaths.length
       ? `${reachablePaths.length} confirmed path${reachablePaths.length === 1 ? "" : "s"}; ${reachablePaths[0].source} → ${reachablePaths[0].destination}`
       : "No confirmed path; route evidence is incomplete or blocked",
+    pathStatus: primaryPath?.status ?? "unknown",
+    pathSteps: primaryPath?.hops ?? [],
+    pathReason: primaryPath?.reason ?? "No complete network path evidence was supplied.",
     trafficSummary: `${group.traffic.accepted30d.toLocaleString()} accepted flows over 30 days · ${group.traffic.coverage}% coverage`,
+    trafficAccepted30d: group.traffic.accepted30d,
+    trafficRejected30d: group.traffic.rejected30d,
+    trafficCoverage: group.traffic.coverage,
     changeSummary: `${group.change.eventName} by ${group.change.actor} through ${group.change.channel} · ${group.change.time}`,
     attachments: group.attachments,
     recommendation: group.recommendation,
+    vpcId: group.vpc,
+    approvedIntent: group.intent.approvedAccess,
+    intentTicket: group.intent.ticket,
+    intentStatus: group.intent.status,
+    intentJustification: group.intent.justification,
+    intentExpiresAt: group.intent.expiresAt ?? "",
+    publicRuleCount: group.publicRules,
+    policyName: policy.name,
+    policyControl: policy.control,
+    riskFactors: group.riskFactors,
+    projectedRisk: Math.min(riskScore, group.projectedRisk),
+    changeEventId: group.change.eventId,
+    changeActor: group.change.actor,
+    changeChannel: group.change.channel,
+    changeTime: group.change.time,
+    changeBefore: group.change.before,
+    changeAfter: group.change.after,
+    changeApproved: group.change.approved,
     evidenceSnapshot: evidenceSnapshotJson(group, evidence, riskScore),
     evidence,
   };

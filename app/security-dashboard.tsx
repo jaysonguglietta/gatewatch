@@ -19,6 +19,7 @@ import {
   CircleCheck,
   Clock3,
   CloudCog,
+  Copy,
   Crown,
   Database,
   Download,
@@ -55,7 +56,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   policyChecks,
   securityGroups,
@@ -84,14 +85,39 @@ import {
   type Campaign,
 } from "../lib/governance-data";
 import {
+  readAwsEvidenceFile,
+  parseAwsEvidenceText,
+  type AwsEvidenceImportResult,
+} from "../lib/aws-evidence-import";
+import {
   parseCloudTrailText,
   readCloudTrailFile,
   type CloudTrailImportResult,
   type ImportedCloudTrailEvent,
 } from "../lib/cloudtrail-import";
+import {
+  consolidateAwsEvidence,
+  detectAwsEvidenceText,
+  type BatchEvidenceFile,
+  type ConsolidatedSecurityGroupFinding,
+} from "../lib/aws-evidence-batch";
+import {
+  filterAndSortFindings,
+  groupConsolidatedFindings,
+  type FindingGroup,
+  type FindingSort,
+} from "../lib/aws-evidence-finding-view";
+import {
+  sourceTypeDefinition,
+  sourceTypeDefinitions,
+  type SourceType,
+} from "../lib/admin-sources";
+import { csvDocument } from "../lib/csv";
 import AdminView from "./admin-view";
 import DailyFindingsView from "./daily-findings-view";
 import ReportingView from "./reporting-view";
+import OrganizationOperationsView from "./organization-operations-view";
+import OrganizationCoveragePanel from "./organization-coverage-panel";
 import {
   DriftInboxView,
   ExposureIntelligenceView,
@@ -118,7 +144,8 @@ type View =
   | "recommendations"
   | "drift"
   | "ownership"
-  | "metrics";
+  | "metrics"
+  | "operations";
 
 type DrawerTab = "evidence" | "connectivity" | "change" | "risk";
 
@@ -251,8 +278,6 @@ export default function SecurityDashboard() {
   const [inventorySource, setInventorySource] =
     useState<AwsInventorySource | null>(null);
   const [, setInventoryRevision] = useState(0);
-  const [cloudTrailImport, setCloudTrailImport] =
-    useState<CloudTrailSessionImport | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -503,11 +528,7 @@ export default function SecurityDashboard() {
       group.change.channel,
       group.findings.join("; "),
     ]);
-    const csv = [headers, ...rows]
-      .map((row) =>
-        row.map((value) => `"${value.replaceAll('"', '""')}"`).join(","),
-      )
-      .join("\n");
+    const csv = csvDocument([headers, ...rows]);
     const url = URL.createObjectURL(
       new Blob([csv], { type: "text/csv;charset=utf-8" }),
     );
@@ -525,36 +546,64 @@ export default function SecurityDashboard() {
     void refreshInventory(true, true);
   }
 
-  const investigateNav = [
-    { id: "inventory" as View, label: "Daily findings", icon: ShieldAlert },
-    { id: "overview" as View, label: "Broad access", icon: Gauge },
-    { id: "exposure" as View, label: "Exposure intelligence", icon: Zap },
-    { id: "access" as View, label: "Access explorer", icon: Search },
-    { id: "connectivity" as View, label: "Path evidence", icon: Route },
-    { id: "activity" as View, label: "Connectivity history", icon: History },
-  ];
-  const governNav = [
-    { id: "applications" as View, label: "Applications", icon: Crown },
-    { id: "ownership" as View, label: "Owner governance", icon: Users },
-    { id: "policies" as View, label: "Access policies", icon: BookOpenCheck },
+  const navigationGroups = [
     {
-      id: "reviews" as View,
-      label: "Review queue",
-      icon: FileCheck2,
-      count: reviewQueue.length,
+      id: "findings",
+      label: "Findings",
+      icon: ShieldAlert,
+      items: [
+        { id: "inventory" as View, label: "Daily findings", icon: FileCheck2 },
+        { id: "overview" as View, label: "Broad access", icon: Gauge },
+        { id: "exposure" as View, label: "Exposure intelligence", icon: Zap },
+        { id: "drift" as View, label: "Drift inbox", icon: AlertTriangle },
+        { id: "recommendations" as View, label: "Recommendations", icon: Sparkles },
+      ],
     },
-    { id: "campaigns" as View, label: "Campaigns", icon: CalendarCheck2 },
+    {
+      id: "inventory",
+      label: "Inventory",
+      icon: Database,
+      items: [
+        { id: "access" as View, label: "Access explorer", icon: Search },
+        { id: "connectivity" as View, label: "Path evidence", icon: Route },
+        { id: "activity" as View, label: "Connectivity history", icon: History },
+        { id: "sources" as View, label: "Organization coverage", icon: CloudCog },
+      ],
+    },
+    {
+      id: "governance",
+      label: "Governance",
+      icon: BookOpenCheck,
+      items: [
+        { id: "applications" as View, label: "Applications", icon: Crown },
+        { id: "ownership" as View, label: "Owner governance", icon: Users },
+        { id: "policies" as View, label: "Access policies", icon: BookOpenCheck },
+        { id: "reviews" as View, label: "Review queue", icon: FileCheck2, count: reviewQueue.length },
+        { id: "campaigns" as View, label: "Campaigns", icon: CalendarCheck2 },
+        { id: "remediation" as View, label: "Remediation", icon: Target },
+      ],
+    },
+    {
+      id: "reports",
+      label: "Reports",
+      icon: FileBarChart,
+      items: [
+        { id: "operations" as View, label: "Organization operations", icon: CloudCog },
+        { id: "metrics" as View, label: "Detailed reports", icon: FileBarChart },
+        { id: "cloudtrail" as View, label: "AWS log imports", icon: UploadCloud },
+        { id: "handoffs" as View, label: "AWS handoffs", icon: FileCode2 },
+      ],
+    },
+    {
+      id: "administration",
+      label: "Administration",
+      icon: Settings,
+      items: [{ id: "admin" as View, label: "Admin configuration", icon: Settings }],
+    },
   ];
-  const operateNav = [
-    { id: "recommendations" as View, label: "Recommendations", icon: Sparkles },
-    { id: "drift" as View, label: "Drift inbox", icon: AlertTriangle },
-    { id: "remediation" as View, label: "Remediation", icon: Target },
-    { id: "metrics" as View, label: "Detailed reports", icon: FileBarChart },
-    { id: "cloudtrail" as View, label: "Import CloudTrail", icon: UploadCloud },
-    { id: "handoffs" as View, label: "AWS handoffs", icon: FileCode2 },
-    { id: "sources" as View, label: "Coverage", icon: CloudCog },
-    { id: "admin" as View, label: "Admin config", icon: Settings },
-  ];
+  const activeNavigationGroup = navigationGroups.find((group) =>
+    group.items.some((item) => item.id === view),
+  ) ?? navigationGroups[0];
 
   return (
     <div className="app-shell">
@@ -573,47 +622,19 @@ export default function SecurityDashboard() {
         </div>
 
         <nav className="primary-nav">
-          <p className="nav-label">Investigate</p>
-          {investigateNav.map((item) => {
-            const Icon = item.icon;
+          <p className="nav-label">Workspace</p>
+          {navigationGroups.map((group) => {
+            const Icon = group.icon;
             return (
-              <button
-                key={item.id}
-                className={view === item.id ? "active" : ""}
-                onClick={() => navigate(item.id)}
-              >
-                <Icon size={18} />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
-          <p className="nav-label nav-label-spaced">Govern</p>
-          {governNav.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.id}
-                className={view === item.id ? "active" : ""}
-                onClick={() => navigate(item.id)}
-              >
-                <Icon size={18} />
-                <span>{item.label}</span>
-                {item.count ? <em>{item.count}</em> : null}
-              </button>
-            );
-          })}
-          <p className="nav-label nav-label-spaced">Operate</p>
-          {operateNav.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.id}
-                className={view === item.id ? "active" : ""}
-                onClick={() => navigate(item.id)}
-              >
-                <Icon size={18} />
-                <span>{item.label}</span>
-              </button>
+              <div className="nav-workspace-group" key={group.id}>
+                <button className={activeNavigationGroup.id === group.id ? "active workspace-active" : ""} onClick={() => navigate(group.items[0].id)} aria-expanded={activeNavigationGroup.id === group.id}>
+                  <Icon size={18} /><span>{group.label}</span><ChevronRight size={14} />
+                </button>
+                {activeNavigationGroup.id === group.id ? <div className="nav-context-items">{group.items.map((item) => {
+                  const ItemIcon = item.icon;
+                  return <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => navigate(item.id)}><ItemIcon size={15} /><span>{item.label}</span>{"count" in item && item.count ? <em>{item.count}</em> : null}</button>;
+                })}</div> : null}
+              </div>
             );
           })}
         </nav>
@@ -779,9 +800,7 @@ export default function SecurityDashboard() {
             />
           ) : null}
           {view === "cloudtrail" ? (
-            <CloudTrailImportView
-              imported={cloudTrailImport}
-              setImported={setCloudTrailImport}
+            <AwsEvidenceBatchImportView
               onSelect={setSelectedGroup}
               onToast={setToast}
             />
@@ -808,6 +827,9 @@ export default function SecurityDashboard() {
           ) : null}
           {view === "metrics" ? (
             <ReportingView onToast={setToast} />
+          ) : null}
+          {view === "operations" ? (
+            <OrganizationOperationsView onToast={setToast} />
           ) : null}
         </div>
       </main>
@@ -1028,13 +1050,7 @@ function BroadRulesPanel({
         String(item.group.riskScore),
       ]),
     ];
-    const csv = rows
-      .map((row) =>
-        row
-          .map((value) => `"${value.replaceAll('"', '""')}"`)
-          .join(","),
-      )
-      .join("\n");
+    const csv = csvDocument(rows);
     downloadText(
       `gatewatch-broad-rules-${new Date().toISOString().slice(0, 10)}.csv`,
       csv,
@@ -3996,6 +4012,489 @@ function RemediationView({
   );
 }
 
+async function fileSha256(file: File) {
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+function findingDate(value: string) {
+  if (!value) return "Time unavailable";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function AwsEvidenceBatchImportView({
+  onSelect,
+  onToast,
+}: {
+  onSelect: (group: SecurityGroup) => void;
+  onToast: (message: string) => void;
+}) {
+  const [files, setFiles] = useState<BatchEvidenceFile[]>([]);
+  const [dragging, setDragging] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [batchError, setBatchError] = useState("");
+  const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
+  const [accountFilter, setAccountFilter] = useState("");
+  const [regionFilter, setRegionFilter] = useState("");
+  const [severityFilter, setSeverityFilter] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("");
+  const [evidenceClassFilter, setEvidenceClassFilter] = useState("");
+  const [groupBy, setGroupBy] = useState<FindingGroup>("account-region");
+  const [sortBy, setSortBy] = useState<FindingSort>("risk-desc");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [selectedKey, setSelectedKey] = useState("");
+  const batch = useMemo(() => consolidateAwsEvidence(files, securityGroups), [files]);
+  const accounts = useMemo(() => [...new Set(batch.findings.map((finding) => finding.accountId).filter(Boolean))].sort(), [batch.findings]);
+  const regions = useMemo(() => [...new Set(batch.findings.map((finding) => finding.region).filter(Boolean))].sort(), [batch.findings]);
+  const sources = useMemo(() => [...new Set(batch.findings.flatMap((finding) => finding.sources))].sort(), [batch.findings]);
+  const evidenceClasses = useMemo(() => [...new Set(batch.findings.flatMap((finding) => finding.evidenceClasses))].sort(), [batch.findings]);
+  const filteredFindings = useMemo(() => filterAndSortFindings(batch.findings, {
+    query: deferredQuery,
+    accountId: accountFilter,
+    region: regionFilter,
+    severity: severityFilter,
+    source: sourceFilter,
+    evidenceClass: evidenceClassFilter,
+    sort: sortBy,
+  }), [accountFilter, batch.findings, deferredQuery, evidenceClassFilter, regionFilter, severityFilter, sortBy, sourceFilter]);
+  const pageCount = Math.max(1, Math.ceil(filteredFindings.length / pageSize));
+  const currentPage = Math.min(page, pageCount);
+  const pageFindings = filteredFindings.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const groupedFindings = useMemo(() => groupConsolidatedFindings(pageFindings, groupBy), [groupBy, pageFindings]);
+  const selectedFinding = pageFindings.find((finding) => finding.key === selectedKey)
+    ?? pageFindings[0]
+    ?? null;
+  const importedFiles = files.filter((file) => file.status === "imported");
+  const duplicateFiles = files.filter((file) => file.status === "duplicate").length;
+  const rejectedFiles = files.filter((file) => file.status === "rejected").length;
+  const sourceCount = new Set(importedFiles.map((file) => file.sourceType)).size;
+  const activeFilterCount = [query, accountFilter, regionFilter, severityFilter, sourceFilter, evidenceClassFilter].filter(Boolean).length;
+
+  function clearFindingFilters() {
+    setQuery("");
+    setAccountFilter("");
+    setRegionFilter("");
+    setSeverityFilter("");
+    setSourceFilter("");
+    setEvidenceClassFilter("");
+    setPage(1);
+  }
+
+  async function processFiles(selected: File[]) {
+    setBatchError("");
+    if (!selected.length) return;
+    if (selected.length > 30) {
+      setBatchError("Import at most 30 AWS evidence files in one selection.");
+      return;
+    }
+    if (files.length + selected.length > 60) {
+      setBatchError("This session supports at most 60 files. Clear the session or remove files before adding more.");
+      return;
+    }
+    const totalBytes = selected.reduce((sum, file) => sum + file.size, 0);
+    if (totalBytes > 150 * 1024 * 1024) {
+      setBatchError("The selected batch is larger than 150 MB compressed. Split it into smaller batches.");
+      return;
+    }
+    setProcessing(true);
+    const knownDigests = new Set(files.map((file) => file.digest).filter(Boolean));
+    const processed: BatchEvidenceFile[] = [];
+    for (const file of selected) {
+      const id = crypto.randomUUID();
+      let digest = "";
+      try {
+        digest = await fileSha256(file);
+        if (knownDigests.has(digest)) {
+          processed.push({
+            id,
+            name: file.name.slice(0, 240),
+            size: file.size,
+            digest,
+            status: "duplicate",
+            recordCount: 0,
+            warningCount: 0,
+            error: "Exact file content already exists in this session.",
+          });
+          continue;
+        }
+        knownDigests.add(digest);
+        const text = await readAwsEvidenceFile(file);
+        const result = detectAwsEvidenceText(text, file.name);
+        processed.push({
+          id,
+          name: file.name.slice(0, 240),
+          size: file.size,
+          digest,
+          status: "imported",
+          sourceType: result.sourceType,
+          sourceLabel: result.sourceLabel,
+          recordCount: result.records.length,
+          warningCount: result.warnings.length,
+          result,
+        });
+      } catch (error) {
+        if (digest) knownDigests.delete(digest);
+        processed.push({
+          id,
+          name: file.name.slice(0, 240),
+          size: file.size,
+          digest,
+          status: "rejected",
+          recordCount: 0,
+          warningCount: 0,
+          error: error instanceof Error ? error.message : "The AWS file could not be identified.",
+        });
+      }
+    }
+    setFiles((current) => [...current, ...processed]);
+    setProcessing(false);
+    const imported = processed.filter((file) => file.status === "imported");
+    const duplicates = processed.filter((file) => file.status === "duplicate").length;
+    const rejected = processed.filter((file) => file.status === "rejected").length;
+    onToast(`Processed ${processed.length} file${processed.length === 1 ? "" : "s"}: ${imported.length} imported, ${duplicates} duplicate, ${rejected} rejected.`);
+  }
+
+  function exportFindings() {
+    const rows = [
+      ["Security group ARN", "Security group ID", "Name", "Account", "Region", "Severity", "Risk score", "AWS source types", "Evidence classes", "Unique evidence", "Direct evidence", "Related evidence", "First observed", "Last observed", "Summary"],
+      ...filteredFindings.map((finding) => [
+        finding.securityGroupArn || "Unresolved ARN",
+        finding.securityGroupId,
+        finding.name,
+        finding.accountId,
+        finding.region,
+        finding.severity,
+        finding.riskScore,
+        finding.sources.join("; "),
+        finding.evidenceClasses.join("; "),
+        finding.evidence.length,
+        finding.directEvidenceCount,
+        finding.relatedEvidenceCount,
+        finding.firstObservedAt,
+        finding.lastObservedAt,
+        finding.summary,
+      ]),
+    ];
+    downloadText(`gatewatch-consolidated-findings-${new Date().toISOString().slice(0, 10)}.csv`, csvDocument(rows), "text/csv;charset=utf-8");
+    onToast(`Exported ${filteredFindings.length.toLocaleString()} consolidated security-group findings with canonical ARNs.`);
+  }
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Mixed AWS evidence import"
+        title="Drop the evidence. Gatewatch sorts it out."
+        description="Import mixed AWS logs in one batch, suppress duplicate files and records, and consolidate all attributable evidence into one finding per security group."
+        actions={files.length ? <>
+          <button className="button button-secondary" onClick={exportFindings} disabled={!filteredFindings.length}><Download size={16} /> Export filtered findings</button>
+          <button className="button button-secondary button-danger-subtle" onClick={() => { if (!window.confirm("Clear every imported file and consolidated finding from this browser session?")) return; setFiles([]); setSelectedKey(""); clearFindingFilters(); setBatchError(""); onToast("AWS evidence session cleared."); }}><Trash2 size={16} /> Clear session</button>
+        </> : undefined}
+      />
+
+      <section className="local-processing-banner">
+        <span><ShieldCheck size={20} /></span>
+        <div><strong>Local, AWS-only processing</strong><p>Files are fingerprinted, identified, parsed, deduplicated, and correlated in this browser tab. Original files are never uploaded or persisted.</p></div>
+        <span className="healthy-chip"><CircleCheck size={13} /> Session only</span>
+      </section>
+
+      <label
+        className={`cloudtrail-dropzone batch-dropzone ${dragging ? "cloudtrail-dropzone-active" : ""} ${processing ? "cloudtrail-dropzone-processing" : ""}`}
+        htmlFor="aws-batch-file-input"
+        onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
+        onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
+        onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
+        onDrop={(event) => { event.preventDefault(); setDragging(false); void processFiles([...event.dataTransfer.files]); }}
+      >
+        <input id="aws-batch-file-input" className="sr-only" type="file" multiple accept=".json,.json.gz,.log,.log.gz,.txt,.txt.gz,.csv,.tsv,application/json,application/gzip,text/plain,text/csv" disabled={processing} onChange={(event) => { void processFiles([...(event.target.files ?? [])]); event.target.value = ""; }} />
+        <span className="dropzone-icon">{processing ? <RefreshCw size={27} className="spin" /> : <FileArchive size={27} />}</span>
+        <div><strong>{processing ? "Fingerprinting and classifying AWS evidence…" : dragging ? "Drop the mixed AWS batch here" : files.length ? "Add more AWS evidence files" : "Drop multiple AWS log types together"}</strong><p>Auto-detects 16 AWS source types · up to 30 files per selection · 150 MB compressed per batch</p></div>
+        <span className="button button-primary"><UploadCloud size={16} /> Choose files</span>
+      </label>
+
+      {batchError ? <div className="import-error" role="alert"><CircleAlert size={17} /><div><strong>Batch import could not start</strong><p>{batchError}</p></div><button aria-label="Dismiss batch error" onClick={() => setBatchError("")}><X size={15} /></button></div> : null}
+
+      {files.length ? <>
+        <section className="batch-metrics" aria-label="Import consolidation summary">
+          {[
+            [String(importedFiles.length), "Files imported"],
+            [String(sourceCount), "AWS source types"],
+            [batch.uniqueRecords.toLocaleString(), "Unique records"],
+            [(duplicateFiles + batch.duplicateRecords).toLocaleString(), "Duplicates suppressed"],
+            [batch.findings.length.toLocaleString(), "Consolidated SG findings"],
+            [batch.unmatchedRecords.length.toLocaleString(), "Unmatched records"],
+          ].map(([value, label]) => <div key={label}><strong>{value}</strong><span>{label}</span></div>)}
+        </section>
+
+        <section className="panel batch-file-ledger">
+          <div className="panel-header"><div><h2>File processing ledger</h2><p>Every selected file remains visible, including exact duplicates and rejected formats</p></div><span className="version-chip">{files.length} files · {rejectedFiles} rejected</span></div>
+          <div className="batch-file-list">
+            {files.map((file) => <article key={file.id} className={`batch-file batch-file-${file.status}`}>
+              <span>{file.status === "imported" ? <CircleCheck size={16} /> : file.status === "duplicate" ? <Copy size={16} /> : <CircleAlert size={16} />}</span>
+              <p><strong>{file.name}</strong><small>{file.status === "imported" ? `${file.sourceLabel} · ${file.recordCount.toLocaleString()} validated record${file.recordCount === 1 ? "" : "s"}${file.warningCount ? ` · ${file.warningCount} warning${file.warningCount === 1 ? "" : "s"}` : ""}` : file.error}</small></p>
+              <em>{(file.size / 1024 / 1024).toFixed(2)} MB</em>
+              <button className="icon-button" aria-label={`Remove ${file.name}`} onClick={() => setFiles((current) => current.filter((item) => item.id !== file.id))}><X size={14} /></button>
+            </article>)}
+          </div>
+        </section>
+
+        <div className="batch-findings-layout">
+          <section className="panel imported-events-panel batch-findings-panel">
+            <div className="imported-events-header"><div><h2>Consolidated security-group findings</h2><p>ARN-first identity across every account and Region—never one row per source record</p></div><span className="version-chip">{accounts.length.toLocaleString()} accounts · {regions.length} Regions</span></div>
+            <section className="advanced-finding-controls" aria-label="Advanced finding search and grouping">
+              <div className="finding-query-row">
+                <label className="table-search finding-query"><Search size={15} /><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder={'Search or use account:, region:, severity:, source:, arn:, risk:>=80…'} aria-label="Advanced search consolidated findings" /></label>
+                {activeFilterCount ? <button className="button button-secondary" onClick={clearFindingFilters}><X size={14} /> Clear {activeFilterCount}</button> : null}
+              </div>
+              <p className="finding-query-help">Field search supports quoted values and AND matching, for example <code>account:428196730552 severity:critical source:&quot;Security Hub&quot;</code>.</p>
+              <div className="finding-filter-grid">
+                <label><span>Account</span><input list="evidence-account-options" value={accountFilter} onChange={(event) => { setAccountFilter(event.target.value.trim()); setPage(1); }} placeholder="All accounts" aria-label="Filter by AWS account" /><datalist id="evidence-account-options">{accounts.map((account) => <option key={account} value={account} />)}</datalist></label>
+                <label><span>Region</span><select value={regionFilter} onChange={(event) => { setRegionFilter(event.target.value); setPage(1); }}><option value="">All Regions</option>{regions.map((region) => <option key={region} value={region}>{region}</option>)}</select></label>
+                <label><span>Severity</span><select value={severityFilter} onChange={(event) => { setSeverityFilter(event.target.value); setPage(1); }}><option value="">All severities</option>{["critical", "high", "medium", "low"].map((severity) => <option key={severity} value={severity}>{severity}</option>)}</select></label>
+                <label><span>AWS source</span><select value={sourceFilter} onChange={(event) => { setSourceFilter(event.target.value); setPage(1); }}><option value="">All source types</option>{sources.map((source) => <option key={source} value={source}>{source}</option>)}</select></label>
+                <label><span>Evidence class</span><select value={evidenceClassFilter} onChange={(event) => { setEvidenceClassFilter(event.target.value); setPage(1); }}><option value="">All evidence classes</option>{evidenceClasses.map((evidenceClass) => <option key={evidenceClass} value={evidenceClass}>{evidenceClass.replaceAll("-", " ")}</option>)}</select></label>
+                <label><span>Group by</span><select value={groupBy} onChange={(event) => { setGroupBy(event.target.value as FindingGroup); setPage(1); }}><option value="none">No grouping</option><option value="account">AWS account</option><option value="account-region">Account / Region</option><option value="region">Region</option><option value="severity">Severity</option><option value="coverage">Source coverage</option></select></label>
+                <label><span>Sort</span><select value={sortBy} onChange={(event) => { setSortBy(event.target.value as FindingSort); setPage(1); }}><option value="risk-desc">Highest risk</option><option value="evidence-desc">Most evidence</option><option value="recent-desc">Most recent</option><option value="account-asc">Account / Region</option><option value="arn-asc">Security-group ARN</option></select></label>
+              </div>
+            </section>
+            <div className="import-results-count finding-results-count"><span>Showing <strong>{pageFindings.length.toLocaleString()}</strong> of <strong>{filteredFindings.length.toLocaleString()}</strong> matching · <strong>{batch.findings.length.toLocaleString()}</strong> total</span><span>{groupBy === "none" ? "Ungrouped" : `${groupedFindings.length} group${groupedFindings.length === 1 ? "" : "s"} on this page`}</span></div>
+            {filteredFindings.length ? <>
+              <div className="table-wrap consolidated-findings-table"><table><thead><tr><th>Security group ARN</th><th>Risk</th><th>Evidence</th><th>AWS sources</th><th>Last observed</th><th><span className="sr-only">Open</span></th></tr></thead>{groupedFindings.map((group) => <tbody key={group.key}>{groupBy !== "none" ? <tr className="finding-group-row"><td colSpan={6}><div><strong>{group.label}</strong><span>{group.findings.length} finding{group.findings.length === 1 ? "" : "s"} · {group.evidenceCount.toLocaleString()} evidence · {group.highRiskCount} high risk · average {group.averageRisk}/100</span></div></td></tr> : null}{group.findings.map((finding) => <ConsolidatedFindingRow key={finding.key} finding={finding} selected={selectedFinding?.key === finding.key} onSelect={() => setSelectedKey(finding.key)} />)}</tbody>)}</table></div>
+              <div className="finding-pagination"><p>Page <strong>{currentPage}</strong> of <strong>{pageCount}</strong></p><label>Rows <select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>{[25, 50, 100, 250].map((size) => <option key={size} value={size}>{size}</option>)}</select></label><div><button className="icon-button" onClick={() => setPage(1)} disabled={currentPage === 1} aria-label="First findings page">«</button><button className="icon-button" onClick={() => setPage(Math.max(1, currentPage - 1))} disabled={currentPage === 1} aria-label="Previous findings page">‹</button><button className="icon-button" onClick={() => setPage(Math.min(pageCount, currentPage + 1))} disabled={currentPage === pageCount} aria-label="Next findings page">›</button><button className="icon-button" onClick={() => setPage(pageCount)} disabled={currentPage === pageCount} aria-label="Last findings page">»</button></div></div>
+            </> : <div className="empty-state"><div><Search size={24} /></div><h3>No consolidated findings match</h3><p>Clear the search and filters, or inspect unmatched evidence below.</p><button className="button button-secondary" onClick={clearFindingFilters}>Clear all filters</button></div>}
+          </section>
+
+          <FindingEvidencePanel finding={selectedFinding} onSelect={onSelect} onToast={onToast} />
+        </div>
+
+        {batch.unmatchedRecords.length ? <details className="panel unmatched-evidence"><summary><span><AlertTriangle size={15} /> {batch.unmatchedRecords.length.toLocaleString()} unique records could not be tied to a security group</span><ChevronRight size={15} /></summary><p>These records are retained instead of being guessed into a finding. Add AWS Config network-interface relationships or a current Gatewatch inventory snapshot to improve attribution.</p><div>{batch.unmatchedRecords.slice(0, 100).map((item) => <article key={item.fingerprint}><strong>{item.sourceLabel}</strong><span>{item.record.event || item.record.summary}</span><small>{item.record.resource || `${item.record.source} → ${item.record.destination}`}</small></article>)}</div></details> : null}
+      </> : <div className="cloudtrail-onboarding-grid">
+        {[{ icon: FileArchive, title: "Mixed batches", copy: "Choose CloudTrail, Config, Flow Logs, access logs, and managed findings together—no manual source selection." }, { icon: Copy, title: "Duplicate suppression", copy: "Exact files and identical normalized AWS records are counted once while duplicates remain auditable." }, { icon: ShieldCheck, title: "One finding per group", copy: "Direct IDs, Config relationships, ENIs, attached resources, and addresses consolidate evidence into one security-group finding." }].map((item) => { const Icon = item.icon; return <section className="panel" key={item.title}><span className="onboarding-icon"><Icon size={20} /></span><h2>{item.title}</h2><p>{item.copy}</p></section>; })}
+      </div>}
+    </>
+  );
+}
+
+function ConsolidatedFindingRow({
+  finding,
+  selected,
+  onSelect,
+}: {
+  finding: ConsolidatedSecurityGroupFinding;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return <tr className={selected ? "selected" : ""} onClick={onSelect}>
+    <td><strong>{finding.securityGroupArn || "ARN unavailable"}</strong><small>{finding.name} · {finding.securityGroupId}</small><small>{finding.accountId || "Unknown account"} · {finding.region || "Unknown Region"}</small></td>
+    <td><SeverityBadge severity={finding.severity} /><small>{finding.riskScore}/100</small></td>
+    <td><strong>{finding.evidence.length} unique</strong><small>{finding.directEvidenceCount} direct · {finding.relatedEvidenceCount} related</small></td>
+    <td><div className="source-chip-list">{finding.sources.slice(0, 3).map((source) => <span key={source}>{source}</span>)}{finding.sources.length > 3 ? <span>+{finding.sources.length - 3}</span> : null}</div></td>
+    <td><strong>{finding.lastObservedAt ? findingDate(finding.lastObservedAt) : "Unavailable"}</strong><small>{finding.evidenceClasses.join(" · ")}</small></td>
+    <td><button className="icon-button" aria-label={`Inspect ${finding.securityGroupArn || finding.securityGroupId}`} onClick={(event) => { event.stopPropagation(); onSelect(); }}><ChevronRight size={15} /></button></td>
+  </tr>;
+}
+
+function FindingEvidencePanel({
+  finding,
+  onSelect,
+  onToast,
+}: {
+  finding: ConsolidatedSecurityGroupFinding | null;
+  onSelect: (group: SecurityGroup) => void;
+  onToast: (message: string) => void;
+}) {
+  if (!finding) {
+    return <aside className="panel finding-evidence-panel batch-no-selection"><ShieldCheck size={24} /><h2>No attributable security-group evidence yet</h2><p>Successfully parsed AWS records that cannot be attributed remain in the unmatched evidence section.</p></aside>;
+  }
+  return <aside className="panel finding-evidence-panel">
+    <div className="finding-evidence-heading"><div><span>Consolidated finding</span><h2>{finding.name}</h2><p>{finding.accountId || "Unknown account"} · {finding.region || "Unknown Region"}</p></div><RiskScore score={finding.riskScore} /></div>
+    <div className={`finding-arn-block ${finding.securityGroupArn ? "" : "finding-arn-unresolved"}`}><code>{finding.securityGroupArn || `ARN unresolved · ${finding.securityGroupId}`}</code>{finding.securityGroupArn ? <button className="icon-button" aria-label="Copy security-group ARN" onClick={() => { void navigator.clipboard.writeText(finding.securityGroupArn).then(() => onToast("Security-group ARN copied.")).catch(() => onToast("The browser could not copy the ARN. Select it manually.")); }}><Copy size={13} /></button> : null}</div>
+    <p className="finding-evidence-summary">{finding.summary}</p>
+    <dl className="finding-evidence-stats"><div><dt>Direct evidence</dt><dd>{finding.directEvidenceCount}</dd></div><div><dt>Related evidence</dt><dd>{finding.relatedEvidenceCount}</dd></div><div><dt>Source types</dt><dd>{finding.sources.length}</dd></div></dl>
+    <div className="finding-source-chips">{finding.sources.map((source) => <span key={source}>{source}</span>)}</div>
+    <div className="finding-evidence-list">
+      {finding.evidence.slice(0, 75).map((item) => <article key={item.fingerprint}><span className={`evidence-class evidence-${item.evidenceClass}`} /> <p><strong>{item.record.event || item.sourceLabel}</strong><small>{item.record.summary || item.record.resource || "AWS evidence record"}</small><em>{item.sourceLabel} · {item.correlation} · {findingDate(item.record.observedAt)}</em></p></article>)}
+    </div>
+    {finding.evidence.length > 75 ? <p className="finding-evidence-overflow">Showing the newest 75 of {finding.evidence.length.toLocaleString()} unique evidence records.</p> : null}
+    {finding.matchedInventoryGroup ? <button className="button button-primary" onClick={() => onSelect(finding.matchedInventoryGroup!)}>Open security group <ArrowRight size={15} /></button> : <p className="finding-evidence-boundary"><AlertTriangle size={14} /> This group is present in imported evidence but not the current Gatewatch inventory.</p>}
+  </aside>;
+}
+
+function AwsEvidenceSourcePicker({
+  value,
+  onChange,
+}: {
+  value: SourceType;
+  onChange: (value: SourceType) => void;
+}) {
+  const definition = sourceTypeDefinition(value);
+  return (
+    <section className="panel aws-evidence-source-picker" aria-labelledby="aws-evidence-source-label">
+      <div>
+        <span className="eyebrow" id="aws-evidence-source-label">AWS evidence type</span>
+        <select
+          value={value}
+          onChange={(event) => onChange(event.target.value as SourceType)}
+          aria-label="AWS evidence type"
+        >
+          {[...new Set(sourceTypeDefinitions.map((item) => item.group))].map((group) => (
+            <optgroup key={group} label={group}>
+              {sourceTypeDefinitions.filter((item) => item.group === group).map((item) => (
+                <option key={item.value} value={item.value}>{item.label}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </div>
+      <p><strong>{definition.label}</strong><span>{definition.description}</span></p>
+      <span className="version-chip">{definition.format}</span>
+    </section>
+  );
+}
+
+function formatEvidenceDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function GenericAwsEvidenceImportView({
+  sourceType,
+  onSourceTypeChange,
+  onToast,
+}: {
+  sourceType: SourceType;
+  onSourceTypeChange: (value: SourceType) => void;
+  onToast: (message: string) => void;
+}) {
+  const [dragging, setDragging] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [importError, setImportError] = useState("");
+  const [query, setQuery] = useState("");
+  const [imported, setImported] = useState<{
+    fileName: string;
+    fileSize: number;
+    importedAt: string;
+    result: AwsEvidenceImportResult;
+  } | null>(null);
+  const definition = sourceTypeDefinition(sourceType);
+  const visibleRecords = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!imported || !normalized) return imported?.result.records ?? [];
+    return imported.result.records.filter((record) => [
+      record.observedAt,
+      record.accountId,
+      record.region,
+      record.resource,
+      record.event,
+      record.disposition,
+      record.source,
+      record.destination,
+      record.summary,
+    ].join(" ").toLowerCase().includes(normalized));
+  }, [imported, query]);
+
+  async function processFile(file: File) {
+    setProcessing(true);
+    setImportError("");
+    try {
+      const text = await readAwsEvidenceFile(file);
+      const result = parseAwsEvidenceText(text, sourceType);
+      setImported({
+        fileName: file.name.slice(0, 240),
+        fileSize: file.size,
+        importedAt: new Date().toISOString(),
+        result,
+      });
+      setQuery("");
+      onToast(`Validated ${result.records.length.toLocaleString()} ${result.sourceLabel} records locally.`);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "The AWS evidence file could not be imported.");
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  function exportRecords() {
+    if (!imported) return;
+    const csv = csvDocument([
+      ["Observed at", "Event", "Disposition", "Resource", "Source", "Destination", "Account", "Region", "Summary"],
+      ...visibleRecords.map((record) => [record.observedAt, record.event, record.disposition, record.resource, record.source, record.destination, record.accountId, record.region, record.summary]),
+    ]);
+    downloadText(`gatewatch-${sourceType}-${new Date().toISOString().slice(0, 10)}.csv`, csv, "text/csv;charset=utf-8");
+    onToast(`Exported ${visibleRecords.length.toLocaleString()} normalized AWS evidence records.`);
+  }
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Local AWS evidence import"
+        title="Import AWS-native evidence."
+        description="Validate and normalize configuration, traffic, path-analysis, service-access, and security-finding exports without uploading the source file."
+        actions={imported ? <>
+          <button className="button button-secondary" onClick={exportRecords} disabled={!visibleRecords.length}><Download size={16} /> Export normalized records</button>
+          <button className="button button-secondary button-danger-subtle" onClick={() => { setImported(null); setImportError(""); onToast("Imported AWS evidence cleared from this session."); }}><Trash2 size={16} /> Clear session</button>
+        </> : undefined}
+      />
+      <AwsEvidenceSourcePicker
+        value={sourceType}
+        onChange={(value) => {
+          setImported(null);
+          setImportError("");
+          onSourceTypeChange(value);
+        }}
+      />
+      <section className="local-processing-banner">
+        <span><ShieldCheck size={20} /></span>
+        <div><strong>AWS-produced evidence only</strong><p>The selected parser validates the AWS delivery shape. Files remain in this browser tab and are not persisted.</p></div>
+        <span className="healthy-chip"><CircleCheck size={13} /> Session only</span>
+      </section>
+      <label
+        className={`cloudtrail-dropzone ${dragging ? "cloudtrail-dropzone-active" : ""} ${processing ? "cloudtrail-dropzone-processing" : ""}`}
+        htmlFor="aws-evidence-file-input"
+        onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
+        onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
+        onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragging(false);
+          if (event.dataTransfer.files.length !== 1) {
+            setImportError("Drop one AWS evidence file at a time.");
+            return;
+          }
+          void processFile(event.dataTransfer.files[0]);
+        }}
+      >
+        <input id="aws-evidence-file-input" className="sr-only" type="file" accept=".json,.json.gz,.log,.log.gz,.txt,.txt.gz,.csv,.tsv,application/json,application/gzip,text/plain,text/csv" disabled={processing} onChange={(event) => { const file = event.target.files?.[0]; if (file) void processFile(file); event.target.value = ""; }} />
+        <span className="dropzone-icon">{processing ? <RefreshCw size={27} className="spin" /> : <UploadCloud size={27} />}</span>
+        <div><strong>{processing ? `Validating ${definition.label}…` : dragging ? "Drop the AWS file to import it" : imported ? "Drop another file to replace this session" : `Drop ${definition.label} here`}</strong><p>Or choose a file · {definition.format} · 25 MB compressed limit · 50,000 records</p></div>
+        <span className="button button-primary"><FileArchive size={16} /> Choose AWS log</span>
+      </label>
+      {importError ? <div className="import-error" role="alert"><CircleAlert size={17} /><div><strong>{definition.label} import failed</strong><p>{importError}</p></div><button aria-label="Dismiss import error" onClick={() => setImportError("")}><X size={15} /></button></div> : null}
+      {imported ? <>
+        <section className="import-file-summary">
+          <div className="imported-file"><span><FileJson2 size={19} /></span><p><strong>{imported.fileName}</strong><small>{(imported.fileSize / 1024 / 1024).toFixed(2)} MB · imported {new Date(imported.importedAt).toLocaleTimeString()}</small></p></div>
+          <div><strong>{imported.result.totalRecords.toLocaleString()}</strong><span>Total records</span></div>
+          <div><strong>{imported.result.records.length.toLocaleString()}</strong><span>Validated</span></div>
+          <div><strong>{imported.result.skippedRecords.toLocaleString()}</strong><span>Skipped</span></div>
+          <div><strong>{imported.result.evidenceClass.replaceAll("-", " ")}</strong><span>Evidence class</span></div>
+        </section>
+        {imported.result.warnings.length ? <section className="import-warnings">{imported.result.warnings.map((warning) => <p key={warning}><AlertTriangle size={14} /> {warning}</p>)}</section> : null}
+        <section className="panel imported-events-panel">
+          <div className="imported-events-header"><div><h2>{imported.result.sourceLabel} records</h2><p>Normalized for correlation while the source-specific AWS payload remains available to the production evidence ledger.</p></div><label className="table-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search resource, address, result…" aria-label="Search imported AWS evidence" /></label></div>
+          <div className="import-results-count">Showing <strong>{Math.min(visibleRecords.length, 500).toLocaleString()}</strong> of <strong>{visibleRecords.length.toLocaleString()}</strong> matching records</div>
+          {visibleRecords.length ? <div className="table-wrap cloudtrail-event-table"><table><thead><tr><th>Time / event</th><th>Resource</th><th>Source → destination</th><th>Account / Region</th><th>Outcome</th></tr></thead><tbody>{visibleRecords.slice(0, 500).map((record, index) => <tr key={`${record.id}-${index}`}><td><strong>{record.event || "AWS record"}</strong><small>{record.observedAt ? formatEvidenceDate(record.observedAt) : "Timestamp not supplied"}</small></td><td><strong>{record.resource || "Resource not supplied"}</strong><small>{record.summary}</small></td><td><strong>{record.source || "—"}</strong><small>{record.destination ? `→ ${record.destination}` : "Destination not supplied"}</small></td><td><strong>{record.accountId || "Account unavailable"}</strong><small>{record.region || "Region unavailable"}</small></td><td><span className="event-result success">{record.disposition || "Recorded"}</span></td></tr>)}</tbody></table></div> : <div className="empty-state"><div><Search size={24} /></div><h3>No evidence records match</h3><p>Clear the search to return to the validated AWS records.</p><button className="button button-secondary" onClick={() => setQuery("")}>Clear search</button></div>}
+        </section>
+      </> : <div className="cloudtrail-onboarding-grid">
+        {[{ icon: Database, title: "Configuration and change", copy: "AWS Config and CloudTrail establish current state, history, and change identity." }, { icon: Network, title: "Traffic and reachability", copy: "Flow logs and AWS network analysis distinguish observed traffic from potential paths." }, { icon: ShieldAlert, title: "Access and threat context", copy: "Service logs, GuardDuty, Security Hub, and Inspector enrich exposure without replacing network evidence." }].map((item) => { const Icon = item.icon; return <section className="panel" key={item.title}><span className="onboarding-icon"><Icon size={20} /></span><h2>{item.title}</h2><p>{item.copy}</p></section>; })}
+      </div>}
+    </>
+  );
+}
+
+// Kept as a compatibility path while saved links transition to the mixed-batch workspace.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function CloudTrailImportView({
   imported,
   setImported,
@@ -4007,6 +4506,7 @@ function CloudTrailImportView({
   onSelect: (group: SecurityGroup) => void;
   onToast: (message: string) => void;
 }) {
+  const [sourceType, setSourceType] = useState<SourceType>("cloudtrail");
   const [dragging, setDragging] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [importError, setImportError] = useState("");
@@ -4124,13 +4624,7 @@ function CloudTrailImportView({
         event.errorCode || "Success",
       ]),
     ];
-    const csv = rows
-      .map((row) =>
-        row
-          .map((value) => `"${value.replaceAll('"', '""')}"`)
-          .join(","),
-      )
-      .join("\n");
+    const csv = csvDocument(rows);
     downloadText(
       `gatewatch-cloudtrail-events-${new Date()
         .toISOString()
@@ -4150,12 +4644,22 @@ function CloudTrailImportView({
   const failedEvents =
     imported?.result.events.filter((event) => event.errorCode).length ?? 0;
 
+  if (sourceType !== "cloudtrail") {
+    return (
+      <GenericAwsEvidenceImportView
+        sourceType={sourceType}
+        onSourceTypeChange={setSourceType}
+        onToast={onToast}
+      />
+    );
+  }
+
   return (
     <>
       <PageHeader
         eyebrow="Local evidence import"
-        title="Drag in an AWS CloudTrail log."
-        description="Extract security-group changes, identify rules opened to the internet, and correlate events with Gatewatch groups without sending the file anywhere."
+        title="Import AWS-native evidence."
+        description="Inspect AWS configuration, changes, traffic, path analysis, service access, and security findings without sending the file anywhere."
         actions={
           imported ? (
             <>
@@ -4180,6 +4684,8 @@ function CloudTrailImportView({
           ) : undefined
         }
       />
+
+      <AwsEvidenceSourcePicker value={sourceType} onChange={setSourceType} />
 
       <section className="local-processing-banner">
         <span>
@@ -4993,6 +5499,10 @@ function SourcesView({
         </div>
         <em>{coverage}% collection coverage</em>
       </section>
+      <OrganizationCoveragePanel
+        legacy={inventorySource}
+        refreshSignal={syncing}
+      />
       <section className="panel sources-panel">
         <div className="panel-header">
           <div>

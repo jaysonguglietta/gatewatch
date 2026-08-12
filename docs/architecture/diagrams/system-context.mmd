@@ -1,0 +1,13 @@
+flowchart LR
+  Analyst["Security analyst"] --> UI["Gatewatch web dashboard"]
+  Admin["Gatewatch administrator"] --> UI
+  UI --> API["Authenticated Gatewatch API"]
+  API --> Aurora["Aurora PostgreSQL"]
+  API --> Jira["Jira Cloud"]
+  Collector["Distributed organization collector"] --> Evidence["Immutable S3 evidence"]
+  Evidence --> Ingest["SQS normalization pipeline"]
+  Ingest --> Aurora
+  Member["500+ AWS member accounts"] --> Collector
+  Config["AWS Config"] --> Ingest
+  Trail["Organization CloudTrail"] --> Ingest
+  Flow["VPC Flow Logs"] --> Ingest

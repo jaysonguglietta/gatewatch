@@ -4,6 +4,11 @@ import type {
   SecurityRule,
   Severity,
 } from "./security-data";
+import {
+  assessNetworkExposure,
+  networkExposureRiskAdjustment,
+  type NetworkExposureEvidence,
+} from "./network-exposure";
 
 type SnapshotRule = {
   ruleId: string | null;
@@ -54,13 +59,7 @@ type SnapshotAttachment = {
   tags: Record<string, string>;
 };
 
-type SnapshotNetworkEvidence = {
-  subnetIds: string[];
-  routeTableIds: string[];
-  networkAclIds: string[];
-  publicAddressCount: number;
-  internetGatewayRoute: boolean;
-  networkAclAllowsInternetIngress: boolean;
+type SnapshotNetworkEvidence = NetworkExposureEvidence & {
   state: "configured-internet-path" | "blocked" | "incomplete";
 };
 
@@ -174,6 +173,14 @@ function riskFor(group: SnapshotGroup) {
   const broadPorts = publicIngress.filter(widePortRange).length;
   const allEgress = publicEgress.some((rule) => rule.protocol === "-1");
   const attached = group.networkInterfaceAttachmentCount > 0;
+  const exposure = publicIngress.map((rule) =>
+    assessNetworkExposure({
+      evidence: group.networkEvidence,
+      attachments: group.resourceAttachments,
+      attachmentCount: group.networkInterfaceAttachmentCount,
+      addressFamily: rule.cidrIpv6 === "::/0" ? "IPv6" : "IPv4",
+    }),
+  );
 
   if (!publicIngress.length && !publicEgress.length) return 18;
   const score =
@@ -184,7 +191,9 @@ function riskFor(group: SnapshotGroup) {
     Math.min(12, broadPorts * 8) +
     (allEgress ? 10 : 0) +
     (attached && publicIngress.length ? 8 : 0);
-  return Math.min(100, score);
+  const pathAdjustment = networkExposureRiskAdjustment(exposure, attached);
+  const minimum = attached && publicIngress.length ? 45 : 30;
+  return Math.max(minimum, Math.min(100, score - pathAdjustment));
 }
 
 function severityFor(score: number): Severity {
@@ -235,13 +244,13 @@ function findingsFor(group: SnapshotGroup) {
     (rule) => rule.isEgress && publicPeer(rule),
   );
   if (publicIngress.some((rule) => rule.protocol === "-1")) {
-    findings.push("All ingress traffic is open to the internet");
+    findings.push("All ingress traffic allows an internet-wide source");
   }
   if (publicIngress.some(isAdministrative)) {
-    findings.push("Administrative or data-service ports are open to the internet");
+    findings.push("Administrative or data-service ports allow internet-wide sources");
   }
   if (publicIngress.some(widePortRange)) {
-    findings.push("A wide ingress port range is open to the internet");
+    findings.push("A wide ingress port range allows internet-wide sources");
   }
   if (publicIngress.length) {
     findings.push(
@@ -265,11 +274,11 @@ function mapRule(rule: SnapshotRule, index: number, observedAt: string): Securit
   const source = peerFor(rule);
   const isPublic = publicPeer(rule);
   const finding = isAdministrative(rule)
-    ? "Administrative or data-service port exposed publicly"
+    ? "Administrative or data-service port permits internet-wide sources"
     : widePortRange(rule)
-      ? "Wide port range exposed publicly"
+      ? "Wide port range permits internet-wide sources"
       : isPublic && rule.protocol === "-1"
-        ? "All traffic allowed to or from the internet"
+        ? "All traffic permits an internet-wide peer"
         : undefined;
   return {
     id: rule.ruleId ?? `rule-${index + 1}`,
@@ -315,6 +324,21 @@ function mapGroup(group: SnapshotGroup, snapshot: Snapshot): SecurityGroup {
     120,
   );
   const groupName = clean(group.name, group.id, 160);
+  const exposureAssessments = publicIngress.map((rule) =>
+    assessNetworkExposure({
+      evidence: group.networkEvidence,
+      attachments: group.resourceAttachments,
+      attachmentCount: group.networkInterfaceAttachmentCount,
+      addressFamily: rule.cidrIpv6 === "::/0" ? "IPv6" : "IPv4",
+    }),
+  );
+  const effectiveExposure = exposureAssessments.some(
+    (assessment) => assessment.status === "reachable",
+  )
+    ? "A direct internet path is configured."
+    : exposureAssessments.some((assessment) => assessment.status === "potential")
+      ? "Internet-path evidence is incomplete; risk was only slightly reduced."
+      : "No current direct internet path is configured; the rule remains broadly permissive to connected networks.";
 
   return {
     id: group.id,
@@ -368,17 +392,29 @@ function mapGroup(group: SnapshotGroup, snapshot: Snapshot): SecurityGroup {
         : [],
     paths: publicIngress.slice(0, 3).map((rule, index) => {
       const network = group.networkEvidence;
-      const status = network?.state === "configured-internet-path"
-        ? "reachable"
-        : network?.state === "blocked"
-          ? "blocked"
-          : "potential";
+      const addressFamily = rule.cidrIpv6 === "::/0" ? "IPv6" : "IPv4";
+      const assessment = assessNetworkExposure({
+        evidence: network,
+        attachments: group.resourceAttachments,
+        attachmentCount: group.networkInterfaceAttachmentCount,
+        addressFamily,
+      });
+      const status = assessment.status;
       const routeHop = network?.routeTableIds.length
         ? `Internet gateway route (${network.routeTableIds.join(", ")})`
         : "Route evidence pending";
       const subnetHop = network?.subnetIds.length
         ? `Subnet ${network.subnetIds.join(", ")}`
         : "Subnet evidence pending";
+      const blockerHop = assessment.classification === "no-internet-route"
+        ? "No internet-gateway route"
+        : assessment.classification === "no-public-address"
+          ? `No public ${addressFamily} address`
+          : assessment.classification === "network-acl-blocked"
+            ? "Network ACL blocks ingress"
+            : assessment.classification === "unattached"
+              ? "No attached workload"
+              : "Network prerequisites do not form one path";
       return {
         id: `${group.id}-public-${index}`,
         direction: "Ingress" as const,
@@ -387,14 +423,9 @@ function mapGroup(group: SnapshotGroup, snapshot: Snapshot): SecurityGroup {
         service: `${protocolFor(rule.protocol)} ${portsFor(rule)}`,
         status,
         confidence: "Medium" as const,
-        reason:
-          status === "reachable"
-            ? `AWS configuration shows an internet-gateway route, ${network?.publicAddressCount ?? 0} public address(es), and a broad NACL allow. This proves a configured network path, not a listening service or successful connection.`
-            : status === "blocked"
-              ? "Attached subnets have route-table evidence but no active default route to an internet gateway."
-              : "The security group permits internet-wide ingress, but route, public-address, or NACL evidence is incomplete.",
+        reason: assessment.reason,
         hops: status === "blocked"
-          ? ["Internet", "No internet-gateway route", groupName]
+          ? ["Internet", blockerHop, groupName]
           : ["Internet", routeHop, subnetHop, groupName],
       };
     }),
@@ -427,7 +458,7 @@ function mapGroup(group: SnapshotGroup, snapshot: Snapshot): SecurityGroup {
         label: "Sensitive services",
         points: Math.min(25, publicIngress.filter(isAdministrative).length * 20),
         maxPoints: 25,
-        evidence: `${publicIngress.filter(isAdministrative).length} administrative or data-service exposure(s) observed.`,
+        evidence: `${publicIngress.filter(isAdministrative).length} administrative or data-service rule(s) permit internet-wide sources.`,
       },
       {
         key: "attachment",
@@ -445,10 +476,14 @@ function mapGroup(group: SnapshotGroup, snapshot: Snapshot): SecurityGroup {
       },
       {
         key: "evidence",
-        label: "Evidence completeness",
-        points: 10,
-        maxPoints: 10,
-        evidence: "Flow Logs, route reachability, vulnerability, and change attribution are not yet connected.",
+        label: "Effective exposure",
+        points: exposureAssessments.some((assessment) => assessment.status === "reachable")
+          ? 20
+          : exposureAssessments.some((assessment) => assessment.status === "potential")
+            ? 10
+            : 4,
+        maxPoints: 20,
+        evidence: effectiveExposure,
       },
     ],
     change: {

@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { findingCatalogForGroups, type FindingWorkflowStatus } from "../../../lib/daily-findings";
 import { loadAwsInventory } from "../../../lib/aws-inventory";
 import { apiJson, ensureAdminSchema, requestUser } from "../../../lib/server-admin";
+import { csvCell } from "../../../lib/csv";
 
 type WorkflowRow = {
   fingerprint: string;
@@ -20,14 +21,6 @@ function counts(values: string[]) {
   )
     .map(([label, count]) => ({ label, count }))
     .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
-}
-
-function csvCell(value: unknown) {
-  const raw = String(value ?? "");
-  // Quoting alone does not stop spreadsheet applications from evaluating
-  // attacker-controlled names and tags as formulas when the CSV is opened.
-  const safe = /^[\s]*[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
-  return `"${safe.replaceAll('"', '""')}"`;
 }
 
 export async function GET(request: Request) {

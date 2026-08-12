@@ -1,4 +1,44 @@
-# Gatewatch AWS security-group collector
+# Gatewatch AWS collection infrastructure
+
+## Choose the collector intentionally
+
+| Template | Intended scope | Output |
+|---|---|---|
+| `gatewatch-security-group-collector.yaml` | Personal, development, or small account sets | One complete `exports/latest.json` compatibility snapshot |
+| `gatewatch-organization-collector.yaml` | Production organization collection at 500+ accounts | Immutable account/Region shards, a run manifest, and explicit coverage |
+
+Do not use the aggregate organization mode as the authoritative production path
+for hundreds of accounts. Use the Distributed Map collector and normalize its
+shards through `gatewatch-aws-platform.yaml`. The aggregate collector remains a
+backward-compatible single-account source during migration.
+
+See [`docs/architecture`](../../docs/architecture/README.md) for architecture,
+deployment order, diagrams, data contracts, capacity guidance, and runbooks.
+
+## AWS web and Bedrock analyst
+
+`gatewatch-aws-web.yaml` deploys the CloudFront/ALB/EC2 web runtime in
+`us-east-1`. It creates individual Cognito identities with mandatory TOTP MFA,
+an oauth2-proxy PKCE login boundary, TLS to the viewer and origin, WAF managed
+rules and rate limiting, retained edge logs, and separate generated origin,
+bridge, and cookie secrets. Direct instance access is blocked by security-group
+rules and every non-health origin request must carry the generated CloudFront
+verification header.
+
+The template also creates a versioned Bedrock Guardrail with a high-strength
+prompt-attack input filter and grants the instance role access only to the
+approved US Nova 2 Lite inference profile, its three US destination model ARNs,
+and that Guardrail. KMS decrypt access is scoped to the explicitly supplied
+collector keys.
+
+`BedrockEnabled` defaults to `true`. `BedrockModelId` is allowlisted to
+`us.amazon.nova-2-lite-v1:0`. Set `BedrockEnabled=false` to retain the complete
+deterministic application while disabling inference. Do not replace the scoped
+Bedrock resources with `*`. See
+[`BEDROCK_AI_ANALYST.md`](../../docs/architecture/BEDROCK_AI_ANALYST.md) for the
+data boundary, validation contract, budgets, and failure procedure.
+
+## Legacy aggregate collector
 
 This CloudFormation deployment produces a normalized, point-in-time inventory
 of EC2 security groups and their individual rules. It is deliberately
@@ -93,7 +133,7 @@ aws cloudformation deploy \
 
 Leave `RegionAllowList` empty to scan every Region enabled in the account.
 
-## Deploy: organization
+## Deploy: legacy organization mode
 
 First identify the desired root or OU:
 
@@ -127,6 +167,25 @@ OrganizationTargetIds=ou-abcd-12345678,ou-abcd-87654321
 Use `ExcludedAccountIds=111122223333,444455556666` for accounts that must not be
 queried. Exclusions appear in snapshot metadata so coverage cannot be
 mistakenly reported as complete for the entire organization.
+
+## Deploy: distributed organization collector
+
+The supported 500+ account path packages the Python artifact and deploys the
+separate Distributed Map template:
+
+```bash
+export AWS_PROFILE=personal
+export AWS_REGION=us-east-1
+export GATEWATCH_ORGANIZATION_TARGET_IDS=r-abcd
+export GATEWATCH_STACKSET_CALL_AS=SELF
+export GATEWATCH_REGION_ALLOW_LIST=us-east-1,us-east-2,us-west-2,eu-west-1
+./scripts/deploy-aws-organization.sh
+```
+
+The stack writes one shard per successful account/Region under
+`runs/<run-id>/shards/`, records target health in DynamoDB, and publishes
+`runs/<run-id>/manifest.json` plus `manifests/latest.json`. It never builds a
+single organization-wide snapshot.
 
 ## Run the first collection
 
@@ -239,12 +298,12 @@ calculated after schema validation and normalization.
 - AWS-managed interfaces that cannot be resolved to a parent service remain in
   the snapshot as network-interface attachments with their description and
   tags, so the dashboard does not silently hide an association.
-- For large organizations, restrict `RegionAllowList`, increase
-  `MaximumParallelScans` cautiously, and monitor Lambda duration and throttling.
+- For large organizations, deploy `gatewatch-organization-collector.yaml`; do
+  not solve the aggregate payload/time limit solely by increasing parallelism.
 
 ## Known boundaries
 
-- This is a live-state inventory, not an AWS Config or CloudTrail history
+- This legacy template is a live-state inventory, not an AWS Config or CloudTrail history
   collector.
 - It does not identify the IAM principal that last changed a rule. Add
   organization CloudTrail ingestion for reliable attribution.

@@ -6,8 +6,8 @@ import {
   validateSourceInput,
 } from "../../../../lib/admin-sources";
 import { testAwsSource } from "../../../../lib/aws-source-test";
+import { HttpInputError, readBoundedJson } from "../../../../lib/http-security";
 import {
-  acceptsJson,
   apiJson,
   audit,
   ensureAdminSchema,
@@ -145,7 +145,7 @@ export async function GET(request: Request) {
       settings.results.map((item) => [String(item.key), safeJson(item.value, {})]),
     );
     return apiJson({
-      currentUser: { email: auth.user, role: "admin" },
+      currentUser: { email: auth.email, subject: auth.user, role: "admin" },
       sources: (sources.results as unknown as SourceRow[]).map(mapSource),
       runs: runs.results,
       audits: audits.results.map((item) => ({
@@ -175,11 +175,8 @@ export async function POST(request: Request) {
     if (!auth.user) return apiJson({ error: "Authentication is required." }, 401);
     if (!auth.allowed) return apiJson({ error: "Administrator access is required." }, 403);
     if (!sameOrigin(request)) return apiJson({ error: "Origin is not allowed." }, 403);
-    if (!acceptsJson(request, 80_000)) {
-      return apiJson({ error: "Send an application/json payload under 80 KB." }, 415);
-    }
     await ensureAdminSchema();
-    const payload = (await request.json()) as Record<string, unknown>;
+    const payload = await readBoundedJson(request, 80_000);
     const action = typeof payload.action === "string" ? payload.action : "";
 
     if (action === "create") {
@@ -314,7 +311,7 @@ export async function POST(request: Request) {
 
     if (action === "template") {
       return apiJson({
-        filename: `gatewatch-${existing.sourceType}-read-role.yaml`,
+        filename: `gatewatch-${existing.sourceType}-read-role.json`,
         template: sourceAccessCloudFormation(existing),
       });
     }
@@ -377,9 +374,7 @@ export async function POST(request: Request) {
 
     return apiJson({ error: "Choose a supported administration action." }, 400);
   } catch (error) {
-    if (error instanceof SyntaxError) {
-      return apiJson({ error: "Request body must be valid JSON." }, 400);
-    }
+    if (error instanceof HttpInputError) return apiJson({ error: error.message }, error.status);
     return apiJson({ error: "The administration request could not be completed." }, 503);
   }
 }

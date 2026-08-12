@@ -85,6 +85,185 @@ CREATE TABLE ingested_objects (
 CREATE INDEX ingested_objects_source_status_idx
   ON ingested_objects (source_id, status);
 
+-- Organization collector state. Raw immutable shards remain authoritative in
+-- S3; these tables make current inventory, run health, and coverage queryable
+-- without loading an organization-wide snapshot into an application process.
+CREATE TABLE organization_collection_runs (
+  workspace_id uuid NOT NULL REFERENCES workspaces(id),
+  run_id uuid NOT NULL,
+  status text NOT NULL CHECK (status IN ('running', 'succeeded', 'partial', 'failed')),
+  manifest_bucket text NOT NULL,
+  manifest_key text NOT NULL,
+  manifest_checksum_sha256 text NOT NULL DEFAULT '',
+  accounts_expected integer NOT NULL DEFAULT 0,
+  accounts_succeeded integer NOT NULL DEFAULT 0,
+  accounts_partial integer NOT NULL DEFAULT 0,
+  accounts_failed integer NOT NULL DEFAULT 0,
+  accounts_incomplete integer NOT NULL DEFAULT 0,
+  regions_expected integer NOT NULL DEFAULT 0,
+  regions_succeeded integer NOT NULL DEFAULT 0,
+  regions_failed integer NOT NULL DEFAULT 0,
+  regions_incomplete integer NOT NULL DEFAULT 0,
+  security_group_count integer NOT NULL DEFAULT 0,
+  security_group_rule_count integer NOT NULL DEFAULT 0,
+  coverage_percent numeric(5,2) NOT NULL DEFAULT 0,
+  started_at timestamptz NOT NULL,
+  completed_at timestamptz,
+  ingested_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (workspace_id, run_id)
+);
+
+CREATE INDEX organization_collection_runs_latest_idx
+  ON organization_collection_runs (workspace_id, completed_at DESC);
+
+CREATE TABLE organization_collection_targets (
+  workspace_id uuid NOT NULL REFERENCES workspaces(id),
+  run_id uuid NOT NULL,
+  account_id text NOT NULL,
+  account_name text NOT NULL,
+  region text NOT NULL,
+  status text NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'incomplete')),
+  object_key text NOT NULL DEFAULT '',
+  checksum_sha256 text NOT NULL DEFAULT '',
+  security_group_count integer NOT NULL DEFAULT 0,
+  security_group_rule_count integer NOT NULL DEFAULT 0,
+  network_interface_count integer NOT NULL DEFAULT 0,
+  error_code text NOT NULL DEFAULT '',
+  completed_at timestamptz,
+  PRIMARY KEY (workspace_id, run_id, account_id, region),
+  FOREIGN KEY (workspace_id, run_id)
+    REFERENCES organization_collection_runs(workspace_id, run_id)
+    DEFERRABLE INITIALLY DEFERRED
+);
+
+CREATE INDEX organization_collection_targets_health_idx
+  ON organization_collection_targets (workspace_id, status, account_id, region);
+
+CREATE TABLE inventory_shard_objects (
+  workspace_id uuid NOT NULL REFERENCES workspaces(id),
+  run_id uuid NOT NULL,
+  account_id text NOT NULL,
+  region text NOT NULL,
+  bucket_name text NOT NULL,
+  object_key text NOT NULL,
+  version_id text NOT NULL DEFAULT '',
+  etag text NOT NULL DEFAULT '',
+  checksum_sha256 text NOT NULL,
+  object_size bigint NOT NULL,
+  status text NOT NULL CHECK (status IN ('processing', 'processed', 'failed')),
+  failure_code text NOT NULL DEFAULT '',
+  first_seen_at timestamptz NOT NULL DEFAULT now(),
+  processed_at timestamptz,
+  PRIMARY KEY (workspace_id, bucket_name, object_key, version_id)
+);
+
+CREATE INDEX inventory_shard_objects_run_status_idx
+  ON inventory_shard_objects (workspace_id, run_id, status);
+
+CREATE TABLE security_group_observations (
+  workspace_id uuid NOT NULL REFERENCES workspaces(id),
+  run_id uuid NOT NULL,
+  account_id text NOT NULL,
+  account_name text NOT NULL,
+  region text NOT NULL,
+  security_group_id text NOT NULL,
+  name text,
+  description text,
+  vpc_id text,
+  is_default boolean NOT NULL DEFAULT false,
+  tags jsonb NOT NULL DEFAULT '{}',
+  inbound_rule_count integer NOT NULL DEFAULT 0,
+  outbound_rule_count integer NOT NULL DEFAULT 0,
+  public_ingress_rule_count integer NOT NULL DEFAULT 0,
+  public_egress_rule_count integer NOT NULL DEFAULT 0,
+  attachment_count integer NOT NULL DEFAULT 0,
+  attachments jsonb NOT NULL DEFAULT '[]',
+  network_evidence jsonb NOT NULL DEFAULT '{}',
+  observed_at timestamptz NOT NULL,
+  source_object_key text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (
+    workspace_id, run_id, account_id, region, security_group_id
+  )
+);
+
+CREATE INDEX security_group_observations_resource_latest_idx
+  ON security_group_observations
+  (workspace_id, account_id, region, security_group_id, observed_at DESC);
+
+CREATE INDEX security_group_observations_public_ingress_idx
+  ON security_group_observations
+  (workspace_id, public_ingress_rule_count DESC, attachment_count DESC)
+  WHERE public_ingress_rule_count > 0;
+
+CREATE TABLE security_group_rule_observations (
+  workspace_id uuid NOT NULL REFERENCES workspaces(id),
+  run_id uuid NOT NULL,
+  account_id text NOT NULL,
+  region text NOT NULL,
+  security_group_id text NOT NULL,
+  rule_id text NOT NULL,
+  direction text NOT NULL CHECK (direction IN ('Ingress', 'Egress')),
+  protocol text NOT NULL,
+  from_port integer,
+  to_port integer,
+  peer text NOT NULL,
+  peer_type text NOT NULL,
+  description text,
+  internet_wide boolean NOT NULL DEFAULT false,
+  observed_at timestamptz NOT NULL,
+  PRIMARY KEY (
+    workspace_id, run_id, account_id, region, security_group_id, rule_id
+  )
+);
+
+CREATE INDEX security_group_rule_observations_broad_latest_idx
+  ON security_group_rule_observations
+  (workspace_id, internet_wide, direction, observed_at DESC)
+  WHERE internet_wide = true;
+
+CREATE VIEW current_security_groups AS
+SELECT DISTINCT ON (
+  observation.workspace_id,
+  observation.account_id,
+  observation.region,
+  observation.security_group_id
+)
+  observation.*
+FROM security_group_observations observation
+JOIN organization_collection_runs run
+  ON run.workspace_id = observation.workspace_id
+ AND run.run_id = observation.run_id
+WHERE run.status IN ('succeeded', 'partial')
+ORDER BY
+  observation.workspace_id,
+  observation.account_id,
+  observation.region,
+  observation.security_group_id,
+  observation.observed_at DESC;
+
+CREATE VIEW current_security_group_rules AS
+SELECT DISTINCT ON (
+  observation.workspace_id,
+  observation.account_id,
+  observation.region,
+  observation.security_group_id,
+  observation.rule_id
+)
+  observation.*
+FROM security_group_rule_observations observation
+JOIN organization_collection_runs run
+  ON run.workspace_id = observation.workspace_id
+ AND run.run_id = observation.run_id
+WHERE run.status IN ('succeeded', 'partial')
+ORDER BY
+  observation.workspace_id,
+  observation.account_id,
+  observation.region,
+  observation.security_group_id,
+  observation.rule_id,
+  observation.observed_at DESC;
+
 CREATE TABLE cloudtrail_events (
   workspace_id uuid NOT NULL REFERENCES workspaces(id),
   event_id text NOT NULL,
@@ -137,6 +316,37 @@ CREATE INDEX config_items_resource_capture_idx
 
 CREATE TABLE config_items_default
   PARTITION OF config_items DEFAULT;
+
+-- Source-neutral ledger for AWS-native evidence that is neither a Config item
+-- nor a CloudTrail management event. Raw objects remain immutable in S3; this
+-- table stores bounded normalized fields plus the source-specific AWS payload.
+CREATE TABLE aws_evidence_records (
+  workspace_id uuid NOT NULL REFERENCES workspaces(id),
+  fingerprint text NOT NULL,
+  source_id uuid NOT NULL REFERENCES ingestion_sources(id),
+  raw_object_id uuid NOT NULL REFERENCES ingested_objects(id),
+  source_type text NOT NULL,
+  evidence_class text NOT NULL CHECK (evidence_class IN (
+    'observed-traffic', 'reachability', 'service-access', 'threat-finding'
+  )),
+  observed_at timestamptz,
+  account_id text NOT NULL DEFAULT '',
+  region text NOT NULL DEFAULT '',
+  resource_type text NOT NULL DEFAULT '',
+  resource_id text NOT NULL DEFAULT '',
+  event_name text NOT NULL DEFAULT '',
+  disposition text NOT NULL DEFAULT '',
+  normalized_payload jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (workspace_id, fingerprint)
+);
+
+CREATE INDEX aws_evidence_records_source_time_idx
+  ON aws_evidence_records (workspace_id, source_type, observed_at DESC);
+
+CREATE INDEX aws_evidence_records_resource_time_idx
+  ON aws_evidence_records
+  (workspace_id, account_id, region, resource_id, observed_at DESC);
 
 CREATE TABLE aws_resources (
   workspace_id uuid NOT NULL REFERENCES workspaces(id),
@@ -422,6 +632,10 @@ CREATE TABLE finding_workflows (
   due_at timestamptz,
   expires_at timestamptz,
   compensating_controls jsonb NOT NULL DEFAULT '[]',
+  reason_code text NOT NULL DEFAULT '',
+  next_review_at timestamptz,
+  approver text NOT NULL DEFAULT '',
+  resolution_evidence text NOT NULL DEFAULT '',
   evidence_snapshot jsonb NOT NULL DEFAULT '{}',
   reviewer text NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now(),
@@ -448,6 +662,10 @@ CREATE TABLE finding_events (
   due_at timestamptz,
   expires_at timestamptz,
   compensating_controls jsonb NOT NULL DEFAULT '[]',
+  reason_code text NOT NULL DEFAULT '',
+  next_review_at timestamptz,
+  approver text NOT NULL DEFAULT '',
+  resolution_evidence text NOT NULL DEFAULT '',
   evidence_snapshot jsonb NOT NULL DEFAULT '{}',
   created_at timestamptz NOT NULL DEFAULT now(),
   FOREIGN KEY (workspace_id, fingerprint)
@@ -463,6 +681,8 @@ CREATE TABLE saved_finding_views (
   owner text NOT NULL,
   name text NOT NULL,
   filters jsonb NOT NULL DEFAULT '{}',
+  visibility text NOT NULL DEFAULT 'personal'
+    CHECK (visibility IN ('personal', 'team')),
   is_default boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
@@ -472,6 +692,20 @@ CREATE TABLE saved_finding_views (
 CREATE UNIQUE INDEX saved_finding_views_one_default_idx
   ON saved_finding_views (workspace_id, owner)
   WHERE is_default = true;
+
+-- Short-lived, actor-bound snapshots make high-throughput keyboard triage
+-- reversible without trusting state returned by a client.
+CREATE TABLE finding_undo_snapshots (
+  token uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id uuid NOT NULL REFERENCES workspaces(id),
+  actor text NOT NULL,
+  state jsonb NOT NULL,
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX finding_undo_snapshots_expiry_idx
+  ON finding_undo_snapshots (workspace_id, actor, expires_at);
 
 -- Canonical review identity prevents identically named security groups in
 -- different accounts, regions, or VPCs from sharing workflow state.

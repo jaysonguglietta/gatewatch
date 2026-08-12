@@ -1,0 +1,27 @@
+flowchart TB
+  subgraph Internet["Untrusted browser / Internet"]
+    Browser["Browser, uploads, request bodies"]
+  end
+  subgraph Edge["AWS edge identity boundary"]
+    WAF["WAF + rate controls"]
+    Identity["OIDC / MFA"]
+  end
+  subgraph App["Application boundary"]
+    Web["Web/API workload role"]
+    Bridge["Integration workload role"]
+  end
+  subgraph Data["Security data boundary"]
+    Aurora["Aurora + RLS"]
+    Evidence["KMS S3 evidence"]
+    Audit["Immutable audit archive"]
+  end
+  subgraph Organization["Member account boundary"]
+    ReadRole["Read-only member role"]
+    EC2["EC2 configuration APIs"]
+  end
+  Browser --> WAF --> Identity --> Web
+  Web --> Aurora
+  Web --> Bridge
+  Bridge --> Evidence
+  Web --> Audit
+  Bridge --> ReadRole --> EC2

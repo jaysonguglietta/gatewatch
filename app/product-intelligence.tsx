@@ -17,7 +17,9 @@ import {
   Crown,
   Download,
   Eye,
+  FileCode2,
   FileCheck2,
+  FileWarning,
   Filter,
   GitPullRequest,
   Globe2,
@@ -34,16 +36,29 @@ import {
   Sparkles,
   Target,
   TrendingDown,
+  Trash2,
   TriangleAlert,
   UserRoundCheck,
   Users,
+  UploadCloud,
   WandSparkles,
   X,
   Zap,
 } from "lucide-react";
+import { csvDocument } from "../lib/csv";
 import type { LucideIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { LiveIntelligence } from "../lib/live-intelligence";
+import {
+  consolidateInfrastructureReviews,
+  MAX_IAC_BATCH_RULES,
+  MAX_IAC_FILE_BYTES,
+  MAX_IAC_FILES,
+  reviewInfrastructureFile,
+  type IacFileReview,
+  type IacSecurityGroupReview,
+  type IacSeverity,
+} from "../lib/iac-security-review";
 import {
   controlMappings,
   driftEvents,
@@ -255,11 +270,7 @@ function WorkflowError({ message }: { message: string }) {
 }
 
 function downloadCsv(filename: string, rows: string[][]) {
-  const content = rows
-    .map((row) =>
-      row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","),
-    )
-    .join("\n");
+  const content = csvDocument(rows);
   const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" }));
   const link = document.createElement("a");
   link.href = url;
@@ -647,6 +658,84 @@ function IacGuardrails({
 }) {
   const [selectedId, setSelectedId] = useState("");
   const selected = changes.find((change) => change.id === selectedId) ?? changes[0] ?? null;
+  const [uploads, setUploads] = useState<Array<{ id: string; digest: string; size: number; review: IacFileReview }>>([]);
+  const [dragging, setDragging] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const [selectedGroupKey, setSelectedGroupKey] = useState("");
+  const [query, setQuery] = useState("");
+  const [severity, setSeverity] = useState<"all" | IacSeverity>("all");
+  const batch = useMemo(() => consolidateInfrastructureReviews(uploads.map((upload) => upload.review)), [uploads]);
+  const filteredGroups = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return batch.groups.filter((group) => {
+      const searchable = [group.name, group.key, group.vpc, group.description, ...group.fileNames, ...group.resourceAddresses, ...group.rules.flatMap((rule) => [rule.protocol, ...rule.sources]), ...group.issues.flatMap((issue) => [issue.title, issue.description])].join(" ").toLowerCase();
+      return (!normalized || searchable.includes(normalized)) && (severity === "all" || group.issues.some((issue) => issue.severity === severity));
+    });
+  }, [batch.groups, query, severity]);
+  const selectedGroup = filteredGroups.find((group) => group.key === selectedGroupKey) ?? filteredGroups[0] ?? null;
+
+  async function digestFile(file: File) {
+    const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+    return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function processFiles(files: File[]) {
+    setUploadError("");
+    if (!files.length) return;
+    if (files.length > MAX_IAC_FILES || files.length + uploads.length > MAX_IAC_FILES) {
+      setUploadError(`Review at most ${MAX_IAC_FILES} infrastructure files in one session.`);
+      return;
+    }
+    const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+    if (totalSize > 50 * 1024 * 1024) {
+      setUploadError("The selected batch is larger than 50 MB. Split it into smaller reviews.");
+      return;
+    }
+    setProcessing(true);
+    try {
+      const known = new Set(uploads.map((upload) => upload.digest));
+      const next: typeof uploads = [];
+      let duplicates = 0;
+      for (const file of files) {
+        try {
+          if (file.size > MAX_IAC_FILE_BYTES) {
+            next.push({ id: crypto.randomUUID(), digest: "", size: file.size, review: { name: file.name.slice(0, 240), status: "rejected", resourceCount: 0, ruleCount: 0, warnings: [], error: "The infrastructure file is larger than 5 MB.", groups: [] } });
+            continue;
+          }
+          const digest = await digestFile(file);
+          if (known.has(digest)) { duplicates += 1; continue; }
+          known.add(digest);
+          next.push({ id: crypto.randomUUID(), digest, size: file.size, review: reviewInfrastructureFile(file.name, await file.text()) });
+        } catch {
+          next.push({ id: crypto.randomUUID(), digest: "", size: file.size, review: { name: file.name.slice(0, 240), status: "rejected", resourceCount: 0, ruleCount: 0, warnings: [], error: "The browser could not read this file. Check its permissions and try again.", groups: [] } });
+        }
+      }
+      const projectedRules = [...uploads, ...next].reduce((sum, upload) => sum + upload.review.ruleCount, 0);
+      if (projectedRules > MAX_IAC_BATCH_RULES) {
+        setUploadError(`This session is limited to ${MAX_IAC_BATCH_RULES.toLocaleString()} normalized rules. Split the review into smaller batches.`);
+        return;
+      }
+      setUploads((current) => [...current, ...next]);
+      const parsed = next.filter((upload) => upload.review.status === "parsed").length;
+      const rejected = next.length - parsed;
+      onToast(`IaC review processed ${files.length} file${files.length === 1 ? "" : "s"}: ${parsed} parsed, ${rejected} rejected, ${duplicates} duplicate${duplicates === 1 ? "" : "s"}.`);
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  function exportReview() {
+    downloadCsv("gatewatch-iac-security-review.csv", [
+      ["Verdict", "Risk", "Exposure", "Security group", "Resource address", "Files", "Severity", "Issue", "Rule", "Source", "Location", "Recommendation"],
+      ...filteredGroups.flatMap((group) => group.issues.map((issue) => {
+        const rule = group.rules.find((item) => item.id === issue.ruleId);
+        return [group.verdict, String(group.riskScore), group.exposure, group.name, group.resourceAddresses.join("; "), group.fileNames.join("; "), issue.severity, issue.title, rule ? `${rule.direction} ${rule.protocol} ${rule.fromPort ?? "all"}-${rule.toPort ?? "all"}` : "", rule?.sources.join("; ") ?? "", `${issue.fileName}:${issue.line}`, issue.recommendation];
+      })),
+    ]);
+    onToast(`Exported ${filteredGroups.length} consolidated IaC security-group review${filteredGroups.length === 1 ? "" : "s"}.`);
+  }
+
   async function setGuardrail(status: "enabled" | "monitor") {
     if (!selected) return;
     const saved = await workflow.save({ id: `guardrail-${selected.id}`, kind: "iac-guardrail", subjectId: selected.repository, status, owner: "Cloud Security", note: selected.policy, ticketRef: selected.pullRequest, expiresAt: "", payload: { verdict: selected.verdict } });
@@ -654,21 +743,75 @@ function IacGuardrails({
     onToast(`${selected.policy} is now ${status === "enabled" ? "enforced" : "monitor-only"}.`);
   }
   return (
-    !selected ? <section className="panel intel-empty"><GitPullRequest size={24} /><h2>No IaC provider connected</h2><p>Connect a repository webhook or CI evaluation endpoint to populate proposed infrastructure changes.</p></section> :
-    <div className="iac-layout">
-      <section className="panel iac-list">
-        <div className="panel-header"><div><h2>Proposed infrastructure changes</h2><p>Pre-deployment exposure and intent evaluation</p></div><span className="pipeline-chip"><GitPullRequest size={13} />CI connected</span></div>
-        {changes.map((change) => <button className={selected.id === change.id ? "active" : ""} onClick={() => setSelectedId(change.id)} key={change.id}><span className={`iac-verdict iac-${change.verdict.toLowerCase()}`}>{change.verdict}</span><p><strong>{change.repository} {change.pullRequest}</strong><span>{change.proposedChange}</span><small>{change.author} · {change.environment}</small></p><em>{change.currentRisk} → {change.projectedRisk}</em></button>)}
+    <div className="iac-review-workspace">
+      <section className="panel iac-upload-panel">
+        <div className="panel-header"><div><h2>Review CloudFormation and Terraform</h2><p>Parse proposed security groups locally without executing templates, providers, modules, or hooks</p></div><span className="read-only-pill"><ShieldCheck size={13} />Local · read only</span></div>
+        <label className={`iac-dropzone ${dragging ? "active" : ""} ${processing ? "processing" : ""}`} htmlFor="iac-review-files" onDragEnter={(event) => { event.preventDefault(); setDragging(true); }} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }} onDrop={(event) => { event.preventDefault(); setDragging(false); void processFiles([...event.dataTransfer.files]); }}>
+          <input id="iac-review-files" className="sr-only" type="file" multiple accept=".yaml,.yml,.template,.json,.tf,.tf.json,application/json,text/yaml,text/plain" disabled={processing} onChange={(event) => { void processFiles([...(event.target.files ?? [])]); event.target.value = ""; }} />
+          <span>{processing ? <RefreshCw className="spin" size={25} /> : <UploadCloud size={25} />}</span>
+          <div><strong>{processing ? "Parsing infrastructure as data…" : dragging ? "Drop the IaC files here" : uploads.length ? "Add more infrastructure files" : "Drop CloudFormation and Terraform files"}</strong><p>YAML, JSON, HCL, and TF.JSON · up to {MAX_IAC_FILES} files · 5 MB each</p></div>
+          <span className="button button-primary"><FileCode2 size={15} />Choose files</span>
+        </label>
+        <aside className="iac-safety-boundary"><ShieldAlert size={15} /><p><strong>No code execution</strong><span>Gatewatch never runs CloudFormation transforms, Terraform init/plan, provider plugins, external data sources, or module code. Unresolved expressions are reported for CI follow-up.</span></p></aside>
+        {uploadError ? <div className="intel-error" role="alert"><CircleAlert size={15} />{uploadError}<button aria-label="Dismiss upload error" onClick={() => setUploadError("")}><X size={13} /></button></div> : null}
       </section>
-      <section className="panel iac-detail">
-        <header><span className={`iac-verdict iac-${selected.verdict.toLowerCase()}`}>{selected.verdict}</span><h2>{selected.repository} {selected.pullRequest}</h2><p>{selected.proposedChange}</p></header>
-        <div className="iac-risk-row"><div><span>Current risk</span><strong>{selected.currentRisk}</strong></div><ArrowRight size={17} /><div><span>Projected risk</span><strong>{selected.projectedRisk}</strong></div><em className={selected.projectedRisk > selected.currentRisk ? "risk-up" : "risk-down"}>{selected.projectedRisk > selected.currentRisk ? "+" : ""}{selected.projectedRisk - selected.currentRisk}</em></div>
-        <section><h3>Policy evaluation</h3><div className="policy-evaluation"><BookOpenCheck size={17} /><p><strong>{selected.policy}</strong><span>{selected.verdict === "Block" ? "The proposed state conflicts with approved application connectivity." : selected.verdict === "Pass" ? "The change reduces exposure and preserves required traffic." : "An expiring exception and security approval are required."}</span></p></div></section>
-        <section><h3>Evidence</h3>{selected.evidence.map((evidence) => <div className="evidence-line" key={evidence}><Check size={14} />{evidence}</div>)}</section>
-        <footer><button className="button button-primary" onClick={() => void setGuardrail("enabled")}><ShieldCheck size={15} />Enforce in CI</button><button className="button button-secondary" onClick={() => void setGuardrail("monitor")}><Eye size={15} />Monitor only</button><button className="button button-secondary" onClick={() => onToast("PR comment copied with projected paths, risk, and policy evidence.")}><GitPullRequest size={15} />Preview PR comment</button></footer>
-      </section>
+
+      {uploads.length ? <>
+        <section className="iac-review-metrics" aria-label="Infrastructure review summary">
+          <article><strong>{batch.totals.parsedFiles}</strong><span>Files parsed</span></article>
+          <article><strong>{batch.totals.groups}</strong><span>Security groups</span></article>
+          <article><strong>{batch.totals.rules}</strong><span>Unique rules</span></article>
+          <article className="critical"><strong>{batch.totals.critical}</strong><span>Critical issues</span></article>
+          <article className="high"><strong>{batch.totals.high}</strong><span>High issues</span></article>
+          <article><strong>{batch.totals.rejectedFiles}</strong><span>Rejected files</span></article>
+        </section>
+        <section className="panel iac-file-ledger">
+          <div className="panel-header"><div><h2>File ledger</h2><p>Every parsed and rejected file remains visible for this browser session</p></div><div><button className="button button-secondary" disabled={!filteredGroups.length} onClick={exportReview}><Download size={14} />Export review</button><button className="button button-secondary button-danger-subtle" onClick={() => { if (!window.confirm("Clear every IaC file and review result from this browser session?")) return; setUploads([]); setSelectedGroupKey(""); setQuery(""); onToast("IaC review session cleared."); }}><Trash2 size={14} />Clear</button></div></div>
+          <div>{uploads.map((upload) => <article className={`iac-file-row file-${upload.review.status}`} key={upload.id}><span>{upload.review.status === "parsed" ? <CircleCheck size={15} /> : <FileWarning size={15} />}</span><p><strong>{upload.review.name}</strong><small>{upload.review.status === "parsed" ? `${upload.review.format?.replaceAll("-", " ")} · ${upload.review.resourceCount} resources · ${upload.review.ruleCount} rules${upload.review.warnings.length ? ` · ${upload.review.warnings.length} warnings` : ""}` : upload.review.error}</small></p><em>{(upload.size / 1024).toFixed(1)} KB</em><button className="icon-button" aria-label={`Remove ${upload.review.name}`} onClick={() => setUploads((current) => current.filter((item) => item.id !== upload.id))}><X size={13} /></button></article>)}</div>
+        </section>
+
+        <div className="iac-review-layout">
+          <section className="panel iac-review-list">
+            <div className="iac-review-toolbar"><label className="table-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search group, file, resource, port, source…" aria-label="Search IaC security group reviews" /></label><label className="filter-select"><Filter size={13} /><select value={severity} onChange={(event) => setSeverity(event.target.value as typeof severity)} aria-label="Filter IaC reviews by severity"><option value="all">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label></div>
+            <div className="iac-review-result-count"><strong>{filteredGroups.length}</strong> of {batch.groups.length} security groups</div>
+            {filteredGroups.length ? filteredGroups.map((group) => <button className={selectedGroup?.key === group.key ? "active" : ""} onClick={() => setSelectedGroupKey(group.key)} key={group.key}><span className={`iac-verdict iac-${group.verdict}`}>{group.verdict}</span><p><strong>{group.name}</strong><span>{group.resourceAddresses.join(" · ")}</span><small>{group.fileNames.join(" · ")} · {group.rules.length} rules · {group.issues.length} issues</small></p><em>{group.riskScore}</em></button>) : <div className="intel-empty"><Search size={20} /><h2>No IaC findings match</h2><p>Clear the search or severity filter.</p></div>}
+          </section>
+          {selectedGroup ? <IacFileReviewDetail group={selectedGroup} /> : <section className="panel intel-empty"><ShieldCheck size={23} /><h2>No security-group resources found</h2><p>Parsed files will remain in the ledger even when they do not define or modify a security group.</p></section>}
+        </div>
+      </> : <section className="iac-first-run-grid">{[
+        [FileCode2, "CloudFormation", "AWS::EC2::SecurityGroup plus standalone ingress and egress resources, YAML intrinsic tags, and JSON templates."],
+        [Code2, "Terraform", "aws_security_group, legacy and modern standalone rules, nested ingress/egress blocks, variables, and TF.JSON."],
+        [Target, "Actionable results", "One result per proposed security group with exact file, resource address, line, rule, risk, and remediation."],
+      ].map(([Icon, title, description]) => { const FeatureIcon = Icon as LucideIcon; return <article className="panel" key={String(title)}><span><FeatureIcon size={19} /></span><h2>{String(title)}</h2><p>{String(description)}</p></article>; })}</section>}
+
+      <details className="iac-ci-section" open={!uploads.length && Boolean(selected)}>
+        <summary><GitPullRequest size={15} /><span><strong>Connected CI evaluations</strong><small>Pre-calculated results submitted by repository pipelines</small></span><ChevronRight size={14} /></summary>
+        {!selected ? <section className="panel intel-empty"><GitPullRequest size={24} /><h2>No IaC provider connected</h2><p>Upload files above or connect a repository webhook/CI evaluation endpoint.</p></section> : <div className="iac-layout">
+          <section className="panel iac-list">
+            <div className="panel-header"><div><h2>Proposed infrastructure changes</h2><p>Pre-deployment exposure and intent evaluation</p></div><span className="pipeline-chip"><GitPullRequest size={13} />CI connected</span></div>
+            {changes.map((change) => <button className={selected.id === change.id ? "active" : ""} onClick={() => setSelectedId(change.id)} key={change.id}><span className={`iac-verdict iac-${change.verdict.toLowerCase()}`}>{change.verdict}</span><p><strong>{change.repository} {change.pullRequest}</strong><span>{change.proposedChange}</span><small>{change.author} · {change.environment}</small></p><em>{change.currentRisk} → {change.projectedRisk}</em></button>)}
+          </section>
+          <section className="panel iac-detail">
+            <header><span className={`iac-verdict iac-${selected.verdict.toLowerCase()}`}>{selected.verdict}</span><h2>{selected.repository} {selected.pullRequest}</h2><p>{selected.proposedChange}</p></header>
+            <div className="iac-risk-row"><div><span>Current risk</span><strong>{selected.currentRisk}</strong></div><ArrowRight size={17} /><div><span>Projected risk</span><strong>{selected.projectedRisk}</strong></div><em className={selected.projectedRisk > selected.currentRisk ? "risk-up" : "risk-down"}>{selected.projectedRisk > selected.currentRisk ? "+" : ""}{selected.projectedRisk - selected.currentRisk}</em></div>
+            <section><h3>Policy evaluation</h3><div className="policy-evaluation"><BookOpenCheck size={17} /><p><strong>{selected.policy}</strong><span>{selected.verdict === "Block" ? "The proposed state conflicts with approved application connectivity." : selected.verdict === "Pass" ? "The change reduces exposure and preserves required traffic." : "An expiring exception and security approval are required."}</span></p></div></section>
+            <section><h3>Evidence</h3>{selected.evidence.map((evidence) => <div className="evidence-line" key={evidence}><Check size={14} />{evidence}</div>)}</section>
+            <footer><button className="button button-primary" onClick={() => void setGuardrail("enabled")}><ShieldCheck size={15} />Enforce in CI</button><button className="button button-secondary" onClick={() => void setGuardrail("monitor")}><Eye size={15} />Monitor only</button><button className="button button-secondary" onClick={() => onToast("PR comment copied with projected paths, risk, and policy evidence.")}><GitPullRequest size={15} />Preview PR comment</button></footer>
+          </section>
+        </div>}
+      </details>
     </div>
   );
+}
+
+function IacFileReviewDetail({ group }: { group: IacSecurityGroupReview }) {
+  return <section className="panel iac-file-detail">
+    <header><div><span className={`iac-verdict iac-${group.verdict}`}>{group.verdict}</span><h2>{group.name}</h2><p>{group.resourceAddresses.join(" · ")}</p></div><span className={`iac-review-risk risk-${group.riskScore >= 85 ? "critical" : group.riskScore >= 65 ? "high" : group.riskScore >= 35 ? "medium" : "low"}`}>{group.riskScore}<small>risk</small></span></header>
+    <section className={`iac-exposure-card exposure-${group.exposure}`}><Globe2 size={17} /><div><strong>{group.exposure === "potential-internet" ? "Potential internet path" : group.exposure === "unknown" ? "Public reachability unresolved" : "No public ingress identified"}</strong><p>{group.exposureReason}</p><div className="iac-path-signals"><span className={group.pathSignals.internetGateway ? "present" : "missing"}>{group.pathSignals.internetGateway ? <Check size={10} /> : <X size={10} />}Internet gateway</span><span className={group.pathSignals.publicRoute ? "present" : "missing"}>{group.pathSignals.publicRoute ? <Check size={10} /> : <X size={10} />}Public route</span><span className={group.pathSignals.publicAttachment ? "present" : "missing"}>{group.pathSignals.publicAttachment ? <Check size={10} /> : <X size={10} />}Public attachment</span></div></div></section>
+    <dl className="iac-resource-context"><div><dt>Files</dt><dd>{group.fileNames.join(", ")}</dd></div><div><dt>VPC</dt><dd>{group.vpc}</dd></div><div><dt>Attachments</dt><dd>{group.attachmentSignals.length ? group.attachmentSignals.join(", ") : "No attachment reference resolved"}</dd></div><div><dt>Definition</dt><dd>{group.description || "No group description"}</dd></div></dl>
+    <section className="iac-issue-section"><div className="section-heading"><div><h3>Configuration issues</h3><p>Prioritized by likely impact if the proposed state is deployed</p></div><span>{group.issues.length}</span></div>{group.issues.length ? <div className="iac-issue-list">{group.issues.map((issue) => <article key={issue.id}><span className={`severity-badge severity-${issue.severity}`}><i />{issue.severity}</span><div><h4>{issue.title}</h4><code>{issue.fileName}:{issue.line} · {issue.resourceAddress}</code><p>{issue.description}</p><aside><Target size={13} />{issue.recommendation}</aside></div></article>)}</div> : <div className="iac-pass-state"><CircleCheck size={20} /><div><strong>No security-group issue detected</strong><p>The parsed rules passed the current static checks. Resolve all parser warnings and validate deployed reachability before approval.</p></div></div>}</section>
+    <section className="iac-rule-section"><div className="section-heading"><div><h3>Normalized rules</h3><p>Duplicate rules across uploaded files are shown once</p></div><span>{group.rules.length}</span></div>{group.rules.length ? <div className="iac-rule-table"><div className="iac-rule-head"><span>Direction</span><span>Protocol / ports</span><span>Source</span><span>Location</span></div>{group.rules.map((rule) => <div key={rule.id}><strong>{rule.direction}</strong><code>{rule.protocol} · {rule.fromPort ?? "all"}{rule.toPort !== rule.fromPort ? `–${rule.toPort ?? "all"}` : ""}</code><span>{rule.sources.join(", ")}{rule.unresolved ? <em>unresolved</em> : null}</span><small>{rule.fileName}:{rule.line}</small></div>)}</div> : <div className="iac-pass-state"><FileCheck2 size={19} /><div><strong>No inline or standalone rules found</strong><p>The uploaded definition may create an empty group or supply rules through a module, dynamic block, transform, or separate file.</p></div></div>}</section>
+  </section>;
 }
 
 export function DriftInboxView({

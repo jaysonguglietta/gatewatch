@@ -1,7 +1,14 @@
 import { env } from "cloudflare:workers";
 import { findingCatalogForGroups } from "../../../lib/daily-findings";
 import { loadAwsInventory } from "../../../lib/aws-inventory";
-import { ensureAdminSchema, requireAdmin } from "../../../lib/server-admin";
+import { HttpInputError, readBoundedJson } from "../../../lib/http-security";
+import {
+  ensureAdminSchema,
+  requestUser,
+  requireAdmin,
+  requirePermission,
+  sameOrigin,
+} from "../../../lib/server-admin";
 
 type GovernanceInput = {
   kind?: unknown;
@@ -31,32 +38,6 @@ function parseJson(value: unknown) {
     return JSON.parse(value) as Record<string, unknown>;
   } catch {
     return { parseError: "Stored evaluation is not valid JSON." };
-  }
-}
-
-function authenticatedUser(request: Request) {
-  const email = cleanText(
-    request.headers.get("oai-authenticated-user-email"),
-    254,
-  ).toLowerCase();
-  if (email) return email;
-  const hostname = new URL(request.url).hostname;
-  return (
-    typeof process !== "undefined" &&
-    process.env.NODE_ENV !== "production" &&
-    ["localhost", "127.0.0.1"].includes(hostname)
-  )
-    ? "local-preview@gatewatch"
-    : "";
-}
-
-function sameOrigin(request: Request) {
-  const origin = request.headers.get("origin");
-  if (!origin) return true;
-  try {
-    return new URL(origin).host === new URL(request.url).host;
-  } catch {
-    return false;
   }
 }
 
@@ -98,7 +79,7 @@ async function ensureSchema() {
 
 export async function GET(request: Request) {
   try {
-    if (!authenticatedUser(request)) {
+    if (!requestUser(request)) {
       return json({ error: "Authentication is required." }, 401);
     }
     await ensureSchema();
@@ -156,24 +137,26 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const user = authenticatedUser(request);
+    const user = requestUser(request);
     if (!user) return json({ error: "Authentication is required." }, 401);
     if (!sameOrigin(request)) return json({ error: "Origin is not allowed." }, 403);
-
-    const contentLength = Number(request.headers.get("content-length") ?? "0");
-    if (contentLength > 30_000) {
-      return json({ error: "The governance payload is too large." }, 413);
-    }
-    if (!request.headers.get("content-type")?.startsWith("application/json")) {
-      return json({ error: "Content-Type must be application/json." }, 415);
-    }
-
-    const payload = (await request.json()) as GovernanceInput;
+    const payload = await readBoundedJson<GovernanceInput>(request, 30_000);
     const kind = cleanText(payload.kind, 20);
     const record =
       payload.record && typeof payload.record === "object"
         ? (payload.record as InputRecord)
         : {};
+    const permission = await requirePermission(
+      request,
+      kind === "campaign-decision" ? "governance.review" : "governance.manage",
+    );
+    if (!permission.allowed) {
+      return json({
+        error: kind === "campaign-decision"
+          ? "Reviewer access is required to record a campaign decision."
+          : "Analyst access is required to manage governance records.",
+      }, 403);
+    }
     await ensureSchema();
 
     if (kind === "policy") {
@@ -315,11 +298,13 @@ export async function POST(request: Request) {
          ORDER BY version DESC LIMIT 1`,
       ).bind(policyId).first<{ id: string; version: number; status: string }>();
       if (!version) return json({ error: "The policy version was not found." }, 404);
-      if (action === "activate") {
+      if (["activate", "retire"].includes(action)) {
         const authorization = await requireAdmin(request);
         if (!authorization.allowed) {
-          return json({ error: "Administrator approval is required to activate a policy." }, 403);
+          return json({ error: "Administrator approval is required to activate or retire a policy." }, 403);
         }
+      }
+      if (action === "activate") {
         if (version.status !== "previewed") {
           return json({ error: "Run a current AWS preview before activation." }, 409);
         }
@@ -370,16 +355,14 @@ export async function POST(request: Request) {
          SET status = ?, decision = ?, note = ?, decided_by = ?,
              decided_at = CURRENT_TIMESTAMP
          WHERE id = ? AND workspace_id = 'default'`,
-      ).bind(status, decision, note, user, itemId).run();
-      if (!result.meta.changes) return json({ error: "The campaign item was not found." }, 404);
+      ).bind(status, decision, note, user, itemId).run() as { meta?: { changes?: number } };
+      if (!result.meta?.changes) return json({ error: "The campaign item was not found." }, 404);
       return json({ record: { itemId, status, decision, decidedBy: user } });
     }
 
     return json({ error: "Choose a supported governance record type." }, 400);
   } catch (error) {
-    if (error instanceof SyntaxError) {
-      return json({ error: "Request body must be valid JSON." }, 400);
-    }
+    if (error instanceof HttpInputError) return json({ error: error.message }, error.status);
     return json({ error: "The governance record could not be saved." }, 503);
   }
 }

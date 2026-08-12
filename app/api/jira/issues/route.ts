@@ -1,13 +1,13 @@
 import { env } from "cloudflare:workers";
 import { findingCatalog, findingCatalogForGroups } from "../../../../lib/daily-findings";
 import { configuredAwsInventory, loadAwsInventory } from "../../../../lib/aws-inventory";
+import { HttpInputError, readBoundedJson } from "../../../../lib/http-security";
 import { callJiraBridge } from "../../../../lib/jira-bridge";
 import {
-  acceptsJson,
   apiJson,
   audit,
   ensureAdminSchema,
-  requireAdmin,
+  requirePermission,
   sameOrigin,
 } from "../../../../lib/server-admin";
 import { cleanText } from "../../../../lib/admin-sources";
@@ -19,13 +19,12 @@ type JiraResult = {
 };
 
 export async function POST(request: Request) {
-  const auth = await requireAdmin(request);
-  if (!auth.allowed) return apiJson({ error: "Administrator access is required to create Jira tickets." }, 403);
+  const auth = await requirePermission(request, "findings.triage");
+  if (!auth.allowed) return apiJson({ error: "Analyst or reviewer access is required to create Jira tickets." }, 403);
   if (!sameOrigin(request)) return apiJson({ error: "Origin is not allowed." }, 403);
-  if (!acceptsJson(request, 30_000)) return apiJson({ error: "A bounded JSON request is required." }, 415);
   try {
     await ensureAdminSchema();
-    const input = (await request.json()) as Record<string, unknown>;
+    const input = await readBoundedJson(request, 30_000);
     const fingerprints = [
       ...new Set(
         (Array.isArray(input.fingerprints) ? input.fingerprints : [])
@@ -118,6 +117,7 @@ export async function POST(request: Request) {
       projectKey: result.projectKey,
     }, result.failed.length && !result.created.length && !existing.length ? 502 : 200);
   } catch (error) {
+    if (error instanceof HttpInputError) return apiJson({ error: error.message }, error.status);
     return apiJson({
       error: error instanceof Error ? error.message.slice(0, 240) : "Jira tickets could not be created.",
     }, 502);

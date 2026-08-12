@@ -69,15 +69,16 @@ test("ships bounded, duplicate-safe AWS ingestion and backfill infrastructure", 
   assert.match(configParser, /correlateConfigAndCloudTrail/);
 });
 
-test("does not enable the local administrator bypass in production", async () => {
+test("centralizes the local administrator bypass and disables it in production", async () => {
   const [admin, reviews, governance] = await Promise.all([
     source("lib/server-admin.ts"),
     source("app/api/reviews/route.ts"),
     source("app/api/governance/route.ts"),
   ]);
-  for (const implementation of [admin, reviews, governance]) {
-    assert.match(implementation, /process\.env\.NODE_ENV !== "production"/);
-  }
+  assert.match(admin, /process\.env\.NODE_ENV !== "production"/);
+  assert.match(reviews, /requirePermission/);
+  assert.match(governance, /requestUser\(request\)/);
+  assert.doesNotMatch(governance, /local-preview@gatewatch/);
 });
 
 test("collects resource-level security-group attachment evidence", async () => {
@@ -102,6 +103,11 @@ test("collects resource-level security-group attachment evidence", async () => {
   assert.match(collector, /AWS::EC2::Instance/);
   assert.match(collector, /AWS::RDS::DBInstance/);
   assert.match(collector, /AWS::EFS::FileSystem/);
+  assert.match(
+    collector,
+    /"describe_security_group_rules",[\s\S]{0,120}PaginationConfig=\{"PageSize": 100\}/,
+  );
+  assert.doesNotMatch(collector, /PaginationConfig=\{"PageSize": 1000\}/);
   assert.match(snapshotSchema, /"resourceAttachment"/);
   assert.match(snapshotSchema, /"networkInterfaceId"/);
   assert.match(inventoryMapper, /normalizedAttachmentType/);
@@ -135,10 +141,11 @@ test("keeps Jira credentials server-side and supports duplicate-safe issue creat
 });
 
 test("ships authenticated detailed reporting with CSV injection protection", async () => {
-  const [dashboard, reportView, reportRoute] = await Promise.all([
+  const [dashboard, reportView, reportRoute, csv] = await Promise.all([
     source("app/security-dashboard.tsx"),
     source("app/reporting-view.tsx"),
     source("app/api/reports/route.ts"),
+    source("lib/csv.ts"),
   ]);
 
   assert.match(dashboard, /Detailed reports/);
@@ -147,6 +154,7 @@ test("ships authenticated detailed reporting with CSV injection protection", asy
   assert.match(reportView, /Regional concentration/);
   assert.match(reportRoute, /Authentication is required/);
   assert.match(reportRoute, /content-disposition/);
-  assert.match(reportRoute, /\[=\+\\-@\\t\\r\]/);
+  assert.match(reportRoute, /import \{ csvCell \}/);
+  assert.match(csv, /\[=\+\\-@\\t\\r\]/);
   assert.match(reportRoute, /finding_jira_links/);
 });

@@ -1,5 +1,59 @@
 # Gatewatch security test plan
 
+## Organization collection and evidence integrity
+
+- Deploy to a test OU containing successful, denied, opted-out-Region, empty,
+  and high-resource-count accounts.
+- Prove one denied member account produces an explicit failed account/target and
+  does not stop successful account shards.
+- Replay the same S3 event and confirm the object ledger and observation counts
+  remain unchanged.
+- Change run ID, account ID, Region, schema version, evidence type, observation
+  time, group ID, or key path independently and confirm ingestion fails closed.
+- Test compressed bombs, oversized manifests, excessive groups/rules/attachments,
+  and missing `Content-Length`/event size hints.
+- Modify canonical shard bytes and prove checksum validation fails.
+- Attempt SQS delivery from another EventBridge rule/account and prove the queue
+  policy denies it.
+- Use IAM Access Analyzer on the StackSet member role, evidence bucket, KMS key,
+  queue, and Lambda roles.
+- Confirm no collector role has EC2, IAM, Organizations, S3, KMS, or database
+  write permissions beyond its documented central resources.
+
+## Coverage correctness
+
+- Compare Organizations active account count to manifest `accountsExpected`.
+- Compare per-account enabled Regions to manifest targets after allowlist rules.
+- Confirm Coverage search, `Needs attention`, `Failed`, pagination, empty state,
+  legacy transition, retry, and stale-manifest behavior.
+- Remove a previously collected account's role and prove the current UI retains
+  its last observation while marking the new run incomplete/stale.
+
+## Bedrock AI analyst tests
+
+- Put prompt instructions, XML-like role tags, Unicode controls, markdown, and
+  remediation commands in security-group names, tags, owner, intent, and actor fields.
+- Confirm raw `evidenceSnapshot`, uploaded log bodies, credentials, and unrelated
+  findings never appear in the compact Bedrock request.
+- Require every accepted claim reference to exist in the submitted fact IDs.
+- Mutate the model's deterministic verdict, mode, schema version, extra property,
+  query field, confidence, action approval flag, and output length independently;
+  confirm validation fails and deterministic fallback is returned.
+- Confirm Guardrail intervention, timeout, access denial, throttling, malformed
+  JSON, missing text output, and disabled service all preserve core findings.
+- Send more than 25 findings, 60 KB to the route, 96 KB to the bridge, and 64 KB
+  from a mock model; confirm each boundary fails closed.
+- Race more than 100 requests for one actor and 500 for a workspace; confirm the
+  atomic counters prevent overrun and cached requests do not consume reservations.
+- Verify viewer/reviewer denial, analyst access, same-origin enforcement, feedback
+  ownership, cache expiry, audit attribution, and generic public errors.
+- Verify the workload role can invoke only the approved inference profile/model
+  destinations and stack Guardrail, and cannot invoke an unrelated model.
+- Render hostile model text and remediation blocks; confirm React escapes them and
+  no control offers automatic execution.
+- Disable Bedrock through CloudFormation and confirm deterministic daily findings,
+  search, triage, reporting, and remediation continue unchanged.
+
 **Version:** 1.0  
 **Baseline:** July 31, 2026 adversarial audit  
 **Purpose:** Convert the threat model and findings into repeatable release gates
@@ -246,6 +300,21 @@ data loss. Define alert thresholds before production.
 Expected: events contain immutable actor, request/correlation ID, source, target,
 old/new state, result, and time. The application cannot rewrite the central archive.
 
+Execute the Aurora governance regression with two synthetic workspaces and the
+actual non-owner login secrets:
+
+1. Create expired, current, held, and unheld records for both workspaces.
+2. Test correct, wrong, missing, empty, and malformed workspace settings as each
+   workload role. Access outside the selected workspace must fail closed.
+3. Attempt to disable RLS, change ownership, set `row_security=off`, update or
+   delete an audit event, and truncate the table. Every attempt must fail.
+4. Run governance maintenance twice. Held/current rows must remain, eligible
+   rows must be removed only in bounded batches, and retries must be idempotent.
+5. Deny S3 `PutObject` and prove no unarchived audit row is purged.
+6. Verify each archived version's SHA-256 and NDJSON count against the ledger.
+7. Attempt archive deletion and retention reduction with every workload role;
+   compliance Object Lock must deny both.
+
 ## Automated release gates
 
 Required on every pull request:
@@ -277,10 +346,16 @@ Required after deployment:
 - alert delivery and on-call acknowledgement;
 - release digest matches the approved artifact.
 
+The web acceptance run must additionally prove the ALB is `internal`, both ALB
+subnets have no internet-gateway default route, the instance has no public IPv4
+address, and the CloudFront origin references the expected VPC origin ID. Invoke
+the private audit-outbox route concurrently and prove one lease owner archives
+each event while retries preserve undelivered records and raise the configured
+failure alarm.
+
 ## Evidence retention
 
 Store machine-readable test output, deployed template, image digest, SBOM,
 provenance, security scans, Access Analyzer results, restore evidence, reviewer, and
 date with the release record. Redact credentials and customer data before attaching
 evidence to GitHub.
-

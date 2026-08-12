@@ -1,0 +1,22 @@
+[extend]
+useDefault = true
+
+# These two identifiers are deterministic, non-secret AWS Network Access
+# Analyzer IDs used only by the checked-in sample generator and its generated
+# fixture. Require the generic-key rule, an exact synthetic value, and one of
+# the two exact paths so this exception cannot suppress real credentials.
+[[rules]]
+id = "generic-api-key"
+
+  [[rules.allowlists]]
+  description = "Synthetic Network Access Analyzer identifiers in sample evidence"
+  condition = "AND"
+  regexTarget = "secret"
+  regexes = [
+    '''^nisa-0a41f2e91b71$''',
+    '''^nis-0a41f2e91b71$''',
+  ]
+  paths = [
+    '''^samples/aws-evidence-batch/06-network-access-analyzer\.json$''',
+    '''^scripts/generate-sample-aws-evidence\.mjs$''',
+  ]

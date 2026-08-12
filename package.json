@@ -8,14 +8,17 @@
   "scripts": {
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
     "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
+    "build:aws": "GATEWATCH_TARGET=aws GATEWATCH_SQLITE_PATH=:memory: next build --webpack",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
-    "test": "npm run build && node --test tests/*.test.mjs",
+    "test": "npm run build && node --experimental-strip-types --test tests/*.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
     "sample:cloudtrail": "node scripts/generate-sample-cloudtrail.mjs",
-    "sample:cloudtrail:detailed": "node scripts/generate-detailed-cloudtrail.mjs"
+    "sample:cloudtrail:detailed": "node scripts/generate-detailed-cloudtrail.mjs",
+    "sample:aws-evidence": "node scripts/generate-sample-aws-evidence.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1100.0",
     "@aws-sdk/client-s3": "^3.1099.0",
     "@aws-sdk/client-secrets-manager": "^3.1100.0",
     "@aws-sdk/client-sts": "^3.1099.0",
@@ -24,7 +27,9 @@
     "lucide-react": "^1.28.0",
     "next": "^16.2.12",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "wrangler": "^4.116.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.49.0",
@@ -41,8 +46,7 @@
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
     "vinext": "0.0.50",
-    "vite": "^8.2.0",
-    "wrangler": "^4.116.0"
+    "vite": "^8.2.0"
   },
   "overrides": {
     "postcss": "8.5.25",

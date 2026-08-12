@@ -1,4 +1,6 @@
 import { env } from "cloudflare:workers";
+import { HttpInputError, readBoundedJson } from "../../../lib/http-security";
+import { requireAdmin, requirePermission } from "../../../lib/server-admin";
 
 type ReviewInput = {
   resourceKey?: unknown;
@@ -210,14 +212,11 @@ export async function POST(request: Request) {
     if (!sameOrigin(request)) {
       return json({ error: "Origin is not allowed." }, 403);
     }
-    const contentLength = Number(request.headers.get("content-length") ?? "0");
-    if (contentLength > 20_000) {
-      return json({ error: "The review payload is too large." }, 413);
+    const permission = await requirePermission(request, "reviews.write");
+    if (!permission.allowed) {
+      return json({ error: "Analyst or reviewer access is required to change reviews." }, 403);
     }
-    if (!request.headers.get("content-type")?.startsWith("application/json")) {
-      return json({ error: "Content-Type must be application/json." }, 415);
-    }
-    const payload = (await request.json()) as ReviewInput;
+    const payload = await readBoundedJson<ReviewInput>(request, 20_000);
     const resourceKey = cleanText(payload.resourceKey, 600);
     const securityGroupId = cleanText(payload.securityGroupId, 80);
     const accountId = cleanText(payload.accountId, 20);
@@ -228,6 +227,12 @@ export async function POST(request: Request) {
     const note = cleanText(payload.note, 1200);
     const ticketRef = cleanText(payload.ticketRef, 120);
     const expiresAt = cleanText(payload.expiresAt, 20);
+    if (status === "exception") {
+      const authorization = await requireAdmin(request);
+      if (!authorization.allowed) {
+        return json({ error: "Administrator approval is required for an exception." }, 403);
+      }
+    }
     const evidenceSnapshot = cleanText(payload.evidenceSnapshot, 1000);
 
     if (!/^sg-[a-zA-Z0-9-]+$/.test(securityGroupId)) {
@@ -351,9 +356,7 @@ export async function POST(request: Request) {
 
     return json({ review }, 201);
   } catch (error) {
-    if (error instanceof SyntaxError) {
-      return json({ error: "Request body must be valid JSON." }, 400);
-    }
+    if (error instanceof HttpInputError) return json({ error: error.message }, error.status);
     return json({ error: "The review could not be saved. Try again." }, 503);
   }
 }

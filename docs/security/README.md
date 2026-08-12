@@ -7,19 +7,22 @@ auditors, and operators who approve deployment into AWS environments.
 ## Current security posture
 
 The July 31, 2026 adversarial review found no confirmed unauthenticated remote
-code execution, SQL injection, direct SSRF, or exposed credential. It did find
-five high-severity issues that must be resolved before Gatewatch is used as an
-authoritative governance system across hundreds of AWS accounts:
+code execution, SQL injection, direct SSRF, or exposed credential, but identified
+high-risk identity, authorization, artifact, isolation, and governance gaps.
+The August 12 remediation integrates fixes and blocking regression tests for the
+sanitized public findings, including individual MFA-backed identity, central
+authorization, immutable approvals, a private production AWS runtime, forced
+RLS, external immutable audit, enforced retention, and signed release artifacts.
 
-1. The AWS deployment gives all operators one shared administrator identity.
-2. Several mutation APIs do not consistently enforce the application role model.
-3. Exception decisions can bypass authorization through workflow type confusion.
-4. Generated cross-account CloudFormation is vulnerable to validated YAML injection.
-5. Deployment artifacts are executed as root without verifying the expected
-   checksum or immutable S3 object version.
+The August 9 Bedrock review found no confirmed AI-specific path to AWS mutation,
+authorization bypass, code execution, or secret disclosure. The advisory path is
+minimized, schema constrained, citation/verdict checked, Guardrail protected,
+budgeted, cached, audited, and unable to execute changes. It does not reduce the
+inherited shared-identity and compatibility-runtime blockers.
 
-Gatewatch should be treated as **pre-production for multi-account governance**
-until the priority-zero exit criteria in the remediation roadmap are met.
+Gatewatch remains **pre-production for authoritative multi-account governance**
+until the attested main artifact passes the target-AWS acceptance suite. Code and
+CI completion alone do not satisfy the release gate.
 
 ## Document set
 
@@ -29,6 +32,12 @@ until the priority-zero exit criteria in the remediation roadmap are met.
 | [Adversarial security audit](SECURITY_AUDIT_2026-07-31.md) | Evidence-backed findings, exploit scenarios, and fixes |
 | [Remediation roadmap](REMEDIATION_ROADMAP.md) | Priorities, work packages, dependencies, and acceptance criteria |
 | [Security test plan](SECURITY_TEST_PLAN.md) | Automated and manual validation required before production |
+| [August 3 implementation update](SECURITY_UPDATE_2026-08-03.md) | Implemented controls, evidence, residual work, and remaining release blockers |
+| [August 9 Bedrock security review](SECURITY_UPDATE_2026-08-09.md) | AI trust boundaries, adversarial findings, exploit chains, controls, residual risk, and tests |
+| [August 11 remediation update](SECURITY_UPDATE_2026-08-11.md) | Sanitized application, AWS edge, data-governance, and CI remediation status |
+| [August 12 remediation update](SECURITY_UPDATE_2026-08-12.md) | Integrated controls, release evidence, residual exception, and target-AWS gate |
+| [Aurora recovery drill](AURORA_RESTORE_DRILL.md) | Change-controlled point-in-time restore and evidence procedure |
+| [Time-bounded exceptions](SECURITY_EXCEPTIONS.md) | Owned, path-scoped exceptions with compensating controls and automatic expiry |
 | [Repository security policy](../../SECURITY.md) | Private reporting and secret-handling expectations |
 
 ## How to use these documents
@@ -52,4 +61,3 @@ A production release is blocked if any of these are true:
 - cross-account IAM has not been validated with Access Analyzer and a permission boundary;
 - end-to-end TLS, edge logging, abuse controls, backup restoration, or secret
   rotation have not been demonstrated in the target AWS environment.
-

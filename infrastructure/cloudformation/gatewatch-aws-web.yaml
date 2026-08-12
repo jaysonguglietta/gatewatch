@@ -17,28 +17,129 @@ Parameters:
     Type: String
     MinLength: 1
     MaxLength: 1024
+  ArtifactVersionId:
+    Type: String
+    MinLength: 1
+    MaxLength: 1024
+    AllowedPattern: "^[A-Za-z0-9._-]+$"
+    Description: Immutable S3 VersionId for the release artifact.
+  ArtifactSha256:
+    Type: String
+    AllowedPattern: "^[a-f0-9]{64}$"
+    Description: Expected SHA-256 digest for the exact release artifact bytes.
+  ImageArtifactKey:
+    Type: String
+    MinLength: 1
+    MaxLength: 1024
+    AllowedPattern: "^releases/images/[a-f0-9]{64}/gatewatch-web[.]tar[.]gz$"
+  ImageArtifactVersionId:
+    Type: String
+    MinLength: 1
+    MaxLength: 1024
+    AllowedPattern: "^[A-Za-z0-9._-]+$"
+    Description: Immutable S3 VersionId for the scanned production image archive.
+  ImageArtifactSha256:
+    Type: String
+    AllowedPattern: "^[a-f0-9]{64}$"
+    Description: Expected SHA-256 digest for the attested production image archive.
+  ApplicationImageRef:
+    Type: String
+    AllowedPattern: "^gatewatch-web:[a-f0-9]{40}$"
+    Description: Exact image tag embedded in the verified release archive.
   SnapshotBucket:
     Type: String
     AllowedPattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
   SnapshotKey:
     Type: String
     Default: exports/latest.json
+  SnapshotManifestKey:
+    Type: String
+    Default: manifests/latest.json
+    AllowedPattern: "^[A-Za-z0-9!_.*'()/=-]{1,1024}$"
   SnapshotRegion:
     Type: String
     Default: us-east-1
     AllowedPattern: "^[a-z0-9-]+-[0-9]$"
+  OrganizationEvidenceBucket:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+    Description: Optional EvidenceBucketName output from the organization collector.
+  OrganizationManifestKey:
+    Type: String
+    Default: manifests/latest.json
+    AllowedPattern: "^[A-Za-z0-9!_.*'()/=-]{1,1024}$"
   CloudFrontOriginPrefixListId:
     Type: String
     AllowedPattern: "^pl-[a-z0-9]+$"
+  PublicDomainName:
+    Type: String
+    AllowedPattern: "^[a-z0-9](?:[a-z0-9.-]{1,251}[a-z0-9])$"
+    Description: Public Gatewatch DNS name; the stack provisions and validates its ACM certificate.
+  OriginDomainName:
+    Type: String
+    AllowedPattern: "^[a-z0-9](?:[a-z0-9.-]{1,251}[a-z0-9])$"
+    Description: Dedicated private ALB origin DNS name; the stack provisions and validates its ACM certificate.
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+  BootstrapAdminEmail:
+    Type: String
+    AllowedPattern: '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'
+  CognitoDomainPrefix:
+    Type: String
+    AllowedPattern: "^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$"
+    Description: Globally unique Cognito managed-login domain prefix.
+  OAuth2ProxyImage:
+    Type: String
+    AllowedPattern: "^[^[:space:]@]+@sha256:[a-f0-9]{64}$"
+    Description: Digest-pinned oauth2-proxy image.
+  SnapshotKmsKeyArn:
+    Type: String
+    AllowedPattern: "^arn:[a-z0-9-]+:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]+$"
+  OrganizationEvidenceKmsKeyArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:[a-z0-9-]+:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]+$"
+  AuditArchiveBucket:
+    Type: String
+    AllowedPattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+    Description: Compliance Object Lock bucket created by the Gatewatch data platform.
+  AuditArchiveKmsKeyArn:
+    Type: String
+    AllowedPattern: "^arn:[a-z0-9-]+:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]+$"
+  WorkspaceId:
+    Type: String
+    AllowedPattern: "^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+  SourceOrganizationId:
+    Type: String
+    AllowedPattern: "^o-[a-z0-9]{10,32}$"
+    Description: AWS Organization containing every approved Gatewatch evidence role.
   InstanceType:
     Type: String
     Default: t4g.small
     AllowedValues:
       - t4g.small
       - t4g.medium
+  BedrockEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Enables review-only Bedrock analyst workflows. Deterministic findings remain authoritative.
+  BedrockModelId:
+    Type: String
+    Default: us.amazon.nova-2-lite-v1:0
+    AllowedValues:
+      - us.amazon.nova-2-lite-v1:0
+    Description: US-geo inference profile approved for Gatewatch structured analysis.
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+
+Conditions:
+  HasOrganizationEvidence: !Not [!Equals [!Ref OrganizationEvidenceBucket, ""]]
+  HasOrganizationEvidenceKmsKey: !Not [!Equals [!Ref OrganizationEvidenceKmsKeyArn, ""]]
 
 Resources:
   WebVpc:
@@ -70,11 +171,44 @@ Resources:
     Properties:
       AvailabilityZone: !Select [0, !GetAZs ""]
       CidrBlock: 10.83.0.0/26
-      MapPublicIpOnLaunch: true
+      MapPublicIpOnLaunch: false
       VpcId: !Ref WebVpc
       Tags:
         - Key: Name
           Value: !Sub gatewatch-${EnvironmentName}-public-a
+
+  WebSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: 10.83.0.64/26
+      MapPublicIpOnLaunch: false
+      VpcId: !Ref WebVpc
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-public-b
+
+  WebPrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: 10.83.0.128/26
+      MapPublicIpOnLaunch: false
+      VpcId: !Ref WebVpc
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-private-a
+
+  WebPrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: 10.83.0.192/26
+      MapPublicIpOnLaunch: false
+      VpcId: !Ref WebVpc
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-private-b
 
   WebRouteTable:
     Type: AWS::EC2::RouteTable
@@ -98,17 +232,57 @@ Resources:
       RouteTableId: !Ref WebRouteTable
       SubnetId: !Ref WebSubnet
 
-  WebAuthenticationSecret:
-    Type: AWS::SecretsManager::Secret
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
+  WebSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      Description: Gatewatch web administrator credential
-      GenerateSecretString:
-        SecretStringTemplate: '{"username":"gatewatch-admin"}'
-        GenerateStringKey: password
-        PasswordLength: 32
-        ExcludePunctuation: true
+      RouteTableId: !Ref WebRouteTable
+      SubnetId: !Ref WebSubnetB
+
+  WebNatElasticIp:
+    Type: AWS::EC2::EIP
+    DependsOn: WebInternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-nat
+
+  WebNatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt WebNatElasticIp.AllocationId
+      ConnectivityType: public
+      SubnetId: !Ref WebSubnet
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-nat
+
+  WebPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref WebVpc
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-private
+
+  WebPrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref WebNatGateway
+      RouteTableId: !Ref WebPrivateRouteTable
+
+  WebPrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref WebPrivateRouteTable
+      SubnetId: !Ref WebPrivateSubnet
+
+  WebPrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref WebPrivateRouteTable
+      SubnetId: !Ref WebPrivateSubnetB
 
   CloudFrontOriginSecret:
     Type: AWS::SecretsManager::Secret
@@ -119,6 +293,130 @@ Resources:
       GenerateSecretString:
         PasswordLength: 48
         ExcludePunctuation: true
+
+  PublicCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref PublicDomainName
+      DomainValidationOptions:
+        - DomainName: !Ref PublicDomainName
+          HostedZoneId: !Ref HostedZoneId
+      ValidationMethod: DNS
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-public
+
+  OriginCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref OriginDomainName
+      DomainValidationOptions:
+        - DomainName: !Ref OriginDomainName
+          HostedZoneId: !Ref HostedZoneId
+      ValidationMethod: DNS
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-private-origin
+
+  AwsBridgeSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Gatewatch application-to-AWS-bridge bearer token
+      GenerateSecretString:
+        PasswordLength: 48
+        ExcludePunctuation: true
+
+  OidcCookieSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Gatewatch oauth2-proxy session-cookie encryption key
+      GenerateSecretString:
+        PasswordLength: 32
+        ExcludePunctuation: true
+
+  GatewatchUserPool:
+    Type: AWS::Cognito::UserPool
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      UserPoolName: !Sub gatewatch-${EnvironmentName}
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      MfaConfiguration: "ON"
+      EnabledMfas:
+        - SOFTWARE_TOKEN_MFA
+      DeletionProtection: ACTIVE
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 14
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 3
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      UserPoolTags:
+        Application: Gatewatch
+        DataClassification: Identity
+
+  GatewatchUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref GatewatchUserPool
+      ClientName: !Sub gatewatch-${EnvironmentName}-web
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      CallbackURLs:
+        - !Sub https://${PublicDomainName}/oauth2/callback
+      LogoutURLs:
+        - !Sub https://${PublicDomainName}/
+      SupportedIdentityProviders:
+        - COGNITO
+      EnableTokenRevocation: true
+      PreventUserExistenceErrors: ENABLED
+      AccessTokenValidity: 15
+      IdTokenValidity: 15
+      RefreshTokenValidity: 1
+      TokenValidityUnits:
+        AccessToken: minutes
+        IdToken: minutes
+        RefreshToken: days
+
+  GatewatchUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref GatewatchUserPool
+
+  BootstrapAdminUser:
+    Type: AWS::Cognito::UserPoolUser
+    Properties:
+      UserPoolId: !Ref GatewatchUserPool
+      Username: !Ref BootstrapAdminEmail
+      DesiredDeliveryMediums:
+        - EMAIL
+      UserAttributes:
+        - Name: email
+          Value: !Ref BootstrapAdminEmail
+        - Name: email_verified
+          Value: "true"
 
   JiraIntegrationSecret:
     Type: AWS::SecretsManager::Secret
@@ -133,6 +431,36 @@ Resources:
         - Key: DataClassification
           Value: Credential
 
+  GatewatchAiGuardrail:
+    Type: AWS::Bedrock::Guardrail
+    Properties:
+      Name: !Sub gatewatch-${EnvironmentName}-ai-guardrail
+      Description: Prompt-attack protection for untrusted AWS evidence and Gatewatch analyst requests.
+      BlockedInputMessaging: Gatewatch blocked untrusted instructions in the supplied evidence or analyst request.
+      BlockedOutputsMessaging: Gatewatch blocked an unsafe model response. Deterministic findings remain available.
+      ContentPolicyConfig:
+        FiltersConfig:
+          - Type: PROMPT_ATTACK
+            InputStrength: HIGH
+            OutputStrength: NONE
+            InputAction: BLOCK
+            OutputAction: NONE
+            InputEnabled: true
+            OutputEnabled: false
+            InputModalities:
+              - TEXT
+      Tags:
+        - Key: Application
+          Value: Gatewatch
+        - Key: Purpose
+          Value: SecurityAnalysis
+
+  GatewatchAiGuardrailVersion:
+    Type: AWS::Bedrock::GuardrailVersion
+    Properties:
+      GuardrailIdentifier: !GetAtt GatewatchAiGuardrail.GuardrailId
+      Description: Immutable Gatewatch analyst guardrail version.
+
   ApplicationLogGroup:
     Type: AWS::Logs::LogGroup
     DeletionPolicy: Retain
@@ -140,24 +468,207 @@ Resources:
     Properties:
       RetentionInDays: 90
 
+  EdgeAccessLogBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3045
+    Properties:
+      AccessControl: LogDeliveryWrite
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireEdgeAccessLogs
+            Status: Enabled
+            ExpirationInDays: 400
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  WafLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub aws-waf-logs-gatewatch-${EnvironmentName}
+      RetentionInDays: 90
+
+  GatewatchWebAcl:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub gatewatch-${EnvironmentName}-edge
+      Scope: CLOUDFRONT
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub gatewatch-${EnvironmentName}-edge
+        SampledRequestsEnabled: true
+      Rules:
+        - Name: AiAnalysisRateLimit
+          Priority: 0
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              AggregateKeyType: IP
+              EvaluationWindowSec: 300
+              Limit: 60
+              ScopeDownStatement:
+                ByteMatchStatement:
+                  FieldToMatch:
+                    UriPath: {}
+                  PositionalConstraint: STARTS_WITH
+                  SearchString: /api/ai/analysis
+                  TextTransformations:
+                    - Priority: 0
+                      Type: NONE
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: AiAnalysisRateLimit
+            SampledRequestsEnabled: true
+        - Name: IacEvaluationRateLimit
+          Priority: 1
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              AggregateKeyType: IP
+              EvaluationWindowSec: 300
+              Limit: 100
+              ScopeDownStatement:
+                ByteMatchStatement:
+                  FieldToMatch:
+                    UriPath: {}
+                  PositionalConstraint: STARTS_WITH
+                  SearchString: /api/iac/evaluate
+                  TextTransformations:
+                    - Priority: 0
+                      Type: NONE
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: IacEvaluationRateLimit
+            SampledRequestsEnabled: true
+        - Name: IpRateLimit
+          Priority: 2
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              AggregateKeyType: IP
+              EvaluationWindowSec: 300
+              Limit: 1000
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: IpRateLimit
+            SampledRequestsEnabled: true
+        - Name: AwsManagedCommon
+          Priority: 10
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: AwsManagedCommon
+            SampledRequestsEnabled: true
+        - Name: AwsManagedKnownBadInputs
+          Priority: 20
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: AwsManagedKnownBadInputs
+            SampledRequestsEnabled: true
+        - Name: AwsManagedIpReputation
+          Priority: 30
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesAmazonIpReputationList
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: AwsManagedIpReputation
+            SampledRequestsEnabled: true
+
+  GatewatchWafLogging:
+    Type: AWS::WAFv2::LoggingConfiguration
+    Properties:
+      LogDestinationConfigs:
+        - !GetAtt WafLogGroup.Arn
+      ResourceArn: !GetAtt GatewatchWebAcl.Arn
+      RedactedFields:
+        - SingleHeader:
+            Name: authorization
+        - SingleHeader:
+            Name: cookie
+
   WebSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Gatewatch web origin; CloudFront origin network only
       VpcId: !Ref WebVpc
-      SecurityGroupIngress:
-        - Description: HTTP from the AWS-managed CloudFront origin network
-          IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          SourcePrefixListId: !Ref CloudFrontOriginPrefixListId
       SecurityGroupEgress:
-        - Description: AWS APIs, package repositories, and container registry
-          IpProtocol: "-1"
+        - Description: TLS to AWS APIs, approved SaaS integrations, and the pinned OIDC image registry
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
           CidrIp: 0.0.0.0/0
       Tags:
         - Key: Name
           Value: !Sub gatewatch-${EnvironmentName}-web
+
+  OriginLoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Gatewatch TLS origin; AWS-managed CloudFront origin network only
+      VpcId: !Ref WebVpc
+      SecurityGroupIngress:
+        - Description: HTTPS from the AWS-managed CloudFront origin network
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourcePrefixListId: !Ref CloudFrontOriginPrefixListId
+      SecurityGroupEgress:
+        - Description: Forward authenticated edge traffic to the Gatewatch node
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          DestinationSecurityGroupId: !Ref WebSecurityGroup
+
+  WebIngressFromOriginLoadBalancer:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: HTTP from the dedicated TLS origin load balancer
+      GroupId: !Ref WebSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourceSecurityGroupId: !Ref OriginLoadBalancerSecurityGroup
 
   WebInstanceRole:
     Type: AWS::IAM::Role
@@ -182,30 +693,19 @@ Resources:
                   - s3:GetObject
                   - s3:GetObjectVersion
                 Resource: !Sub arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ArtifactKey}
-              - Sid: ReadSecurityGroupSnapshot
-                Effect: Allow
-                Action: s3:GetObject
-                Resource: !Sub arn:${AWS::Partition}:s3:::${SnapshotBucket}/${SnapshotKey}
-              - Sid: DecryptS3Objects
+              - Sid: ReadProductionImageArtifact
                 Effect: Allow
                 Action:
-                  - kms:Decrypt
-                  - kms:DescribeKey
-                Resource: "*"
-                Condition:
-                  StringEquals:
-                    kms:ViaService: !Sub s3.${AWS::Region}.amazonaws.com
-              - Sid: ReadRuntimeSecrets
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ImageArtifactKey}
+              - Sid: ReadBootstrapSecrets
                 Effect: Allow
                 Action: secretsmanager:GetSecretValue
                 Resource:
-                  - !Ref WebAuthenticationSecret
                   - !Ref CloudFrontOriginSecret
-                  - !Ref JiraIntegrationSecret
-              - Sid: UpdateJiraIntegrationSecret
-                Effect: Allow
-                Action: secretsmanager:PutSecretValue
-                Resource: !Ref JiraIntegrationSecret
+                  - !Ref AwsBridgeSecret
+                  - !Ref OidcCookieSecret
               - Sid: PublishApplicationLogs
                 Effect: Allow
                 Action:
@@ -213,10 +713,97 @@ Resources:
                   - logs:DescribeLogStreams
                   - logs:PutLogEvents
                 Resource: !Sub ${ApplicationLogGroup.Arn}:*
+
+  AwsBridgeRuntimeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: AWS permissions available only to the isolated Gatewatch bridge container.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !GetAtt WebInstanceRole.Arn
+            Action: sts:AssumeRole
+      MaxSessionDuration: 3600
+      Policies:
+        - PolicyName: GatewatchBridgeRuntime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadSecurityGroupSnapshot
+                Effect: Allow
+                Action: s3:GetObject
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${SnapshotBucket}/${SnapshotKey}
+                  - !Sub arn:${AWS::Partition}:s3:::${SnapshotBucket}/${SnapshotManifestKey}
+              - !If
+                - HasOrganizationEvidence
+                - Sid: ReadOrganizationCoverageManifest
+                  Effect: Allow
+                  Action: s3:GetObject
+                  Resource: !Sub arn:${AWS::Partition}:s3:::${OrganizationEvidenceBucket}/${OrganizationManifestKey}
+                - !Ref AWS::NoValue
+              - Sid: DecryptS3Objects
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource:
+                  - !Ref SnapshotKmsKeyArn
+                  - !If [HasOrganizationEvidenceKmsKey, !Ref OrganizationEvidenceKmsKeyArn, !Ref AWS::NoValue]
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub s3.${AWS::Region}.${AWS::URLSuffix}
+              - Sid: AppendApplicationAuditArchive
+                Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${AuditArchiveBucket}/audit/application/workspace=${WorkspaceId}/*
+              - Sid: EncryptApplicationAuditArchive
+                Effect: Allow
+                Action: kms:GenerateDataKey
+                Resource: !Ref AuditArchiveKmsKeyArn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub s3.${AWS::Region}.${AWS::URLSuffix}
+              - Sid: ManageJiraIntegrationSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:PutSecretValue
+                Resource: !Ref JiraIntegrationSecret
+              - Sid: InvokeApprovedGatewatchModel
+                Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource:
+                  - !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}
+                  - !Sub arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/amazon.nova-2-lite-v1:0
+                  - !Sub arn:${AWS::Partition}:bedrock:us-east-2::foundation-model/amazon.nova-2-lite-v1:0
+                  - !Sub arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/amazon.nova-2-lite-v1:0
+              - Sid: ApplyGatewatchGuardrail
+                Effect: Allow
+                Action: bedrock:ApplyGuardrail
+                Resource: !GetAtt GatewatchAiGuardrail.GuardrailArn
               - Sid: AssumeConfiguredEvidenceRoles
                 Effect: Allow
                 Action: sts:AssumeRole
                 Resource: !Sub arn:${AWS::Partition}:iam::*:role/GatewatchLogReadRole*
+                Condition:
+                  StringEquals:
+                    aws:ResourceOrgID: !Ref SourceOrganizationId
+
+  WebAssumeBridgeRuntimePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: AssumeGatewatchBridgeRuntime
+      Roles:
+        - !Ref WebInstanceRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Resource: !GetAtt AwsBridgeRuntimeRole.Arn
 
   WebInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -239,6 +826,16 @@ Resources:
         - Description: Stateful NFS responses
           IpProtocol: "-1"
           CidrIp: 127.0.0.1/32
+
+  WebEgressToFileSystem:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      Description: NFS to the encrypted Gatewatch EFS mount only
+      DestinationSecurityGroupId: !Ref WebFileSystemSecurityGroup
+      FromPort: 2049
+      GroupId: !Ref WebSecurityGroup
+      IpProtocol: tcp
+      ToPort: 2049
 
   WebFileSystem:
     Type: AWS::EFS::FileSystem
@@ -276,12 +873,12 @@ Resources:
       FileSystemId: !Ref WebFileSystem
       SecurityGroups:
         - !Ref WebFileSystemSecurityGroup
-      SubnetId: !Ref WebSubnet
+      SubnetId: !Ref WebPrivateSubnet
 
   WebInstance:
     Type: AWS::EC2::Instance
     DependsOn:
-      - WebDefaultRoute
+      - WebPrivateDefaultRoute
       - WebFileSystemMountTarget
     Properties:
       ImageId: !Ref LatestAmiId
@@ -294,12 +891,12 @@ Resources:
         HttpPutResponseHopLimit: 2
         InstanceMetadataTags: enabled
       NetworkInterfaces:
-        - AssociatePublicIpAddress: true
+        - AssociatePublicIpAddress: false
           DeleteOnTermination: true
           DeviceIndex: "0"
           GroupSet:
             - !Ref WebSecurityGroup
-          SubnetId: !Ref WebSubnet
+          SubnetId: !Ref WebPrivateSubnet
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs:
@@ -331,11 +928,76 @@ Resources:
           grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >>/etc/fstab
           touch /var/lib/gatewatch-bootstrap-ready
 
+  OriginLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      IpAddressType: ipv4
+      Scheme: internal
+      SecurityGroups:
+        - !Ref OriginLoadBalancerSecurityGroup
+      Subnets:
+        - !Ref WebPrivateSubnet
+        - !Ref WebPrivateSubnetB
+      Type: application
+      LoadBalancerAttributes:
+        - Key: deletion_protection.enabled
+          Value: "true"
+        - Key: routing.http.drop_invalid_header_fields.enabled
+          Value: "true"
+        - Key: routing.http.xff_client_port.enabled
+          Value: "true"
+
+  OriginTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /healthz
+      HealthCheckPort: traffic-port
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+      Port: 80
+      Protocol: HTTP
+      ProtocolVersion: HTTP1
+      Targets:
+        - Id: !Ref WebInstance
+          Port: 80
+      TargetType: instance
+      VpcId: !Ref WebVpc
+
+  OriginHttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      Certificates:
+        - CertificateArn: !Ref OriginCertificate
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref OriginTargetGroup
+      LoadBalancerArn: !Ref OriginLoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+
+  OriginDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      AliasTarget:
+        DNSName: !GetAtt OriginLoadBalancer.DNSName
+        EvaluateTargetHealth: true
+        HostedZoneId: !GetAtt OriginLoadBalancer.CanonicalHostedZoneID
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref OriginDomainName
+      Type: A
+
   WebDeploymentAssociation:
     Type: AWS::SSM::Association
     DependsOn:
       - WebFileSystemMountTarget
-      - ApplicationLogGroup
+      - WebAssumeBridgeRuntimePolicy
     Properties:
       Name: AWS-RunShellScript
       AssociationName: !Sub gatewatch-${EnvironmentName}-web-deployment
@@ -353,8 +1015,21 @@ Resources:
                 sleep 5
               done
               test -f /var/lib/gatewatch-bootstrap-ready
-              rm -rf /opt/gatewatch-release /tmp/gatewatch-release.zip
-              aws s3 cp 's3://${ArtifactBucket}/${ArtifactKey}' /tmp/gatewatch-release.zip --region '${AWS::Region}' --no-progress
+              rm -rf /opt/gatewatch-release /tmp/gatewatch-release.zip /tmp/gatewatch-web.tar.gz
+              aws s3api get-object \
+                --bucket '${ArtifactBucket}' \
+                --key '${ArtifactKey}' \
+                --version-id '${ArtifactVersionId}' \
+                --region '${AWS::Region}' \
+                /tmp/gatewatch-release.zip >/dev/null
+              printf '%s  %s\n' '${ArtifactSha256}' /tmp/gatewatch-release.zip | sha256sum -c -
+              aws s3api get-object \
+                --bucket '${ArtifactBucket}' \
+                --key '${ImageArtifactKey}' \
+                --version-id '${ImageArtifactVersionId}' \
+                --region '${AWS::Region}' \
+                /tmp/gatewatch-web.tar.gz >/dev/null
+              printf '%s  %s\n' '${ImageArtifactSha256}' /tmp/gatewatch-web.tar.gz | sha256sum -c -
               mkdir -p /opt/gatewatch-release
               unzip -q /tmp/gatewatch-release.zip -d /opt/gatewatch-release
               cd /opt/gatewatch-release
@@ -362,14 +1037,85 @@ Resources:
               RELEASE_ID=$(printf '%s' '${ArtifactKey}' | sha256sum | cut -c1-12)
               ./infrastructure/aws-web/install.sh \
                 '${AWS::Region}' \
-                '${WebAuthenticationSecret}' \
                 '${CloudFrontOriginSecret}' \
+                '${AwsBridgeSecret}' \
+                '${OidcCookieSecret}' \
                 '${JiraIntegrationSecret}' \
+                '${GatewatchUserPool}' \
+                '${GatewatchUserPoolClient}' \
+                '${CognitoDomainPrefix}' \
+                'https://${PublicDomainName}' \
+                '${BootstrapAdminEmail}' \
                 '${SnapshotBucket}' \
                 '${SnapshotKey}' \
+                '${SnapshotManifestKey}' \
                 '${SnapshotRegion}' \
+                '${OrganizationEvidenceBucket}' \
+                '${OrganizationManifestKey}' \
+                '${AuditArchiveBucket}' \
+                '${WorkspaceId}' \
+                '${AwsBridgeRuntimeRole.Arn}' \
                 '${ApplicationLogGroup}' \
-                "$RELEASE_ID"
+                "$RELEASE_ID" \
+                '${BedrockEnabled}' \
+                '${BedrockModelId}' \
+                '${GatewatchAiGuardrail.GuardrailId}' \
+                '${GatewatchAiGuardrailVersion.Version}' \
+                '${OAuth2ProxyImage}' \
+                '${ApplicationImageRef}' \
+                '/tmp/gatewatch-web.tar.gz' \
+                '${ImageArtifactSha256}'
+
+  AuditOutboxDeliveryAssociation:
+    Type: AWS::SSM::Association
+    DependsOn: WebDeploymentAssociation
+    Properties:
+      Name: AWS-RunShellScript
+      AssociationName: !Sub gatewatch-${EnvironmentName}-audit-outbox-delivery
+      ApplyOnlyAtCronInterval: true
+      ScheduleExpression: rate(5 minutes)
+      Targets:
+        - Key: InstanceIds
+          Values:
+            - !Ref WebInstance
+      Parameters:
+        commands:
+          - !Sub |
+              set -euo pipefail
+              TOKEN=$(aws secretsmanager get-secret-value \
+                --region '${AWS::Region}' \
+                --secret-id '${AwsBridgeSecret}' \
+                --query SecretString \
+                --output text)
+              curl --fail --silent --show-error \
+                --request POST \
+                --header "Authorization: Bearer $TOKEN" \
+                --max-time 60 \
+                http://127.0.0.1:3000/api/internal/audit-outbox >/dev/null
+
+  AuditOutboxFailureMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      FilterPattern: '{ $.event = "audit_outbox_delivery_failed" }'
+      MetricTransformations:
+        - MetricNamespace: Gatewatch/Security
+          MetricName: AuditOutboxDeliveryFailures
+          MetricValue: "1"
+
+  AuditOutboxFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Gatewatch could not archive one or more application audit events.
+      Namespace: Gatewatch/Security
+      MetricName: AuditOutboxDeliveryFailures
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
 
   NoCachePolicy:
     Type: AWS::CloudFront::CachePolicy
@@ -395,11 +1141,13 @@ Resources:
     Properties:
       OriginRequestPolicyConfig:
         Name: !Sub gatewatch-${EnvironmentName}-all-viewer
-        Comment: Forward authentication, origin, query, and workflow request context.
+        Comment: Forward viewer context without forwarding a Host header that would break origin TLS validation.
         CookiesConfig:
           CookieBehavior: all
         HeadersConfig:
-          HeaderBehavior: allViewer
+          HeaderBehavior: allExcept
+          Headers:
+            - host
         QueryStringsConfig:
           QueryStringBehavior: all
 
@@ -425,28 +1173,64 @@ Resources:
             Protection: true
             ModeBlock: true
             Override: true
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: >-
+              default-src 'self'; base-uri 'self'; frame-ancestors 'none';
+              object-src 'none'; form-action 'self'; img-src 'self' data:;
+              font-src 'self' data:; style-src 'self' 'unsafe-inline';
+              script-src 'self' 'unsafe-inline'; connect-src 'self';
+              upgrade-insecure-requests
+            Override: true
+        CustomHeadersConfig:
+          Items:
+            - Header: Permissions-Policy
+              Value: camera=(), geolocation=(), microphone=(), payment=(), usb=()
+              Override: true
+
+  PrivateWebVpcOrigin:
+    Type: AWS::CloudFront::VpcOrigin
+    Properties:
+      VpcOriginEndpointConfig:
+        Arn: !Ref OriginLoadBalancer
+        HTTPPort: 80
+        HTTPSPort: 443
+        Name: !Sub gatewatch-${EnvironmentName}-private-origin
+        OriginProtocolPolicy: https-only
+        OriginSSLProtocols:
+          - TLSv1.2
+      Tags:
+        - Key: Name
+          Value: !Sub gatewatch-${EnvironmentName}-private-origin
 
   WebDistribution:
     Type: AWS::CloudFront::Distribution
-    DependsOn: WebDeploymentAssociation
+    DependsOn:
+      - OriginHttpsListener
+      - WebDeploymentAssociation
     Properties:
       DistributionConfig:
         Comment: !Sub Gatewatch ${EnvironmentName} web dashboard
         Enabled: true
+        Aliases:
+          - !Ref PublicDomainName
         HttpVersion: http2and3
         IPV6Enabled: true
+        Logging:
+          Bucket: !GetAtt EdgeAccessLogBucket.DomainName
+          IncludeCookies: false
+          Prefix: !Sub cloudfront/${EnvironmentName}/
         PriceClass: PriceClass_100
+        WebACLId: !GetAtt GatewatchWebAcl.Arn
         Origins:
           - Id: gatewatch-web-origin
-            DomainName: !GetAtt WebInstance.PublicDnsName
+            DomainName: !Ref OriginDomainName
             ConnectionAttempts: 3
             ConnectionTimeout: 10
             OriginCustomHeaders:
               - HeaderName: X-Gatewatch-Origin
                 HeaderValue: !Sub '{{resolve:secretsmanager:${CloudFrontOriginSecret}}}'
-            CustomOriginConfig:
-              HTTPPort: 80
-              OriginProtocolPolicy: http-only
+            VpcOriginConfig:
+              VpcOriginId: !GetAtt PrivateWebVpcOrigin.Id
               OriginReadTimeout: 120
               OriginKeepaliveTimeout: 5
         DefaultCacheBehavior:
@@ -468,18 +1252,39 @@ Resources:
           ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
           Compress: true
         ViewerCertificate:
-          CloudFrontDefaultCertificate: true
+          AcmCertificateArn: !Ref PublicCertificate
+          MinimumProtocolVersion: TLSv1.2_2021
+          SslSupportMethod: sni-only
+
+  PublicDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      AliasTarget:
+        DNSName: !GetAtt WebDistribution.DomainName
+        EvaluateTargetHealth: false
+        HostedZoneId: Z2FDTNDATAQYW2
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref PublicDomainName
+      Type: A
 
 Outputs:
   DashboardUrl:
     Description: HTTPS URL for the Gatewatch web dashboard
-    Value: !Sub https://${WebDistribution.DomainName}
-  WebAuthenticationSecretArn:
-    Description: Retrieve this secret through an authorized AWS CLI session.
-    Value: !Ref WebAuthenticationSecret
+    Value: !Sub https://${PublicDomainName}
+  CognitoUserPoolId:
+    Description: User pool providing individual identities and MFA.
+    Value: !Ref GatewatchUserPool
   JiraIntegrationSecretArn:
     Description: Secret containing the Jira Cloud integration configuration.
     Value: !Ref JiraIntegrationSecret
+  BedrockModelId:
+    Description: Approved Bedrock inference profile used by Gatewatch.
+    Value: !Ref BedrockModelId
+  BedrockGuardrailId:
+    Description: Versioned prompt-attack guardrail applied to Gatewatch inference.
+    Value: !GetAtt GatewatchAiGuardrail.GuardrailId
+  BedrockGuardrailVersion:
+    Value: !GetAtt GatewatchAiGuardrailVersion.Version
   InstanceId:
     Value: !Ref WebInstance
   PersistentFileSystemId:

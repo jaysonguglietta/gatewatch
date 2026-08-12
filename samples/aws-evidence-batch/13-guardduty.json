@@ -1,0 +1,98 @@
+{
+  "findings": [
+    {
+      "accountId": "428196730552",
+      "arn": "arn:aws:guardduty:us-east-1:428196730552:detector/12abc34d567e8fa901bc2d34e56789f0/finding/guardduty-synthetic-1",
+      "confidence": 92,
+      "createdAt": "2026-08-07T12:20:00.000Z",
+      "description": "The synthetic payments instance communicated with an IP address on a threat list.",
+      "id": "guardduty-synthetic-1",
+      "partition": "aws",
+      "region": "us-east-1",
+      "resource": {
+        "instanceDetails": {
+          "availabilityZone": "us-east-1a",
+          "instanceId": "i-02aa9e6f3",
+          "instanceState": "running",
+          "instanceType": "m6i.large",
+          "launchTime": "2026-08-01T08:00:00.000Z",
+          "networkInterfaces": [
+            {
+              "networkInterfaceId": "eni-0a41f2e91b71",
+              "privateDnsName": "ip-10-20-1-10.ec2.internal",
+              "privateIpAddress": "10.20.1.10",
+              "privateIpAddresses": [
+                {
+                  "privateDnsName": "ip-10-20-1-10.ec2.internal",
+                  "privateIpAddress": "10.20.1.10"
+                }
+              ],
+              "publicDnsName": "",
+              "publicIp": "",
+              "securityGroups": [
+                {
+                  "groupId": "sg-0a41f2e91b71",
+                  "groupName": "prod-payments-api"
+                }
+              ],
+              "subnetId": "subnet-payments-a",
+              "vpcId": "vpc-prod-core"
+            }
+          ],
+          "tags": [
+            {
+              "key": "Service",
+              "value": "Payments API"
+            }
+          ]
+        },
+        "resourceType": "Instance"
+      },
+      "schemaVersion": "2.0",
+      "service": {
+        "action": {
+          "actionType": "NETWORK_CONNECTION",
+          "networkConnectionAction": {
+            "blocked": false,
+            "connectionDirection": "OUTBOUND",
+            "localIpDetails": {
+              "ipAddressV4": "10.20.1.10"
+            },
+            "localPortDetails": {
+              "port": 49152,
+              "portName": "Unknown"
+            },
+            "protocol": "TCP",
+            "remoteIpDetails": {
+              "country": {
+                "countryName": "Example"
+              },
+              "ipAddressV4": "192.0.2.44",
+              "organization": {
+                "asn": "64500",
+                "asnOrg": "Synthetic Network",
+                "isp": "Synthetic ISP",
+                "org": "Synthetic Network"
+              }
+            },
+            "remotePortDetails": {
+              "port": 443,
+              "portName": "HTTPS"
+            }
+          }
+        },
+        "archived": false,
+        "count": 1,
+        "detectorId": "12abc34d567e8fa901bc2d34e56789f0",
+        "eventFirstSeen": "2026-08-07T12:19:30.000Z",
+        "eventLastSeen": "2026-08-07T12:19:55.000Z",
+        "resourceRole": "ACTOR",
+        "serviceName": "guardduty"
+      },
+      "severity": 8,
+      "title": "Synthetic EC2 instance communicated with a threat-list address",
+      "type": "Backdoor:EC2/C&CActivity.B!DNS",
+      "updatedAt": "2026-08-07T12:20:30.000Z"
+    }
+  ]
+}

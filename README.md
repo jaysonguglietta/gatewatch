@@ -9,18 +9,53 @@ resources, and vulnerability context.
 
 ## Product surfaces
 
-- A server-paginated **Daily Findings Inbox** that is now the default operating
-  surface, with new-today, awaiting-action, overdue follow-up, expiring
-  exception, reopened-finding, and stale-account workload counters
-- Organization, OU, account, region, environment, owner, severity, and workflow
+- An **Organization Operations** plane for AWS Organizations account metadata,
+  regional evidence-health heatmaps, temporal finding state, reversible evidence
+  correlation, recurring monitors, governed exports, retention, legal holds, and
+  versioned risk scoring
+
+- A server-paginated, split-pane **Daily Findings Workspace** with keyboard
+  triage, auto-advance, server-backed undo, session progress, clustering, and
+  new/overdue/expiring/reopened workload counters
+- An exposure-first **Fix First** queue that consolidates contributing records
+  into one security-group work item, ranks confirmed public paths ahead of
+  evidence gaps and internal-only risk, and keeps the full ARN visible
+- Guided hunts for public administration/database/development ports, IPv6,
+  all-traffic rules, active public traffic, unapproved changes, internal lateral
+  reach, default groups, stale groups, exceptions, recurrence, and missing evidence
+- A transparent plain-language hunt assistant that produces an inspectable,
+  editable structured query rather than an opaque model decision
+- An optional Amazon Bedrock analyst for evidence-cited finding explanations,
+  daily digests, cluster briefs, natural-language hunt translation, and
+  review-only remediation drafts. A versioned Guardrail, strict JSON schema,
+  citation checks, atomic daily budgets, seven-day cache, feedback, and a
+  deterministic fallback keep AI output advisory and auditable
+- Organization, OU, account, region, environment, owner, severity, workflow, and
+  effective-internet exposure
   scoping designed for hundreds of AWS accounts, plus shareable URL filters and
-  user-owned saved views
-- Finding-level follow-up, acknowledgement, and accepted-risk workflows with
-  bulk actions, mandatory rationale, owners, due dates, tickets, compensating
-  controls, expiration, evidence snapshots, and append-only history
-- A finding investigation drawer that preserves inbox position while exposing
-  effective rules, reachability, traffic, CloudTrail provenance, remediation
-  guidance, notes, and the complete decision timeline
+  internet/no-internet sorting, personal queues, and personal or team saved views
+- Field-aware Daily Findings search across full security-group ARN, group ID/name,
+  account ID/name, Region, VPC, ingress/egress rule, protocol, port, source CIDR,
+  ownership, attached resources and tags, evidence state, workflow, and numeric
+  risk/confidence/age comparisons, plus intent, approval ticket, change approval,
+  Flow Log coverage, observed flows, rule ID, and attached-asset criticality
+- A visual query composer with field/value autocomplete, `AND`/`OR`/`NOT`
+  expressions, parentheses, history and recurrence predicates, matched-clause
+  explanations, dynamic result facets, correlated raw-evidence scope, monitored
+  searches, complete-result exports, and guarded search-backed bulk workflows
+- Finding-level follow-up, acknowledgement, accepted-risk, and resolution
+  workflows with structured reasons, evidence freshness gates, bulk guardrails,
+  mandatory rationale, owners, review dates, tickets, compensating controls,
+  expiration, evidence snapshots, and append-only history
+- A persistent investigation pane with effective rules, explainable risk,
+  a five-step exposure truth strip, evidence-readiness checklist, policy mapping,
+  exact before/after change, blast radius, AWS deep links, remediation package,
+  raw normalized evidence, notes, and the complete decision timeline
+- Exposure-by-criticality matrix and security outcome measures for confirmed
+  critical assets, exposure hours, reopened groups, tracked exceptions,
+  decision-ready evidence, and potential risk reduction
+- Five task-oriented workspaces—Findings, Inventory, Governance, Reports, and
+  Administration—with contextual navigation to every existing capability
 - Rule-level broad-access overview with search, direction/category filters, and
   CSV export
 - Effective-exposure verdicts that distinguish a syntactically broad rule from
@@ -43,6 +78,11 @@ resources, and vulnerability context.
   ineffective egress, and quota pressure
 - Pre-change IaC guardrails with pass/warn/block verdicts, projected risk,
   read-only PR evidence, and administrator-controlled enforcement mode
+- Local multi-file IaC security review for CloudFormation YAML/JSON and
+  Terraform HCL/JSON. Gatewatch consolidates inline and standalone rules by
+  proposed security group, reports exact file/resource/line evidence, evaluates
+  public-path signals, searches and filters results, and exports review-ready CSV
+  without executing templates, Terraform, providers, modules, or external data
 - Executive program metrics for exposure reduction, reachable critical assets,
   remediation speed, workflow adoption, evidence coverage, and CSV reporting
 - Posture context ranked by reachable risk
@@ -54,9 +94,12 @@ resources, and vulnerability context.
 - Choke-point remediation ranked by paths eliminated and traffic preserved
 - Recertification campaigns with reviewer progress and evidence packages
 - Point-in-time connectivity history with path and risk diffs
-- Local drag-and-drop CloudTrail import for `.json` and `.json.gz` logs,
-  including security-group event extraction, internet-wide change detection,
-  actor attribution, inventory correlation, and normalized CSV export
+- Mixed-batch drag-and-drop import for AWS JSON, JSON.GZ, JSONL, and text logs.
+  Gatewatch auto-detects 16 AWS evidence types, suppresses duplicate files and
+  records, correlates inventory and Config relationships, and produces one
+  ARN-identified consolidated finding per account, Region, and security group,
+  with field-aware search, account/Region/source filters, grouping, sorting,
+  pagination, and filtered CSV export for organization-scale review
 - Dry-run handoffs for Network Access Analyzer, Reachability Analyzer, Firewall
   Manager, Security Hub, and Terraform
 - Durable review decisions, ticket references, evidence snapshots, and
@@ -65,12 +108,16 @@ resources, and vulnerability context.
 - Read-only remediation simulation with transparent risk factors
 - Collection coverage for Config, CloudTrail, Flow Logs, Inspector, Security
   Hub, and Terraform access manifests
+- Organization-scale collection health with explicit run, account, and
+  account/Region status, attention filters, and pagination for 500+ accounts
 - Administrator configuration for CloudTrail and AWS Config S3 sources,
   including prefix-scoped IAM role templates, live-capable STS/S3 verification,
   historical backfill controls, ingestion health, roles, retention, and audit
 - AWS production foundations for Aurora PostgreSQL Serverless v2, bounded and
   idempotent SQS/Lambda ingestion, Step Functions backfills, dead-letter
   handling, KMS encryption, and operational alarms
+- Step Functions Distributed Map collection with service-managed read-role
+  StackSets, immutable account/Region evidence shards, and explicit manifests
 
 When the AWS snapshot binding is configured, inventory, findings, exposure
 verdicts, ownership queues, recommendations, collection coverage, and program
@@ -84,6 +131,9 @@ limitations, confidence, and snapshot identity behind each finding. The
 collector includes route-table, internet-gateway, public-address, subnet, and
 broad NACL evidence. A configured network path does not claim that a service
 is listening or that a connection succeeded without traffic evidence.
+Conversely, zero observed flows never proves a path is safe: Gatewatch presents
+Flow Logs as corroborating usage evidence and bases exposure on route, attachment,
+public-address, network-control, and reachability evidence.
 
 ## Local development
 
@@ -102,6 +152,14 @@ npm run lint
 node --test tests/rendered-html.test.mjs
 ```
 
+The analyst workflow and decision controls are documented in
+[`docs/SECURITY_ANALYST_WORKSPACE.md`](docs/SECURITY_ANALYST_WORKSPACE.md).
+The static IaC parsing and safety model is documented in
+[`docs/architecture/IAC_SECURITY_REVIEW.md`](docs/architecture/IAC_SECURITY_REVIEW.md).
+The Bedrock data boundary, model controls, IAM policy, failure behavior, and
+operating procedure are documented in
+[`docs/architecture/BEDROCK_AI_ANALYST.md`](docs/architecture/BEDROCK_AI_ANALYST.md).
+
 Review decisions are persisted through the configured Cloudflare D1 `DB`
 binding. Stable finding fingerprints, current analyst workflow, append-only
 notes/history, and saved views are stored separately so repeated observations
@@ -116,16 +174,37 @@ as well. Schema changes live in
 `db/schema.ts` and generated migrations are stored in `drizzle/`.
 
 The AWS target uses Aurora PostgreSQL rather than copying raw logs into a
-transactional database. The production schema is
-`db/postgres/0001_gatewatch_aws.sql`. Raw objects remain in the configured S3
-bucket; normalized events, configuration items, current rule versions,
-findings, and evidence references are stored in Aurora.
+transactional database. Apply the production migrations in filename order from
+`db/postgres/`: `0001_gatewatch_aws.sql` creates the evidence base and
+`0002_organization_operations.sql` adds the organization operating plane and
+workspace isolation, and `0003_finding_search.sql` adds the bounded search,
+temporal-history, and JSONB/trigram indexes used by the organization-scale
+findings workflow. `0004_bedrock_ai_analyst.sql` adds model analysis, feedback,
+and daily usage records without copying raw evidence. Raw objects remain in the configured S3 bucket;
+normalized events, configuration items, traffic observations, network
+analyses, service access, managed findings, current rule versions, findings,
+and evidence references are stored in Aurora.
+
+Open **Reports → Organization operations** to manage account context, inspect
+regional evidence health and finding lifecycle state, resolve evidence to a
+canonical security-group ARN, create recurring monitors and governed exports,
+and administer retention, legal holds, and versioned risk scoring. Operational
+details and role boundaries are documented in
+[`docs/architecture/ORGANIZATION_OPERATIONS.md`](docs/architecture/ORGANIZATION_OPERATIONS.md).
+
+The current-state authority is the distributed EC2 inventory collector. AWS
+Config supplies configuration history, CloudTrail supplies actor/change
+attribution, route/NACL/public-address evidence supplies configured
+reachability, and Flow Logs supply observed use. These claims remain separate.
 
 ## AWS administration and infrastructure
 
 Open **Admin config** in the application navigation to:
 
-- Add CloudTrail, Config history, and Config snapshot S3 prefixes
+- Add S3 prefixes for CloudTrail, Config, VPC and Transit Gateway Flow Logs,
+  Reachability Analyzer, Network Access Analyzer, ELB, WAF, CloudFront,
+  API Gateway, Route 53 Resolver, Network Firewall, GuardDuty, Security Hub,
+  and Inspector evidence
 - Generate a least-privilege cross-account read-role template
 - Validate source structure locally and perform live STS/S3 tests when an AWS
   runtime identity is present
@@ -133,6 +212,8 @@ Open **Admin config** in the application navigation to:
 - Review ingestion runs and administrative audit history
 - Manage application roles and normalized-data retention
 - Configure Jira reconciliation and notification routing
+- Inspect the Bedrock analyst model, Guardrail version, availability, personal
+  and workspace usage budgets, and the immutable human-approval boundary
 
 Notification routing writes retryable, auditable outbox records. An email or
 webhook delivery worker must be connected in the AWS runtime before those
@@ -154,9 +235,13 @@ AWS deployment assets are under `infrastructure/`:
 
 - `cloudformation/gatewatch-aws-platform.yaml` — Aurora, KMS, SQS/DLQ,
   ingestion and backfill workers, Step Functions, and alarms
+- `cloudformation/gatewatch-organization-collector.yaml` — Organizations
+  discovery, read-role StackSet, Distributed Map workers, DynamoDB coverage,
+  and immutable S3 shards/manifests
 - `cloudformation/gatewatch-s3-event-forwarding.yaml` — prefix-filtered S3
   Object Created forwarding through EventBridge
-- `lambda/ingest/` — duplicate-safe, size-bounded CloudTrail and Config worker
+- `lambda/organization-collector/` — discovery, account worker, and finalizer handlers
+- `lambda/ingest/` — duplicate-safe, size-bounded AWS-native evidence worker
 - `lambda/backfill/` — paginated historical discovery and enqueue worker
 
 ### Personal AWS deployment
@@ -174,6 +259,22 @@ The script deploys the `gatewatch-personal-sg-collector` stack in the profile's
 configured Region. Set `AWS_PROFILE`, `AWS_REGION`, or `GATEWATCH_STACK_NAME`
 to override those safe defaults. It never reads or copies credentials into the
 application package.
+
+### Organization deployment
+
+Deploy the distributed collector from an Organizations management account or
+registered StackSets delegated administrator:
+
+```bash
+export AWS_PROFILE=personal
+export GATEWATCH_ORGANIZATION_TARGET_IDS=r-abcd
+export GATEWATCH_STACKSET_CALL_AS=SELF
+./scripts/deploy-aws-organization.sh
+```
+
+Use `GATEWATCH_REGION_ALLOW_LIST` and `GATEWATCH_EXCLUDED_ACCOUNT_IDS` to scope
+the rollout. The script validates the template, uploads a content-addressed
+Lambda artifact, deploys the stack, and starts the initial collection.
 
 Deploy the complete authenticated web dashboard after the collector is ready:
 
@@ -195,19 +296,35 @@ not automatically deploy them. Package the Lambda directories, upload the
 versioned zip files to a private artifact bucket, then provide those keys to the
 platform stack. Apply the PostgreSQL migration before activating any source.
 
+Architecture decisions, diagrams, deployment order, data contracts, capacity
+guidance, migration, and operational response are documented in
+[`docs/architecture`](docs/architecture/README.md).
+
 AWS handoffs are deliberately dry-run artifacts in this version. They contain
 no credentials and cannot modify AWS. The future AWS deployment should use
 scoped cross-account roles, separate analysis permissions from enforcement,
 and require explicit approval for each write integration.
 
-Imported CloudTrail files are parsed in the browser and retained only for the
-current application session. The importer rejects files over 25 MB compressed,
-caps decompressed content at 50 MB, limits each import to 50,000 records, and
-does not send or persist the original log.
+Imported AWS files are parsed in the browser and retained only for the current
+application session. A selection may contain up to 30 mixed files and a session
+up to 60 files, with a 150 MB compressed batch limit. Each file is limited to
+25 MB compressed, 50 MB decompressed, and 50,000 records. SHA-256 file hashes
+and stable record fingerprints suppress exact duplicates; AWS Config
+relationships and live inventory correlate indirect evidence. Evidence without
+a defensible security-group relationship remains in an explicit unmatched queue
+instead of being guessed into a finding. Original files are never uploaded or
+persisted.
 
 A deterministic 50,000-record synthetic CloudTrail log is included at
 `samples/cloudtrail-security-groups-50000.json.gz`. Regenerate it with
 `npm run sample:cloudtrail`.
+
+The ready-to-upload mixed evidence pack at `samples/aws-evidence-batch/`
+contains 14 synthetic AWS files spanning Config, CloudTrail, VPC Flow Logs,
+network analysis, service access, GuardDuty, and Security Hub. Upload the 14
+numbered files together; `manifest.json` documents checksums and expected
+consolidation behavior. Regenerate and verify the pack with
+`npm run sample:aws-evidence`.
 
 The detailed workflows, trust boundaries, edge cases, and completion criteria
 for the AWS ingestion round are documented in `docs/PRODUCT_BRIEF.md`.

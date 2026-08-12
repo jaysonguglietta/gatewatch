@@ -1,7 +1,13 @@
 import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import { SendMessageBatchCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
-import { ExecuteStatementCommand, RDSDataClient } from "@aws-sdk/client-rds-data";
+import {
+  BeginTransactionCommand,
+  CommitTransactionCommand,
+  ExecuteStatementCommand,
+  RDSDataClient,
+  RollbackTransactionCommand,
+} from "@aws-sdk/client-rds-data";
 
 const rds = new RDSDataClient({});
 const sts = new STSClient({});
@@ -10,23 +16,81 @@ const database = process.env.DATABASE_NAME;
 const resourceArn = process.env.DB_CLUSTER_ARN;
 const secretArn = process.env.DB_SECRET_ARN;
 const queueUrl = process.env.INGESTION_QUEUE_URL;
+const workspaceId = process.env.WORKSPACE_ID;
+const SUPPORTED_EVIDENCE_SUFFIXES = [
+  ".json",
+  ".json.gz",
+  ".log",
+  ".log.gz",
+  ".txt",
+  ".txt.gz",
+  ".csv",
+  ".tsv",
+];
+
+if (!database || !resourceArn || !secretArn || !queueUrl || !workspaceId) {
+  throw new Error("BACKFILL_RUNTIME_CONFIGURATION_REQUIRED");
+}
+
+function parameters(values) {
+  return Object.entries(values).map(([name, value]) => ({
+    name,
+    value: typeof value === "number"
+      ? { longValue: value }
+      : typeof value === "boolean"
+        ? { booleanValue: value }
+        : { stringValue: String(value) },
+  }));
+}
+
+async function transaction(callback) {
+  const begun = await rds.send(new BeginTransactionCommand({ database, resourceArn, secretArn }));
+  if (!begun.transactionId) throw new Error("DATABASE_TRANSACTION_UNAVAILABLE");
+  try {
+    await rds.send(new ExecuteStatementCommand({
+      database,
+      resourceArn,
+      secretArn,
+      transactionId: begun.transactionId,
+      sql: "SELECT set_config('app.workspace_id', :workspaceId, true)",
+      parameters: parameters({ workspaceId }),
+    }));
+    const result = await callback(begun.transactionId);
+    await rds.send(new CommitTransactionCommand({
+      resourceArn,
+      secretArn,
+      transactionId: begun.transactionId,
+    }));
+    return result;
+  } catch (error) {
+    await rds.send(new RollbackTransactionCommand({
+      resourceArn,
+      secretArn,
+      transactionId: begun.transactionId,
+    })).catch(() => undefined);
+    throw error;
+  }
+}
 
 function fieldString(field) {
   return field?.stringValue ?? "";
 }
 
 async function sourceById(sourceId) {
-  const result = await rds.send(new ExecuteStatementCommand({
-    database,
-    resourceArn,
-    secretArn,
-    sql: `SELECT bucket_name, object_prefix, region, role_arn, external_id,
+  const result = await transaction((transactionId) =>
+    rds.send(new ExecuteStatementCommand({
+      database,
+      resourceArn,
+      secretArn,
+      transactionId,
+      sql: `SELECT bucket_name, object_prefix, region, role_arn, external_id,
                  backfill_start::text
             FROM ingestion_sources
-           WHERE id = CAST(:id AS uuid)
+           WHERE workspace_id = CAST(:workspaceId AS uuid)
+             AND id = CAST(:id AS uuid)
              AND status IN ('live', 'backfilling')`,
-    parameters: [{ name: "id", value: { stringValue: sourceId } }],
-  }));
+      parameters: parameters({ workspaceId, id: sourceId }),
+    })));
   const row = result.records?.[0];
   if (!row) throw new Error("BACKFILL_SOURCE_NOT_ACTIVE");
   return {
@@ -93,22 +157,19 @@ async function enqueue(source, objects, runId) {
 }
 
 async function updateRun(runId, discovered, done, cursor) {
-  await rds.send(new ExecuteStatementCommand({
-    database,
-    resourceArn,
-    secretArn,
-    sql: `UPDATE ingestion_runs
+  await transaction((transactionId) => rds.send(new ExecuteStatementCommand({
+      database,
+      resourceArn,
+      secretArn,
+      transactionId,
+      sql: `UPDATE ingestion_runs
              SET discovered_objects = discovered_objects + :discovered,
                  cursor = :cursor,
                  status = CASE WHEN :done THEN 'running' ELSE status END
-           WHERE id = CAST(:id AS uuid)`,
-    parameters: [
-      { name: "discovered", value: { longValue: discovered } },
-      { name: "cursor", value: { stringValue: cursor ?? "" } },
-      { name: "done", value: { booleanValue: done } },
-      { name: "id", value: { stringValue: runId } },
-    ],
-  }));
+           WHERE workspace_id = CAST(:workspaceId AS uuid)
+             AND id = CAST(:id AS uuid)`,
+      parameters: parameters({ workspaceId, discovered, cursor: cursor ?? "", done, id: runId }),
+    })));
 }
 
 export async function handler(event) {
@@ -127,7 +188,7 @@ export async function handler(event) {
     (item) =>
       item.Key &&
       (!item.LastModified || item.LastModified.getTime() >= startTime) &&
-      (item.Key.endsWith(".json") || item.Key.endsWith(".json.gz")),
+      SUPPORTED_EVIDENCE_SUFFIXES.some((suffix) => item.Key.toLowerCase().endsWith(suffix)),
   );
   await enqueue(source, objects, event.runId);
   const cursor = result.NextContinuationToken ?? "";

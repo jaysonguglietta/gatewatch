@@ -1,7 +1,9 @@
 # Gatewatch threat model
 
-**Version:** 1.0  
-**Last reviewed:** July 31, 2026  
+**Version:** 1.3
+
+**Last reviewed:** August 11, 2026
+
 **Scope:** Current AWS web and collector deployment plus the planned SQS/Lambda/Aurora ingestion platform
 
 ## Security objectives
@@ -34,15 +36,24 @@ flowchart LR
     Bridge -->|"Get snapshot"| S3["Encrypted versioned S3"]
     Bridge -->|"Assume source role"| STS["AWS STS"]
     Bridge -->|"HTTPS API token"| Jira["Jira Cloud"]
-    Collector["Collector Lambda"] -->|"Snapshot and manifest"| S3
-    Source["Future source-account EventBridge"] --> Queue["Future ingestion SQS"]
-    Queue --> Ingest["Future ingestion Lambda"]
-    Ingest --> Aurora["Future Aurora PostgreSQL"]
+    Bridge -->|"Converse, strict schema, versioned Guardrail"| Bedrock["Amazon Bedrock"]
+    Schedule["EventBridge schedule"] --> SFN["Step Functions Distributed Map"]
+    SFN --> Collector["Isolated account workers"]
+    Collector -->|"Assume read role"| Members["Organization member accounts"]
+    Collector -->|"Checksummed Region shards"| S3
+    Collector --> RunState["DynamoDB run/target coverage"]
+    S3 --> Queue["EventBridge + ingestion SQS"]
+    Queue --> Ingest["Bounded normalization Lambda"]
+    Ingest --> Aurora["Aurora PostgreSQL observations"]
+    Maintain["Scheduled governance maintenance"] --> Aurora
+    Maintain -->|"Write only, compliance retention"| AuditArchive["S3 Object Lock audit archive"]
 ```
 
 The current production data store is the D1-compatible local database persisted
 on encrypted EFS. The Aurora platform is represented by infrastructure and schema
-code but was not deployed at the time of this review.
+code but was not deployed at the time of the original review. The August 3
+implementation adds sharded organization collection and normalization code; the
+target AWS deployment still requires environment validation.
 
 ## Trust boundaries
 
@@ -71,6 +82,15 @@ The bridge has access to Secrets Manager, STS, S3, and Jira. Its bearer token is
 service credential, not a user authorization mechanism. Web and bridge workloads
 must have separate least-privilege roles and isolation boundaries.
 
+### Normalized evidence to Bedrock
+
+AWS resource names, tags, intent, and actor text are hostile prompt input. The
+application sends only the compact evidence package, delimits and escapes it,
+applies the prompt-attack Guardrail, requires structured output, validates every
+property and evidence reference, preserves the deterministic verdict, and falls
+back locally on any failure. The model receives no raw logs or mutation
+permissions. Model output remains untrusted content rendered as text.
+
 ### Gatewatch account to source accounts
 
 Source-account operators deploy a role trusted by Gatewatch. Generated templates,
@@ -89,6 +109,18 @@ Organization member accounts can forward events toward a central queue. Messages
 must be bound to a registered source and workspace. Aurora must enforce workspace
 separation even when application queries are wrong.
 
+The reviewed target data plane binds each stack to one immutable workspace UUID.
+Every Data API transaction sets that context, every workspace table has forced
+RLS, and ingestion and maintenance use distinct non-owner, non-`BYPASSRLS`
+database principals. Database audit rows reject ordinary mutation. The scheduled
+maintenance principal can invoke only the bounded retention function; audit rows
+must have a versioned Object Lock archive ledger entry before deletion.
+
+The Aurora master credential is RDS-managed and is restricted to migration and
+database-principal bootstrap. It is not a workload credential. Restores and
+schema migrations remain privileged administrative boundaries requiring separate
+approval and retained evidence.
+
 ## High-value assets
 
 | Asset | Why it matters | Primary controls required |
@@ -99,6 +131,7 @@ separation even when application queries are wrong.
 | Web and service credentials | Permit application and integration access | Rotation, short lifetime, least privilege, no disclosure |
 | Cross-account roles | Scale a compromise across AWS accounts | Read-only policies, boundaries, external IDs, Access Analyzer |
 | Jira integration | Creates external records and contains an API token | Admin-only configuration, quotas, rotation, audit |
+| Bedrock evidence package and output | May reveal posture or influence analyst decisions | Minimization, schema, citations, guardrails, budgets, audit, human approval |
 | Release artifacts | Become executable production code | Signing, immutable versions, checksum verification, provenance |
 | Audit evidence | Supports incident response and compliance | Unique identity, completeness, append-only external storage |
 
@@ -153,6 +186,9 @@ credentials in a way that cannot be attributed.
 | Container retrieves instance credentials | Privilege containment | Separate task roles and blocked IMDS |
 | Large or repeated requests exhaust the instance | Availability | Streaming limits, quotas, WAF and rate limiting |
 | Workspace predicate is omitted | Tenant isolation | PostgreSQL RLS and least-privilege database roles |
+| AWS tag injects model instructions | Decision integrity/data confidentiality | Inert evidence boundary, prompt-attack filter, strict schema, citation/verdict checks, fallback |
+| Parallel model calls exhaust budget | Availability/cost | Atomic per-user and workspace reservations, caching, request/output caps |
+| Model proposes a dangerous change | AWS integrity | No mutation API/IAM, visible review-only drafts, approval forced server-side |
 
 ## Assumptions requiring validation
 
@@ -174,5 +210,5 @@ Repeat this threat model when any of the following changes:
 - ingestion format, parser, upload limits, or snapshot signing;
 - database engine, workspace model, or retention requirements;
 - Jira or any new outbound integration;
+- model, prompt, schema, Guardrail, inference Region, or AI evidence package;
 - release, artifact, CI/CD, or secret-rotation process.
-
