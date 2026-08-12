@@ -441,7 +441,7 @@ Resources:
                       props = event["ResourceProperties"]
                       runtime = credential(props["RuntimeSecretArn"])
                       maintenance = credential(props["MaintenanceSecretArn"])
-                      statement = f"""
+                      role_statement = """
                       DO $gatewatch$
                       BEGIN
                         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='gatewatch_ingest') THEN CREATE ROLE gatewatch_ingest NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS; END IF;
@@ -449,12 +449,16 @@ Resources:
                         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='gatewatch_runtime_login') THEN CREATE ROLE gatewatch_runtime_login LOGIN; END IF;
                         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='gatewatch_maintenance_login') THEN CREATE ROLE gatewatch_maintenance_login LOGIN; END IF;
                       END $gatewatch$;
-                      ALTER ROLE gatewatch_runtime_login WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '{runtime['password']}';
-                      ALTER ROLE gatewatch_maintenance_login WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '{maintenance['password']}';
-                      GRANT gatewatch_ingest TO gatewatch_runtime_login;
-                      GRANT gatewatch_maintenance TO gatewatch_maintenance_login;
                       """
-                      sql(props, statement)
+                      statements = [
+                          role_statement,
+                          f"ALTER ROLE gatewatch_runtime_login WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '{runtime['password']}'",
+                          f"ALTER ROLE gatewatch_maintenance_login WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '{maintenance['password']}'",
+                          "GRANT gatewatch_ingest TO gatewatch_runtime_login",
+                          "GRANT gatewatch_maintenance TO gatewatch_maintenance_login",
+                      ]
+                      for statement in statements:
+                          sql(props, statement)
                   respond(event, context, "SUCCESS")
               except Exception as error:
                   respond(event, context, "FAILED", f"{type(error).__name__}: {error}")
