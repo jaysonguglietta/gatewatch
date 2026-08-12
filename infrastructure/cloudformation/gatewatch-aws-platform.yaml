@@ -452,10 +452,11 @@ Resources:
                       """
                       statements = [
                           role_statement,
-                          f"ALTER ROLE gatewatch_runtime_login WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '{runtime['password']}'",
-                          f"ALTER ROLE gatewatch_maintenance_login WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD '{maintenance['password']}'",
+                          f"ALTER ROLE gatewatch_runtime_login WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD '{runtime['password']}'",
+                          f"ALTER ROLE gatewatch_maintenance_login WITH LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD '{maintenance['password']}'",
                           "GRANT gatewatch_ingest TO gatewatch_runtime_login",
                           "GRANT gatewatch_maintenance TO gatewatch_maintenance_login",
+                          "DO $verify$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ('gatewatch_runtime_login','gatewatch_maintenance_login','gatewatch_ingest','gatewatch_maintenance') AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolbypassrls)) THEN RAISE EXCEPTION 'Gatewatch workload role is privileged'; END IF; END $verify$",
                       ]
                       for statement in statements:
                           sql(props, statement)
