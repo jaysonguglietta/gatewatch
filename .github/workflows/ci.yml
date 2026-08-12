@@ -125,13 +125,13 @@ jobs:
           format: table
       - name: Publish Trivy dependency results
         if: always() && hashFiles('trivy-dependencies.sarif') != ''
-        uses: github/codeql-action/upload-sarif@c4dd10e44af883a891fe31ced449bcb4a6728b9b # v3
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
           sarif_file: trivy-dependencies.sarif
           category: trivy-production-dependencies
       - name: Publish Trivy repository results
         if: always() && hashFiles('trivy-repository.sarif') != ''
-        uses: github/codeql-action/upload-sarif@c4dd10e44af883a891fe31ced449bcb4a6728b9b # v3
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
           sarif_file: trivy-repository.sarif
           category: trivy-repository
