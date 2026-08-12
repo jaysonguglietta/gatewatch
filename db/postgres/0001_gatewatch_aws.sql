@@ -1119,6 +1119,13 @@ $$;
 -- retention behavior. Default partitions keep ingestion available if a
 -- maintenance job is delayed.
 
-INSERT INTO workspaces (slug, name)
-VALUES ('default', 'Gatewatch')
+INSERT INTO workspaces (id, slug, name)
+VALUES (
+  COALESCE(
+    NULLIF(current_setting('gatewatch.migration_workspace_id', true), '')::uuid,
+    gen_random_uuid()
+  ),
+  'default',
+  'Gatewatch'
+)
 ON CONFLICT (slug) DO NOTHING;
