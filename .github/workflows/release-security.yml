@@ -59,7 +59,7 @@ jobs:
           limit-severities-for-sarif: true
       - name: Publish final-image scan results
         if: always() && hashFiles('trivy-final-image.sarif') != ''
-        uses: github/codeql-action/upload-sarif@c4dd10e44af883a891fe31ced449bcb4a6728b9b # v3
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
           sarif_file: trivy-final-image.sarif
           category: trivy-final-runtime-image
