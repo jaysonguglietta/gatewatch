@@ -25,7 +25,11 @@ test("requires immutable OIDC subject and binds roles after verified login", asy
 });
 
 test("commits local audit and retryable archive outbox atomically", async () => {
-  const server = await source("lib/server-admin.ts");
+  const [server, route, template] = await Promise.all([
+    source("lib/server-admin.ts"),
+    source("app/api/internal/audit-outbox/route.ts"),
+    source("infrastructure/cloudformation/gatewatch-aws-web.yaml"),
+  ]);
 
   assert.match(server, /CREATE TABLE IF NOT EXISTS audit_archive_outbox/);
   assert.match(server, /await env\.DB\.batch\(\[/);
@@ -34,6 +38,15 @@ test("commits local audit and retryable archive outbox atomically", async () => 
   assert.match(server, /AbortSignal\.timeout\(8_000\)/);
   assert.match(server, /archive_version_id/);
   assert.match(server, /actorSubject: actor/);
+  assert.match(server, /RETURNING event_id AS eventId/);
+  assert.match(server, /next_attempt_at = datetime\('now', '\+2 minutes'\)/);
+  assert.match(route, /timingSafeEqual/);
+  assert.match(route, /deliverAuditOutbox\(50\)/);
+  assert.match(route, /audit_outbox_delivery_failed/);
+  assert.match(template, /AuditOutboxDeliveryAssociation:/);
+  assert.match(template, /ScheduleExpression: rate\(5 minutes\)/);
+  assert.match(template, /AuditOutboxFailureMetric:/);
+  assert.match(template, /AuditOutboxFailureAlarm:/);
 });
 
 test("archives application audit through a bounded write-only bridge", async () => {

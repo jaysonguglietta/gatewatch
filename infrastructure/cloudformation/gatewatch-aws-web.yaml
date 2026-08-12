@@ -857,6 +857,57 @@ Resources:
                 '${OAuth2ProxyImage}' \
                 '${NodeRuntimeImage}'
 
+  AuditOutboxDeliveryAssociation:
+    Type: AWS::SSM::Association
+    DependsOn: WebDeploymentAssociation
+    Properties:
+      Name: AWS-RunShellScript
+      AssociationName: !Sub gatewatch-${EnvironmentName}-audit-outbox-delivery
+      ApplyOnlyAtCronInterval: true
+      ScheduleExpression: rate(5 minutes)
+      Targets:
+        - Key: InstanceIds
+          Values:
+            - !Ref WebInstance
+      Parameters:
+        commands:
+          - !Sub |
+              set -euo pipefail
+              TOKEN=$(aws secretsmanager get-secret-value \
+                --region '${AWS::Region}' \
+                --secret-id '${AwsBridgeSecret}' \
+                --query SecretString \
+                --output text)
+              curl --fail --silent --show-error \
+                --request POST \
+                --header "Authorization: Bearer $TOKEN" \
+                --max-time 60 \
+                http://127.0.0.1:3000/api/internal/audit-outbox >/dev/null
+
+  AuditOutboxFailureMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      FilterPattern: '{ $.event = "audit_outbox_delivery_failed" }'
+      MetricTransformations:
+        - MetricNamespace: Gatewatch/Security
+          MetricName: AuditOutboxDeliveryFailures
+          MetricValue: "1"
+
+  AuditOutboxFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Gatewatch could not archive one or more application audit events.
+      Namespace: Gatewatch/Security
+      MetricName: AuditOutboxDeliveryFailures
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
   NoCachePolicy:
     Type: AWS::CloudFront::CachePolicy
     Properties:

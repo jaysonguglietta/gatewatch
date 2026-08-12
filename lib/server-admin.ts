@@ -514,10 +514,12 @@ export async function ensureAdminSchema() {
   ).run();
 }
 
-async function deliverAuditOutbox(limit = 20) {
+export async function deliverAuditOutbox(limit = 20) {
   const bridgeUrl = cleanText(env.GATEWATCH_AWS_BRIDGE_URL, 500).replace(/\/$/, "");
   const bridgeToken = cleanText(env.GATEWATCH_AWS_BRIDGE_TOKEN, 500);
-  if (!bridgeUrl || !bridgeToken) return;
+  if (!bridgeUrl || !bridgeToken) {
+    return { selected: 0, delivered: 0, failed: 0, skipped: 0 };
+  }
   const pending = await env.DB.prepare(
     `SELECT event_id AS eventId, payload
        FROM audit_archive_outbox
@@ -525,7 +527,19 @@ async function deliverAuditOutbox(limit = 20) {
       ORDER BY created_at
       LIMIT ?`,
   ).bind(Math.max(1, Math.min(50, limit))).all<{ eventId: string; payload: string }>();
+  const outcome = { selected: pending.results.length, delivered: 0, failed: 0, skipped: 0 };
   for (const item of pending.results) {
+    const claimed = await env.DB.prepare(
+      `UPDATE audit_archive_outbox
+          SET next_attempt_at = datetime('now', '+2 minutes')
+        WHERE event_id = ? AND delivered_at = ''
+          AND next_attempt_at <= CURRENT_TIMESTAMP
+        RETURNING event_id AS eventId`,
+    ).bind(item.eventId).first<{ eventId: string }>();
+    if (!claimed) {
+      outcome.skipped += 1;
+      continue;
+    }
     try {
       const response = await fetch(`${bridgeUrl}/audit/events`, {
         method: "POST",
@@ -546,6 +560,7 @@ async function deliverAuditOutbox(limit = 20) {
                 last_error = ''
           WHERE event_id = ? AND delivered_at = ''`,
       ).bind(body.versionId.slice(0, 1024), item.eventId).run();
+      outcome.delivered += 1;
     } catch (error) {
       await env.DB.prepare(
         `UPDATE audit_archive_outbox
@@ -557,8 +572,10 @@ async function deliverAuditOutbox(limit = 20) {
         error instanceof Error ? error.name.slice(0, 120) : "Error",
         item.eventId,
       ).run();
+      outcome.failed += 1;
     }
   }
+  return outcome;
 }
 
 export async function audit(
