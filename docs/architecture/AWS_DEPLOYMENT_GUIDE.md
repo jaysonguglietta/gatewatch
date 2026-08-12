@@ -14,8 +14,9 @@ infrastructure but do not copy local AWS credentials into Gatewatch.
 - VPC and at least two private subnets for Aurora when deploying the platform.
 - A Route 53 public hosted zone, a public application hostname, and a separate
   origin hostname.
-- An ACM certificate in `us-east-1` for the public hostname and a regional ACM
-  certificate for the origin hostname.
+- A public Route 53 hosted zone in the deployment account. The stack requests
+  and DNS-validates separate ACM certificates for the public and private-origin
+  hostnames.
 - Reviewed digest-pinned Node.js and oauth2-proxy container image references.
 - A reviewed organization root/OU allowlist and account exclusion list.
 
@@ -136,8 +137,6 @@ export AWS_REGION=us-east-1
 export GATEWATCH_PUBLIC_DOMAIN_NAME=gatewatch.example.com
 export GATEWATCH_ORIGIN_DOMAIN_NAME=gatewatch-origin.example.com
 export GATEWATCH_HOSTED_ZONE_ID=Z0123456789EXAMPLE
-export GATEWATCH_PUBLIC_CERTIFICATE_ARN=arn:aws:acm:us-east-1:111122223333:certificate/...
-export GATEWATCH_ORIGIN_CERTIFICATE_ARN=arn:aws:acm:us-east-1:111122223333:certificate/...
 export GATEWATCH_BOOTSTRAP_ADMIN_EMAIL=security-admin@example.com
 export GATEWATCH_COGNITO_DOMAIN_PREFIX=gatewatch-example
 export GATEWATCH_OAUTH2_PROXY_IMAGE=quay.io/oauth2-proxy/oauth2-proxy@sha256:...
@@ -162,7 +161,9 @@ transport; use a dedicated, monitored release role in production.
 The stack creates a Cognito user pool with named users, mandatory TOTP MFA,
 15-minute access and ID tokens, authorization-code flow, PKCE, and token
 revocation. CloudFront is protected by managed WAF rules and rate limiting;
-both viewer-to-edge and edge-to-ALB connections require TLS. The EC2 web
+both viewer-to-edge and edge-to-ALB connections require TLS. The ALB is an
+internal CloudFront VPC origin in two private subnets, so it has no public
+route or directly reachable endpoint. The EC2 web
 security group accepts traffic only from the ALB, and Nginx verifies a generated
 origin header on every non-health request.
 The ALB spans two public subnets, while the EC2 runtime and encrypted EFS mount
