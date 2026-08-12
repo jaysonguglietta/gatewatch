@@ -97,6 +97,7 @@ test("pins CI actions and gates secrets, SAST, dependencies, and IaC", async () 
   assert.match(workflow, /gitleaks\/gitleaks-action@[a-f0-9]{40}/);
   assert.match(workflow, /github\/codeql-action\/analyze@[a-f0-9]{40}/);
   assert.match(workflow, /aquasecurity\/trivy-action@[a-f0-9]{40}/);
+  assert.equal((workflow.match(/limit-severities-for-sarif: true/g) ?? []).length, 2);
   assert.match(workflow, /npm audit --omit=dev --audit-level=high/);
   assert.match(workflow, /cfn-lint/);
 });

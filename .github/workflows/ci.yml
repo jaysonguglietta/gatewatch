@@ -78,7 +78,7 @@ jobs:
       - name: Install production dependency graph only
         run: npm ci --omit=dev --ignore-scripts
       - name: Scan production dependencies
-        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # pinned master
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # v0.36.0, Trivy v0.73.0
         with:
           scan-type: fs
           scan-ref: node_modules
@@ -88,8 +88,9 @@ jobs:
           exit-code: "1"
           format: sarif
           output: trivy-dependencies.sarif
+          limit-severities-for-sarif: true
       - name: Scan repository secrets and IaC
-        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # pinned master
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # v0.36.0, Trivy v0.73.0
         with:
           scan-type: fs
           scan-ref: .
@@ -98,6 +99,7 @@ jobs:
           exit-code: "1"
           format: sarif
           output: trivy-repository.sarif
+          limit-severities-for-sarif: true
       - name: Publish Trivy dependency results
         if: always() && hashFiles('trivy-dependencies.sarif') != ''
         uses: github/codeql-action/upload-sarif@c4dd10e44af883a891fe31ced449bcb4a6728b9b # v3
