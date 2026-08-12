@@ -53,7 +53,7 @@ test("persists workflows with authorization and separation-of-duty controls", as
   ]);
 
   assert.match(route, /sameOrigin/);
-  assert.match(route, /application\/json payload under 40 KB/);
+  assert.match(route, /readBoundedJson\(request, 40_000\)/);
   assert.match(route, /requireAdmin/);
   assert.match(route, /requestors cannot approve or reject their own request/);
   assert.match(route, /Only the requestor or an administrator can delete/);

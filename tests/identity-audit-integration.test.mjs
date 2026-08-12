@@ -59,6 +59,7 @@ test("archives application audit through a bounded write-only bridge", async () 
   assert.match(bridge, /request\.url === "\/audit\/events"/);
   assert.match(bridge, /AUDIT_EVENT_TOO_LARGE/);
   assert.match(bridge, /PutObjectCommand/);
+  assert.match(bridge, /new S3Client\(\{ region, credentials \}\)/);
   assert.match(bridge, /AUDIT_ARCHIVE_VERSION_REQUIRED/);
   assert.match(bridge, /audit\/application\/workspace=/);
   assert.match(template, /Sid: AppendApplicationAuditArchive[\s\S]*Action: s3:PutObject/);

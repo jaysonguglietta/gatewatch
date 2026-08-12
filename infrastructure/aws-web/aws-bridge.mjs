@@ -3,6 +3,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { BedrockRuntimeClient, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
 import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
+import { fromTemporaryCredentials } from "@aws-sdk/credential-providers";
 import {
   GetSecretValueCommand,
   PutSecretValueCommand,
@@ -24,12 +25,25 @@ const maxRequestBytes = 96_000;
 const maxSnapshotBytes = 25 * 1024 * 1024;
 const maxManifestBytes = 8 * 1024 * 1024;
 const jiraSecretArn = process.env.GATEWATCH_JIRA_SECRET_ARN ?? "";
-const secrets = new SecretsManagerClient({ region: process.env.AWS_REGION ?? "us-east-1" });
+const region = process.env.AWS_REGION ?? "us-east-1";
+const bridgeRoleArn = process.env.GATEWATCH_AWS_BRIDGE_ROLE_ARN ?? "";
+if (!/^arn:[a-z0-9-]+:iam::[0-9]{12}:role\/[A-Za-z0-9+=,.@_\/-]{1,512}$/.test(bridgeRoleArn)) {
+  throw new Error("The AWS bridge requires its dedicated runtime role ARN.");
+}
+const credentials = fromTemporaryCredentials({
+  params: {
+    RoleArn: bridgeRoleArn,
+    RoleSessionName: "gatewatch-aws-bridge",
+    DurationSeconds: 3600,
+  },
+  clientConfig: { region },
+});
+const secrets = new SecretsManagerClient({ region, credentials });
 const bedrockEnabled = process.env.GATEWATCH_BEDROCK_ENABLED === "true";
 const bedrockModelId = process.env.GATEWATCH_BEDROCK_MODEL_ID ?? "us.amazon.nova-2-lite-v1:0";
 const bedrockGuardrailId = process.env.GATEWATCH_BEDROCK_GUARDRAIL_ID ?? "";
 const bedrockGuardrailVersion = process.env.GATEWATCH_BEDROCK_GUARDRAIL_VERSION ?? "";
-const bedrock = new BedrockRuntimeClient({ region: process.env.AWS_REGION ?? "us-east-1" });
+const bedrock = new BedrockRuntimeClient({ region, credentials });
 
 if (!token || !snapshotBucket || !auditArchiveBucket || !/^[a-f0-9-]{36}$/.test(workspaceId)) {
   throw new Error("The AWS bridge requires its private token, snapshot bucket, audit archive, and workspace identity.");
@@ -107,7 +121,7 @@ async function archiveAuditEvent(input) {
   if (body.length > 16_384) throw new Error("AUDIT_EVENT_TOO_LARGE");
   const digest = createHash("sha256").update(body).digest("hex");
   const key = `audit/application/workspace=${workspaceId}/date=${created.toISOString().slice(0, 10)}/${event.id}.json`;
-  const result = await new S3Client({ region: process.env.AWS_REGION ?? "us-east-1" }).send(
+  const result = await new S3Client({ region, credentials }).send(
     new PutObjectCommand({
       Bucket: auditArchiveBucket,
       Key: key,
@@ -443,7 +457,7 @@ function check(key, label, status, detail) {
 }
 
 async function inventory() {
-  const s3 = new S3Client({ region: snapshotRegion });
+  const s3 = new S3Client({ region: snapshotRegion, credentials });
   const manifestResult = await s3.send(
     new GetObjectCommand({ Bucket: snapshotBucket, Key: snapshotManifestKey }),
   );
@@ -487,7 +501,7 @@ async function inventory() {
 
 async function organizationCoverage() {
   if (!organizationEvidenceBucket) throw new Error("ORGANIZATION_EVIDENCE_NOT_CONFIGURED");
-  const result = await new S3Client({ region: snapshotRegion }).send(
+  const result = await new S3Client({ region: snapshotRegion, credentials }).send(
     new GetObjectCommand({
       Bucket: organizationEvidenceBucket,
       Key: organizationManifestKey,
@@ -526,7 +540,7 @@ async function testSource(source) {
     throw new Error("INVALID_SOURCE_CONFIGURATION");
   }
   const testedAt = new Date().toISOString();
-  const assumed = await new STSClient({ region }).send(
+  const assumed = await new STSClient({ region, credentials }).send(
     new AssumeRoleCommand({
       RoleArn: roleArn,
       RoleSessionName: `gatewatch-source-test-${Date.now()}`,

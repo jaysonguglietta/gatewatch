@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-if [[ "$#" -ne 26 ]]; then
-  echo "Usage: install.sh REGION ORIGIN_SECRET_ARN BRIDGE_SECRET_ARN COOKIE_SECRET_ARN JIRA_SECRET_ARN USER_POOL_ID USER_POOL_CLIENT_ID COGNITO_DOMAIN_PREFIX PUBLIC_URL BOOTSTRAP_ADMIN_EMAIL SNAPSHOT_BUCKET SNAPSHOT_KEY SNAPSHOT_MANIFEST_KEY SNAPSHOT_REGION ORGANIZATION_EVIDENCE_BUCKET ORGANIZATION_MANIFEST_KEY AUDIT_ARCHIVE_BUCKET WORKSPACE_ID LOG_GROUP RELEASE_ID BEDROCK_ENABLED BEDROCK_MODEL_ID BEDROCK_GUARDRAIL_ID BEDROCK_GUARDRAIL_VERSION OAUTH2_PROXY_IMAGE NODE_RUNTIME_IMAGE" >&2
+if [[ "$#" -ne 29 ]]; then
+  echo "Usage: install.sh REGION ORIGIN_SECRET_ARN BRIDGE_SECRET_ARN COOKIE_SECRET_ARN JIRA_SECRET_ARN USER_POOL_ID USER_POOL_CLIENT_ID COGNITO_DOMAIN_PREFIX PUBLIC_URL BOOTSTRAP_ADMIN_EMAIL SNAPSHOT_BUCKET SNAPSHOT_KEY SNAPSHOT_MANIFEST_KEY SNAPSHOT_REGION ORGANIZATION_EVIDENCE_BUCKET ORGANIZATION_MANIFEST_KEY AUDIT_ARCHIVE_BUCKET WORKSPACE_ID BRIDGE_ROLE_ARN LOG_GROUP RELEASE_ID BEDROCK_ENABLED BEDROCK_MODEL_ID BEDROCK_GUARDRAIL_ID BEDROCK_GUARDRAIL_VERSION OAUTH2_PROXY_IMAGE APPLICATION_IMAGE_REF APPLICATION_IMAGE_ARCHIVE APPLICATION_IMAGE_SHA256" >&2
   exit 2
 fi
 
@@ -25,14 +25,17 @@ ORGANIZATION_EVIDENCE_BUCKET="${15}"
 ORGANIZATION_MANIFEST_KEY="${16}"
 AUDIT_ARCHIVE_BUCKET="${17}"
 WORKSPACE_ID="${18}"
-LOG_GROUP="${19}"
-RELEASE_ID="${20}"
-BEDROCK_ENABLED="${21}"
-BEDROCK_MODEL_ID="${22}"
-BEDROCK_GUARDRAIL_ID="${23}"
-BEDROCK_GUARDRAIL_VERSION="${24}"
-OAUTH2_PROXY_IMAGE="${25}"
-NODE_RUNTIME_IMAGE="${26}"
+BRIDGE_ROLE_ARN="${19}"
+LOG_GROUP="${20}"
+RELEASE_ID="${21}"
+BEDROCK_ENABLED="${22}"
+BEDROCK_MODEL_ID="${23}"
+BEDROCK_GUARDRAIL_ID="${24}"
+BEDROCK_GUARDRAIL_VERSION="${25}"
+OAUTH2_PROXY_IMAGE="${26}"
+APPLICATION_IMAGE_REF="${27}"
+APPLICATION_IMAGE_ARCHIVE="${28}"
+APPLICATION_IMAGE_SHA256="${29}"
 PUBLIC_HOST="${PUBLIC_URL#https://}"
 
 if [[ "$PUBLIC_URL" != "https://$PUBLIC_HOST" || "$PUBLIC_HOST" == */* ]]; then
@@ -152,19 +155,47 @@ nginx -t
 systemctl enable nginx
 systemctl restart nginx
 
-docker build --pull \
-  --build-arg "NODE_RUNTIME_IMAGE=$NODE_RUNTIME_IMAGE" \
-  --tag "gatewatch-web:$RELEASE_ID" \
-  --file infrastructure/aws-web/Dockerfile \
-  .
+if [[ ! "$APPLICATION_IMAGE_REF" =~ ^gatewatch-web:[a-f0-9]{40}$ ]] || \
+   [[ ! "$APPLICATION_IMAGE_SHA256" =~ ^[a-f0-9]{64}$ ]]; then
+  echo "The application image reference or digest is malformed." >&2
+  exit 2
+fi
+printf '%s  %s\n' "$APPLICATION_IMAGE_SHA256" "$APPLICATION_IMAGE_ARCHIVE" | sha256sum -c -
+gzip -cd "$APPLICATION_IMAGE_ARCHIVE" | docker load >/dev/null
+docker image inspect "$APPLICATION_IMAGE_REF" >/dev/null
 
-docker network inspect gatewatch-internal >/dev/null 2>&1 || \
-  docker network create gatewatch-internal >/dev/null
 docker rm -f gatewatch-oauth2-proxy >/dev/null 2>&1 || true
+docker rm -f gatewatch-aws-bridge >/dev/null 2>&1 || true
+docker rm -f gatewatch-web >/dev/null 2>&1 || true
+if docker network inspect gatewatch-internal >/dev/null 2>&1; then
+  CURRENT_SUBNET="$(docker network inspect --format '{{(index .IPAM.Config 0).Subnet}}' gatewatch-internal)"
+  if [[ "$CURRENT_SUBNET" != "172.30.0.0/24" ]]; then
+    docker network rm gatewatch-internal >/dev/null
+  fi
+fi
+docker network inspect gatewatch-internal >/dev/null 2>&1 || \
+  docker network create --subnet 172.30.0.0/24 gatewatch-internal >/dev/null
+
+# Only the bridge can reach IMDS and obtain the host role used to assume its
+# dedicated short-lived runtime role. The web and OIDC containers fail closed.
+iptables -C DOCKER-USER -s 172.30.0.10/32 -d 169.254.169.254/32 -j ACCEPT 2>/dev/null || \
+  iptables -I DOCKER-USER 1 -s 172.30.0.10/32 -d 169.254.169.254/32 -j ACCEPT
+iptables -C DOCKER-USER -s 172.30.0.0/24 -d 169.254.169.254/32 -j REJECT 2>/dev/null || \
+  iptables -A DOCKER-USER -s 172.30.0.0/24 -d 169.254.169.254/32 -j REJECT
+
 docker run -d \
   --name gatewatch-oauth2-proxy \
   --restart unless-stopped \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --pids-limit 128 \
+  --memory 256m \
+  --cpus 0.5 \
   --network gatewatch-internal \
+  --ip 172.30.0.30 \
+  --env AWS_EC2_METADATA_DISABLED=true \
   --publish 127.0.0.1:4180:4180 \
   --env OAUTH2_PROXY_PROVIDER=oidc \
   --env "OAUTH2_PROXY_OIDC_ISSUER_URL=https://cognito-idp.$REGION.amazonaws.com/$USER_POOL_ID" \
@@ -197,13 +228,21 @@ docker run -d \
   --log-opt "awslogs-stream=oauth2-proxy" \
   "$OAUTH2_PROXY_IMAGE"
 
-docker rm -f gatewatch-aws-bridge >/dev/null 2>&1 || true
 docker run -d \
   --name gatewatch-aws-bridge \
   --restart unless-stopped \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --pids-limit 192 \
+  --memory 512m \
+  --cpus 0.75 \
   --network gatewatch-internal \
+  --ip 172.30.0.10 \
   --env AWS_REGION="$REGION" \
   --env AWS_DEFAULT_REGION="$REGION" \
+  --env GATEWATCH_AWS_BRIDGE_ROLE_ARN="$BRIDGE_ROLE_ARN" \
   --env GATEWATCH_AWS_BRIDGE_HOST=0.0.0.0 \
   --env GATEWATCH_AWS_BRIDGE_TOKEN="$BRIDGE_TOKEN" \
   --env GATEWATCH_JIRA_SECRET_ARN="$JIRA_SECRET_ARN" \
@@ -223,18 +262,26 @@ docker run -d \
   --log-opt "awslogs-region=$REGION" \
   --log-opt "awslogs-group=$LOG_GROUP" \
   --log-opt "awslogs-stream=aws-bridge" \
-  "gatewatch-web:$RELEASE_ID" \
+  "$APPLICATION_IMAGE_REF" \
   node infrastructure/aws-web/aws-bridge.mjs
 
-docker rm -f gatewatch-web >/dev/null 2>&1 || true
 docker run -d \
   --name gatewatch-web \
   --restart unless-stopped \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --pids-limit 256 \
+  --memory 1g \
+  --cpus 1.5 \
   --network gatewatch-internal \
+  --ip 172.30.0.20 \
   --publish 127.0.0.1:3000:3000 \
   --volume /srv/gatewatch/data:/data \
   --env AWS_REGION="$REGION" \
   --env AWS_DEFAULT_REGION="$REGION" \
+  --env AWS_EC2_METADATA_DISABLED=true \
   --env GATEWATCH_AWS_RUNTIME=true \
   --env GATEWATCH_AWS_BRIDGE_URL=http://gatewatch-aws-bridge:3001 \
   --env GATEWATCH_AWS_BRIDGE_TOKEN="$BRIDGE_TOKEN" \
@@ -254,7 +301,7 @@ docker run -d \
   --log-opt "awslogs-region=$REGION" \
   --log-opt "awslogs-group=$LOG_GROUP" \
   --log-opt "awslogs-stream=application" \
-  "gatewatch-web:$RELEASE_ID"
+  "$APPLICATION_IMAGE_REF"
 
 for _ in {1..60}; do
   if curl --fail --silent --show-error \

@@ -98,8 +98,14 @@ source account after deployment.
 
 ## 4. Deploy the identity and web stack
 
-The CloudFront-scoped WAF requires this stack to run in `us-east-1`. Configure
-the named administrator, DNS, certificates, and immutable container images:
+The CloudFront-scoped WAF requires this stack to run in `us-east-1`. First,
+check out the exact current `main` commit and download the image artifact from
+that commit's successful `Gatewatch release artifact security` workflow. The
+workflow builds the final image, blocks unresolved Critical/High findings,
+emits a CycloneDX SBOM, and signs GitHub/Sigstore build provenance.
+
+Then configure the named administrator, DNS, certificates, and immutable
+container images:
 
 ```bash
 export AWS_PROFILE=personal
@@ -112,14 +118,23 @@ export GATEWATCH_ORIGIN_CERTIFICATE_ARN=arn:aws:acm:us-east-1:111122223333:certi
 export GATEWATCH_BOOTSTRAP_ADMIN_EMAIL=security-admin@example.com
 export GATEWATCH_COGNITO_DOMAIN_PREFIX=gatewatch-example
 export GATEWATCH_OAUTH2_PROXY_IMAGE=quay.io/oauth2-proxy/oauth2-proxy@sha256:...
-export GATEWATCH_NODE_RUNTIME_IMAGE=node@sha256:...
+export GATEWATCH_RELEASE_IMAGE_ARCHIVE=/secure/path/gatewatch-web.tar.gz
+export GATEWATCH_RELEASE_IMAGE_REF=gatewatch-web:$(git rev-parse HEAD)
+export GATEWATCH_RELEASE_PRINCIPAL_ARN=arn:aws:iam::111122223333:role/GatewatchRelease
+export GATEWATCH_SOURCE_ORGANIZATION_ID=o-example123456
 ./scripts/deploy-aws-web.sh
 ```
 
-The script uploads a content-addressed release to a versioned bucket, captures
-the exact S3 VersionId, and passes both VersionId and SHA-256 to CloudFormation.
-The SSM installer downloads that version and verifies the digest before unzip or
-execution.
+The script fails before changing AWS unless the checkout is clean, its commit is
+the freshly fetched `origin/main`, and GitHub verifies the image's provenance
+against the expected workflow, main ref, source commit, and GitHub-hosted runner.
+It packages only that reviewed Git tree, uploads content-addressed source and
+prebuilt image artifacts to a versioned S3 bucket, and passes each exact VersionId
+and SHA-256 to CloudFormation. SSM downloads and verifies both. The installer
+loads the image archive and never runs a package manager or source build.
+The artifact-bucket policy permits release writes only from the configured
+publisher principal, denies deletion of release versions, and denies plaintext
+transport; use a dedicated, monitored release role in production.
 
 The data-platform stack must be deployed first. The web deployment reads its
 `AuditArchiveBucketName`, `PlatformKeyArn`, and `WorkspaceId` outputs. The AWS
@@ -140,11 +155,14 @@ password. The user must choose a new password and enroll TOTP on first sign-in.
 Create additional named users through the controlled administrator process; do
 not share the bootstrap identity.
 
-The application image is built in a separate stage and the final image installs
-production dependencies only. The current vinext AWS adapter launches its
-generated workerd bundle through Wrangler local mode; the inspector and
-interactive development session are disabled. Treat replacement with a native
-production AWS adapter as a remaining runtime-hardening item.
+The application uses a multi-stage, digest-pinned image and a Next.js standalone
+production server. A small Node SQLite adapter provides the D1-compatible storage
+API over the encrypted EFS volume; the web process does not run Wrangler or a
+development server. The web, AWS bridge, and OIDC containers have read-only root
+filesystems, dropped capabilities, `no-new-privileges`, PID/CPU/memory limits,
+and isolated fixed addresses. Only the bridge can reach IMDS, and it immediately
+assumes a dedicated least-privilege runtime role; web and OIDC access to IMDS is
+blocked at both SDK and network layers.
 
 ## 5. Connect AWS-native evidence
 

@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
+import { HttpInputError, readBoundedJson } from "../../../../lib/http-security";
 import {
-  acceptsJson,
   apiJson,
   audit,
   ensureAdminSchema,
@@ -21,11 +21,8 @@ export async function POST(request: Request) {
     if (!auth.user) return apiJson({ error: "Authentication is required." }, 401);
     if (!auth.allowed) return apiJson({ error: "Administrator access is required." }, 403);
     if (!sameOrigin(request)) return apiJson({ error: "Origin is not allowed." }, 403);
-    if (!acceptsJson(request, 20_000)) {
-      return apiJson({ error: "Send an application/json payload under 20 KB." }, 415);
-    }
     await ensureAdminSchema();
-    const payload = (await request.json()) as Record<string, unknown>;
+    const payload = await readBoundedJson(request, 20_000);
     const action = typeof payload.action === "string" ? payload.action : "";
 
     if (action === "set-role") {
@@ -116,9 +113,7 @@ export async function POST(request: Request) {
 
     return apiJson({ error: "Choose a supported settings action." }, 400);
   } catch (error) {
-    if (error instanceof SyntaxError) {
-      return apiJson({ error: "Request body must be valid JSON." }, 400);
-    }
+    if (error instanceof HttpInputError) return apiJson({ error: error.message }, error.status);
     return apiJson({ error: "Settings could not be updated." }, 503);
   }
 }
