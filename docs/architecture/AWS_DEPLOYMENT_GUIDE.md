@@ -105,7 +105,11 @@ source account after deployment. The platform also creates deletion-protected
 Aurora with 35-day recovery, RDS-managed master credentials, separate non-owner
 workload credentials, a compliance-mode Object Lock audit bucket, and an hourly
 single-concurrency maintenance worker with retries, a DLQ, and an alarm. The
-worker archives unexported audit rows before enforcing retention.
+worker archives unexported audit rows before enforcing retention. Every SQS
+queue uses the dedicated rotating customer-managed queue key, every Lambda has
+active X-Ray tracing, and the audit archive writes server access logs to a
+separate retained SSE-S3 bucket. Cross-account forwarding stacks must receive
+both the ingestion queue ARN and the `QueueKeyArn` platform output.
 
 The Object Lock retention value is irreversible for protected object versions.
 Validate the compliance requirement and cost before deployment.
@@ -155,6 +159,11 @@ production runtime as described in the security roadmap.
 - [ ] Duplicate S3 events do not create duplicate observation rows.
 - [ ] Malformed or excessive shards reach the DLQ without partial rows.
 - [ ] The platform queue cannot be written by an unapproved principal/rule.
+- [ ] All three queues report the expected `QueueKeyArn`, and an unapproved
+  principal cannot use that key for `Decrypt` or `GenerateDataKey`.
+- [ ] Audit archive server access logs arrive under `audit-archive-access/` in
+  the dedicated access-log bucket.
+- [ ] All four platform Lambdas emit active X-Ray traces without IAM denials.
 - [ ] Artifact checksum/version mismatch causes web deployment to fail.
 - [ ] Snapshot checksum mismatch causes `/api/aws-inventory` to fail closed.
 - [ ] Administrator and workflow audit events identify unique users (required

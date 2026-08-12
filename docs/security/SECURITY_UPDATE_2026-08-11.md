@@ -18,7 +18,10 @@ instructions, or customer evidence.
 - **Data governance:** forced RLS on every workspace table, non-owner ingestion
   and maintenance database users, append-only audit rows, compliance Object Lock
   archives, scheduled legal-hold-aware retention, Aurora recovery controls, and
-  pinned secret/SAST/dependency/IaC CI gates.
+  pinned secret/SAST/dependency/IaC CI gates. Follow-up review remediation adds
+  a dedicated rotating queue CMK, least-privilege producer/consumer KMS access,
+  audit-archive server access logging, and active X-Ray tracing for every
+  platform Lambda.
 
 ## Verification completed in development
 

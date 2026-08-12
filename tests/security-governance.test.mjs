@@ -65,6 +65,31 @@ test("adds deletion protection, recoverable backups, managed master credentials,
   assert.match(platform, /WorkspaceId:[\s\S]*Value: !Ref WorkspaceId/);
 });
 
+test("encrypts queues with a dedicated CMK and enables audit access logging and Lambda tracing", async () => {
+  const [platform, forwarding] = await Promise.all([
+    source("infrastructure/cloudformation/gatewatch-aws-platform.yaml"),
+    source("infrastructure/cloudformation/gatewatch-s3-event-forwarding.yaml"),
+  ]);
+
+  assert.doesNotMatch(platform, /KmsMasterKeyId: alias\/aws\/sqs/);
+  assert.doesNotMatch(platform, /SqsManagedSseEnabled/);
+  assert.equal(
+    [...platform.matchAll(/KmsMasterKeyId: !GetAtt QueueKey\.Arn/g)].length,
+    3,
+  );
+  assert.match(platform, /QueueKey:[\s\S]*Description: !Sub Gatewatch \$\{EnvironmentName\} queue encryption/);
+  assert.match(platform, /AuditAccessLogBucket:/);
+  assert.match(platform, /SSEAlgorithm: AES256/);
+  assert.match(platform, /LoggingConfiguration:[\s\S]*DestinationBucketName: !Ref AuditAccessLogBucket/);
+  assert.match(platform, /Service: logging\.s3\.amazonaws\.com/);
+  assert.equal([...platform.matchAll(/TracingConfig:\n\s+Mode: Active/g)].length, 4);
+  assert.equal([...platform.matchAll(/xray:PutTraceSegments/g)].length, 3);
+  assert.match(platform, /Service: events\.amazonaws\.com[\s\S]*kms:GenerateDataKey/);
+  assert.match(platform, /QueueKeyArn:[\s\S]*Value: !GetAtt QueueKey\.Arn/);
+  assert.match(forwarding, /GatewatchIngestionQueueKeyArn:/);
+  assert.match(forwarding, /kms:GenerateDataKey/);
+});
+
 test("pins CI actions and gates secrets, SAST, dependencies, and IaC", async () => {
   const workflow = await source(".github/workflows/ci.yml");
 

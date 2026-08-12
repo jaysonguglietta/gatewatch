@@ -115,8 +115,114 @@ Resources:
               ArnLike:
                 kms:EncryptionContext:aws:logs:arn: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*
 
+  QueueKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub Gatewatch ${EnvironmentName} queue encryption
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: RootAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+          - Sid: AllowAccountEventBridgeQueueEncryption
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          - !If
+            - HasOrganization
+            - Sid: AllowOrganizationQueueProducers
+              Effect: Allow
+              Principal: "*"
+              Action:
+                - kms:Decrypt
+                - kms:GenerateDataKey
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  aws:PrincipalOrgID: !Ref OrganizationId
+                ArnLike:
+                  aws:PrincipalArn: !Sub arn:${AWS::Partition}:iam::*:role/GatewatchEventForwardingRole-*
+            - !Ref AWS::NoValue
+
+  # The server-access-log destination must not log to itself; AWS warns that
+  # doing so creates an infinite delivery loop. This is the terminal log sink.
+  #trivy:ignore:AVD-AWS-0089
+  AuditAccessLogBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireAuditAccessLogs
+            Status: Enabled
+            ExpirationInDays: 3650
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 365
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Application
+          Value: Gatewatch
+        - Key: DataClassification
+          Value: SecurityAuditAccessLog
+
+  AuditAccessLogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AuditAccessLogBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PermitAuditArchiveAccessLogDelivery
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub ${AuditAccessLogBucket.Arn}/audit-archive-access/*
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt AuditAccessLogBucket.Arn
+              - !Sub ${AuditAccessLogBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
   AuditArchiveBucket:
     Type: AWS::S3::Bucket
+    DependsOn: AuditAccessLogBucketPolicy
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
@@ -133,6 +239,9 @@ Resources:
           DefaultRetention:
             Days: !Ref AuditArchiveRetentionDays
             Mode: COMPLIANCE
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AuditAccessLogBucket
+        LogFilePrefix: audit-archive-access/
       OwnershipControls:
         Rules:
           - ObjectOwnership: BucketOwnerEnforced
@@ -283,6 +392,12 @@ Resources:
                 Condition:
                   StringEquals:
                     kms:ViaService: !Sub secretsmanager.${AWS::Region}.${AWS::URLSuffix}
+              - Sid: XRayTelemetry
+                Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
 
   DatabasePrincipalBootstrapLogGroup:
     Type: AWS::Logs::LogGroup
@@ -302,6 +417,8 @@ Resources:
       Handler: index.handler
       Role: !GetAtt DatabasePrincipalBootstrapRole.Arn
       Timeout: 120
+      TracingConfig:
+        Mode: Active
       Code:
         ZipFile: |
           import json, urllib.request, boto3
@@ -357,15 +474,14 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub gatewatch-${EnvironmentName}-ingestion-dlq
-      KmsMasterKeyId: alias/aws/sqs
+      KmsMasterKeyId: !GetAtt QueueKey.Arn
       MessageRetentionPeriod: 1209600
-      SqsManagedSseEnabled: true
 
   IngestionQueue:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub gatewatch-${EnvironmentName}-ingestion
-      KmsMasterKeyId: alias/aws/sqs
+      KmsMasterKeyId: !GetAtt QueueKey.Arn
       MessageRetentionPeriod: 1209600
       ReceiveMessageWaitTimeSeconds: 20
       VisibilityTimeout: 360
@@ -482,8 +598,20 @@ Resources:
                 Condition:
                   StringEquals:
                     kms:ViaService:
-                      - !Sub secretsmanager.${AWS::Region}.amazonaws.com
-                      - !Sub lambda.${AWS::Region}.amazonaws.com
+                      - !Sub secretsmanager.${AWS::Region}.${AWS::URLSuffix}
+                      - !Sub lambda.${AWS::Region}.${AWS::URLSuffix}
+              - Sid: QueueEncryption
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt QueueKey.Arn
+              - Sid: XRayTelemetry
+                Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
               - Sid: AssumeTaggedSourceRoles
                 Effect: Allow
                 Action: sts:AssumeRole
@@ -606,6 +734,12 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub ${GovernanceMaintenanceLogGroup.Arn}:*
+              - Sid: XRayTelemetry
+                Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
               - Sid: DataApi
                 Effect: Allow
                 Action:
@@ -679,9 +813,8 @@ Resources:
   GovernanceMaintenanceDeadLetterQueue:
     Type: AWS::SQS::Queue
     Properties:
-      KmsMasterKeyId: alias/aws/sqs
+      KmsMasterKeyId: !GetAtt QueueKey.Arn
       MessageRetentionPeriod: 1209600
-      SqsManagedSseEnabled: true
 
   GovernanceMaintenanceSchedule:
     Type: AWS::Events::Rule
@@ -885,6 +1018,9 @@ Outputs:
   PlatformKeyArn:
     Description: KMS key used by platform data and the cross-stack application audit writer.
     Value: !GetAtt PlatformKey.Arn
+  QueueKeyArn:
+    Description: Dedicated KMS key used by ingestion and maintenance queues.
+    Value: !GetAtt QueueKey.Arn
   WorkspaceId:
     Description: Immutable workspace identity bound to this platform deployment.
     Value: !Ref WorkspaceId
