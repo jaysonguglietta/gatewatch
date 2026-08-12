@@ -34,7 +34,6 @@ test("bounded JSON rejects chunked bodies after the actual byte limit", async ()
     (error) => error instanceof HttpInputError && error.status === 413,
   );
 });
-
 test("bounded JSON validates media type, declared length, UTF-8, and syntax", async () => {
   await assert.rejects(
     readBoundedJson(new Request("https://gatewatch.example", {
@@ -115,4 +114,3 @@ test("IaC, remediation, AI, and role routes enforce authoritative trust decision
   assert.match(jiraSync, /"integrations\.sync"/);
   assert.match(organizationRoute, /import \{ csvCell \} from "\.\.\/\.\.\/\.\.\/lib\/csv"/);
 });
-

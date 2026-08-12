@@ -7,7 +7,6 @@ export class HttpInputError extends Error {
     this.status = status;
   }
 }
-
 function jsonContentType(value: string | null) {
   const mediaType = value?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
   return mediaType === "application/json" || mediaType.endsWith("+json");
@@ -75,4 +74,3 @@ export async function readBoundedJson<T = Record<string, unknown>>(
     throw new HttpInputError(400, "Request body must be valid JSON.");
   }
 }
-
