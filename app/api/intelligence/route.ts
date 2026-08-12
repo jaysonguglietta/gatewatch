@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
+import { HttpInputError, readBoundedJson } from "../../../lib/http-security";
 import {
-  acceptsJson,
   apiJson,
   audit,
   ensureAdminSchema,
@@ -111,10 +111,7 @@ export async function POST(request: Request) {
     if (!permission.allowed) {
       return apiJson({ error: "Analyst or reviewer access is required to change intelligence workflows." }, 403);
     }
-    if (!acceptsJson(request, 40_000)) {
-      return apiJson({ error: "Send an application/json payload under 40 KB." }, 415);
-    }
-    const input = (await request.json()) as Record<string, unknown>;
+    const input = await readBoundedJson(request, 40_000);
     const action = cleanText(input.action, 20);
     const id = cleanText(input.id, 100);
     await ensureSchema();
@@ -179,6 +176,9 @@ export async function POST(request: Request) {
 
     if (!id || !kinds.has(kind) || !subjectId || !statuses[kind]?.has(status)) {
       return apiJson({ error: "The workflow record is invalid." }, 400);
+    }
+    if (kind === "exception" && status === "expired") {
+      return apiJson({ error: "Exception expiry is controlled by Gatewatch and cannot be set by a client." }, 409);
     }
     if (
       existingRecord &&
@@ -277,9 +277,7 @@ export async function POST(request: Request) {
         : null,
     });
   } catch (error) {
-    if (error instanceof SyntaxError) {
-      return apiJson({ error: "Request body must be valid JSON." }, 400);
-    }
+    if (error instanceof HttpInputError) return apiJson({ error: error.message }, error.status);
     return apiJson({ error: "The workflow could not be saved." }, 503);
   }
 }

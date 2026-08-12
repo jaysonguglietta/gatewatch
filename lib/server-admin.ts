@@ -6,7 +6,9 @@ export type Permission =
   | "administration.manage"
   | "findings.triage"
   | "reviews.write"
-  | "governance.write"
+  | "governance.manage"
+  | "governance.review"
+  | "integrations.sync"
   | "intelligence.write"
   | "remediation.write";
 
@@ -14,7 +16,9 @@ const permissionRoles: Record<Permission, ReadonlySet<ApplicationRole>> = {
   "administration.manage": new Set(["admin"]),
   "findings.triage": new Set(["admin", "analyst", "reviewer"]),
   "reviews.write": new Set(["admin", "analyst", "reviewer"]),
-  "governance.write": new Set(["admin", "analyst", "reviewer"]),
+  "governance.manage": new Set(["admin", "analyst"]),
+  "governance.review": new Set(["admin", "analyst", "reviewer"]),
+  "integrations.sync": new Set(["admin", "analyst"]),
   "intelligence.write": new Set(["admin", "analyst", "reviewer"]),
   "remediation.write": new Set(["admin", "analyst"]),
 };
@@ -97,14 +101,6 @@ export function sameOrigin(request: Request) {
   } catch {
     return false;
   }
-}
-
-export function acceptsJson(request: Request, maxBytes = 50_000) {
-  const length = Number(request.headers.get("content-length") ?? "0");
-  return (
-    length <= maxBytes &&
-    request.headers.get("content-type")?.startsWith("application/json")
-  );
 }
 
 export async function ensureAdminSchema() {
@@ -435,6 +431,30 @@ export async function ensureAdminSchema() {
     } catch (error) {
       // Concurrent cold starts may both observe the old table. Ignore only the
       // benign race where the other request has already added this column.
+      if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) {
+        throw error;
+      }
+    }
+  }
+
+  const remediationColumns = await env.DB.prepare(
+    "PRAGMA table_info(remediation_requests)",
+  ).all<{ name: string }>();
+  const existingRemediationColumns = new Set(
+    remediationColumns.results.map((column) => column.name),
+  );
+  const remediationColumnMigrations = [
+    ["version", "ALTER TABLE remediation_requests ADD COLUMN version INTEGER NOT NULL DEFAULT 1"],
+    ["content_digest", "ALTER TABLE remediation_requests ADD COLUMN content_digest TEXT NOT NULL DEFAULT ''"],
+    ["approved_version", "ALTER TABLE remediation_requests ADD COLUMN approved_version INTEGER NOT NULL DEFAULT 0"],
+    ["approved_digest", "ALTER TABLE remediation_requests ADD COLUMN approved_digest TEXT NOT NULL DEFAULT ''"],
+    ["locked_at", "ALTER TABLE remediation_requests ADD COLUMN locked_at TEXT NOT NULL DEFAULT ''"],
+  ] as const;
+  for (const [column, statement] of remediationColumnMigrations) {
+    if (existingRemediationColumns.has(column)) continue;
+    try {
+      await env.DB.prepare(statement).run();
+    } catch (error) {
       if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) {
         throw error;
       }
