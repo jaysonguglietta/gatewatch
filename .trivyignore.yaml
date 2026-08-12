@@ -1,0 +1,12 @@
+misconfigurations:
+  - id: AWS-0104
+    paths:
+      - "infrastructure/cloudformation/gatewatch-aws-web.yaml"
+    expired_at: 2026-11-12
+    statement: >-
+      SEC-EX-001: the private web and bridge workloads require outbound HTTPS
+      to Cognito, STS, Bedrock, the approved Jira tenant, and the pinned image
+      registry through the NAT gateway. Egress is TCP/443 only; containers are
+      isolated, IMDS is denied except to the bridge, and the bridge assumes a
+      scoped role. Owner: Gatewatch security maintainer. Replace this exception
+      with VPC endpoints plus an authenticated FQDN egress proxy by 2026-11-12.

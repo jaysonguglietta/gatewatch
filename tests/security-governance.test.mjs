@@ -105,6 +105,7 @@ test("pins CI actions and gates secrets, SAST, dependencies, and IaC", async () 
   assert.equal((workflow.match(/limit-severities-for-sarif: true/g) ?? []).length, 2);
   assert.equal((workflow.match(/format: table/g) ?? []).length, 2);
   assert.equal((workflow.match(/skip-dirs: samples\/iac-review/g) ?? []).length, 2);
+  assert.equal((workflow.match(/trivyignores: \.trivyignore\.yaml/g) ?? []).length, 2);
   assert.match(workflow, /Gate repository secrets and IaC[\s\S]*exit-code: "1"/);
   assert.match(workflow, /npm audit --omit=dev --audit-level=high/);
   assert.match(workflow, /cfn-lint/);
