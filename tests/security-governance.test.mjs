@@ -49,7 +49,9 @@ test("forces tenant isolation and keeps runtime database roles non-owner", async
   assert.match(platform, /gatewatch_runtime_login/);
   assert.match(platform, /gatewatch_maintenance_login/);
   assert.match(platform, /for statement in statements:/);
+  assert.match(platform, /rolsuper OR rolcreatedb OR rolcreaterole OR rolbypassrls/);
   assert.doesNotMatch(platform, /statement = f"""[\s\S]*ALTER ROLE gatewatch_runtime_login/);
+  assert.doesNotMatch(platform, /ALTER ROLE gatewatch_runtime_login[^\n]*NOBYPASSRLS/);
   assert.match(platform, /DB_SECRET_ARN: !Ref RuntimeDatabaseSecret/);
   assert.match(platform, /DB_SECRET_ARN: !Ref MaintenanceDatabaseSecret/);
   assert.doesNotMatch(platform, /DB_SECRET_ARN: !GetAtt DatabaseCluster\.MasterUserSecret/);
