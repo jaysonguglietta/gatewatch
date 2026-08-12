@@ -11,7 +11,11 @@ COPY package.json package-lock.json ./
 RUN npm ci --include=dev --no-audit --no-fund
 
 COPY . .
-RUN npm run build:aws
+RUN npm run build:aws \
+    && mkdir -p /runtime-deps \
+    && cp package.json package-lock.json /runtime-deps/ \
+    && cd /runtime-deps \
+    && npm ci --omit=dev --no-audit --no-fund
 
 FROM ${NODE_RUNTIME_IMAGE} AS runtime
 
@@ -22,6 +26,7 @@ ENV NODE_ENV=production \
 WORKDIR /app
 
 COPY --from=build --chown=node:node /app/.next/standalone ./
+COPY --from=build --chown=node:node /runtime-deps/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/.next/static ./.next/static
 COPY --from=build --chown=node:node /app/public ./public
 COPY --chown=node:node infrastructure/aws-web/aws-bridge.mjs ./infrastructure/aws-web/
