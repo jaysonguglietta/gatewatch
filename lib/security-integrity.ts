@@ -11,7 +11,6 @@ function canonicalValue(value: unknown): unknown {
   if (typeof value === "number" && !Number.isFinite(value)) return null;
   return value;
 }
-
 export function canonicalJson(value: unknown) {
   return JSON.stringify(canonicalValue(value));
 }
@@ -47,4 +46,3 @@ export function canonicalRemediation(input: RemediationDigestInput) {
 export function remediationDigest(input: RemediationDigestInput) {
   return sha256Hex(canonicalRemediation(input));
 }
-
