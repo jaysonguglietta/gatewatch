@@ -1120,7 +1120,6 @@ Resources:
         Arn: !Ref OriginLoadBalancer
         HTTPPort: 80
         HTTPSPort: 443
-        IpAddressType: ipv4
         Name: !Sub gatewatch-${EnvironmentName}-private-origin
         OriginProtocolPolicy: https-only
         OriginSSLProtocols:
@@ -1133,7 +1132,6 @@ Resources:
     Type: AWS::CloudFront::Distribution
     DependsOn:
       - OriginHttpsListener
-      - PrivateWebVpcOrigin
       - WebDeploymentAssociation
     Properties:
       DistributionConfig:
