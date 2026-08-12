@@ -1,0 +1,98 @@
+name: Gatewatch release artifact security
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/release-security.yml
+      - app/**
+      - lib/**
+      - public/**
+      - infrastructure/aws-web/**
+      - next.config.ts
+      - package.json
+      - package-lock.json
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gatewatch-release-security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  final-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      security-events: write
+    env:
+      NODE_RUNTIME_IMAGE: node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436
+      RELEASE_IMAGE: gatewatch-web:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install ARM64 emulation
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          platforms: arm64
+      - name: Configure BuildKit
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build final production image
+        run: >-
+          docker buildx build
+          --platform linux/arm64
+          --load
+          --build-arg NODE_RUNTIME_IMAGE="$NODE_RUNTIME_IMAGE"
+          --tag "$RELEASE_IMAGE"
+          --file infrastructure/aws-web/Dockerfile
+          .
+      - name: Scan the final image
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # v0.36.0, Trivy v0.73.0
+        with:
+          image-ref: ${{ env.RELEASE_IMAGE }}
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: sarif
+          output: trivy-final-image.sarif
+          limit-severities-for-sarif: true
+      - name: Publish final-image scan results
+        if: always() && hashFiles('trivy-final-image.sarif') != ''
+        uses: github/codeql-action/upload-sarif@c4dd10e44af883a891fe31ced449bcb4a6728b9b # v3
+        with:
+          sarif_file: trivy-final-image.sarif
+          category: trivy-final-runtime-image
+      - name: Generate CycloneDX SBOM
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956 # v0.36.0, Trivy v0.73.0
+        with:
+          image-ref: ${{ env.RELEASE_IMAGE }}
+          scanners: vuln
+          exit-code: "0"
+          format: cyclonedx
+          output: gatewatch-web.cdx.json
+      - name: Package immutable image artifact
+        run: |
+          test "$(docker image inspect --format '{{.Architecture}}' "$RELEASE_IMAGE")" = arm64
+          docker save "$RELEASE_IMAGE" | gzip -9 > gatewatch-web.tar.gz
+          sha256sum gatewatch-web.tar.gz > gatewatch-web.tar.gz.sha256
+      - name: Upload image, digest, SBOM, and scan evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gatewatch-web-${{ github.sha }}
+          path: |
+            gatewatch-web.tar.gz
+            gatewatch-web.tar.gz.sha256
+            gatewatch-web.cdx.json
+            trivy-final-image.sarif
+          if-no-files-found: error
+          retention-days: 30
+      - name: Sign build provenance
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: gatewatch-web.tar.gz

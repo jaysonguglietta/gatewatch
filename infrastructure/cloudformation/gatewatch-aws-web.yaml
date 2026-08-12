@@ -27,6 +27,25 @@ Parameters:
     Type: String
     AllowedPattern: "^[a-f0-9]{64}$"
     Description: Expected SHA-256 digest for the exact release artifact bytes.
+  ImageArtifactKey:
+    Type: String
+    MinLength: 1
+    MaxLength: 1024
+    AllowedPattern: "^releases/images/[a-f0-9]{64}/gatewatch-web[.]tar[.]gz$"
+  ImageArtifactVersionId:
+    Type: String
+    MinLength: 1
+    MaxLength: 1024
+    AllowedPattern: "^[A-Za-z0-9._-]+$"
+    Description: Immutable S3 VersionId for the scanned production image archive.
+  ImageArtifactSha256:
+    Type: String
+    AllowedPattern: "^[a-f0-9]{64}$"
+    Description: Expected SHA-256 digest for the attested production image archive.
+  ApplicationImageRef:
+    Type: String
+    AllowedPattern: "^gatewatch-web:[a-f0-9]{40}$"
+    Description: Exact image tag embedded in the verified release archive.
   SnapshotBucket:
     Type: String
     AllowedPattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
@@ -82,10 +101,6 @@ Parameters:
     Type: String
     AllowedPattern: "^[^[:space:]@]+@sha256:[a-f0-9]{64}$"
     Description: Digest-pinned oauth2-proxy image.
-  NodeRuntimeImage:
-    Type: String
-    AllowedPattern: "^[^[:space:]@]+@sha256:[a-f0-9]{64}$"
-    Description: Digest-pinned Node.js build and runtime image.
   SnapshotKmsKeyArn:
     Type: String
     AllowedPattern: "^arn:[a-z0-9-]+:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]+$"
@@ -93,6 +108,10 @@ Parameters:
     Type: String
     Default: ""
     AllowedPattern: "^$|^arn:[a-z0-9-]+:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]+$"
+  SourceOrganizationId:
+    Type: String
+    AllowedPattern: "^o-[a-z0-9]{10,32}$"
+    Description: AWS Organization containing every approved Gatewatch evidence role.
   InstanceType:
     Type: String
     Default: t4g.small
@@ -408,8 +427,52 @@ Resources:
         MetricName: !Sub gatewatch-${EnvironmentName}-edge
         SampledRequestsEnabled: true
       Rules:
-        - Name: IpRateLimit
+        - Name: AiAnalysisRateLimit
           Priority: 0
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              AggregateKeyType: IP
+              EvaluationWindowSec: 300
+              Limit: 60
+              ScopeDownStatement:
+                ByteMatchStatement:
+                  FieldToMatch:
+                    UriPath: {}
+                  PositionalConstraint: STARTS_WITH
+                  SearchString: /api/ai/analysis
+                  TextTransformations:
+                    - Priority: 0
+                      Type: NONE
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: AiAnalysisRateLimit
+            SampledRequestsEnabled: true
+        - Name: IacEvaluationRateLimit
+          Priority: 1
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              AggregateKeyType: IP
+              EvaluationWindowSec: 300
+              Limit: 100
+              ScopeDownStatement:
+                ByteMatchStatement:
+                  FieldToMatch:
+                    UriPath: {}
+                  PositionalConstraint: STARTS_WITH
+                  SearchString: /api/iac/evaluate
+                  TextTransformations:
+                    - Priority: 0
+                      Type: NONE
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: IacEvaluationRateLimit
+            SampledRequestsEnabled: true
+        - Name: IpRateLimit
+          Priority: 2
           Action:
             Block: {}
           Statement:
@@ -476,8 +539,10 @@ Resources:
       GroupDescription: Gatewatch web origin; CloudFront origin network only
       VpcId: !Ref WebVpc
       SecurityGroupEgress:
-        - Description: AWS APIs, package repositories, and container registry
-          IpProtocol: "-1"
+        - Description: TLS to AWS APIs, approved SaaS integrations, and the pinned OIDC image registry
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
           CidrIp: 0.0.0.0/0
       Tags:
         - Key: Name
@@ -534,6 +599,44 @@ Resources:
                   - s3:GetObject
                   - s3:GetObjectVersion
                 Resource: !Sub arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ArtifactKey}
+              - Sid: ReadProductionImageArtifact
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ImageArtifactKey}
+              - Sid: ReadBootstrapSecrets
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref CloudFrontOriginSecret
+                  - !Ref AwsBridgeSecret
+                  - !Ref OidcCookieSecret
+              - Sid: PublishApplicationLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Resource: !Sub ${ApplicationLogGroup.Arn}:*
+
+  AwsBridgeRuntimeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: AWS permissions available only to the isolated Gatewatch bridge container.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !GetAtt WebInstanceRole.Arn
+            Action: sts:AssumeRole
+      MaxSessionDuration: 3600
+      Policies:
+        - PolicyName: GatewatchBridgeRuntime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
               - Sid: ReadSecurityGroupSnapshot
                 Effect: Allow
                 Action: s3:GetObject
@@ -557,23 +660,16 @@ Resources:
                   - !If [HasOrganizationEvidenceKmsKey, !Ref OrganizationEvidenceKmsKeyArn, !Ref AWS::NoValue]
                 Condition:
                   StringEquals:
-                    kms:ViaService: !Sub s3.${AWS::Region}.amazonaws.com
-              - Sid: ReadRuntimeSecrets
+                    kms:ViaService: !Sub s3.${AWS::Region}.${AWS::URLSuffix}
+              - Sid: ManageJiraIntegrationSecret
                 Effect: Allow
-                Action: secretsmanager:GetSecretValue
-                Resource:
-                  - !Ref CloudFrontOriginSecret
-                  - !Ref AwsBridgeSecret
-                  - !Ref OidcCookieSecret
-                  - !Ref JiraIntegrationSecret
-              - Sid: UpdateJiraIntegrationSecret
-                Effect: Allow
-                Action: secretsmanager:PutSecretValue
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:PutSecretValue
                 Resource: !Ref JiraIntegrationSecret
               - Sid: InvokeApprovedGatewatchModel
                 Effect: Allow
-                Action:
-                  - bedrock:InvokeModel
+                Action: bedrock:InvokeModel
                 Resource:
                   - !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}
                   - !Sub arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/amazon.nova-2-lite-v1:0
@@ -581,20 +677,28 @@ Resources:
                   - !Sub arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/amazon.nova-2-lite-v1:0
               - Sid: ApplyGatewatchGuardrail
                 Effect: Allow
-                Action:
-                  - bedrock:ApplyGuardrail
+                Action: bedrock:ApplyGuardrail
                 Resource: !GetAtt GatewatchAiGuardrail.GuardrailArn
-              - Sid: PublishApplicationLogs
-                Effect: Allow
-                Action:
-                  - logs:CreateLogStream
-                  - logs:DescribeLogStreams
-                  - logs:PutLogEvents
-                Resource: !Sub ${ApplicationLogGroup.Arn}:*
               - Sid: AssumeConfiguredEvidenceRoles
                 Effect: Allow
                 Action: sts:AssumeRole
                 Resource: !Sub arn:${AWS::Partition}:iam::*:role/GatewatchLogReadRole*
+                Condition:
+                  StringEquals:
+                    aws:ResourceOrgID: !Ref SourceOrganizationId
+
+  WebAssumeBridgeRuntimePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: AssumeGatewatchBridgeRuntime
+      Roles:
+        - !Ref WebInstanceRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Resource: !GetAtt AwsBridgeRuntimeRole.Arn
 
   WebInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -617,6 +721,16 @@ Resources:
         - Description: Stateful NFS responses
           IpProtocol: "-1"
           CidrIp: 127.0.0.1/32
+
+  WebEgressToFileSystem:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      Description: NFS to the encrypted Gatewatch EFS mount only
+      DestinationSecurityGroupId: !Ref WebFileSystemSecurityGroup
+      FromPort: 2049
+      GroupId: !Ref WebSecurityGroup
+      IpProtocol: tcp
+      ToPort: 2049
 
   WebFileSystem:
     Type: AWS::EFS::FileSystem
@@ -778,6 +892,7 @@ Resources:
     Type: AWS::SSM::Association
     DependsOn:
       - WebFileSystemMountTarget
+      - WebAssumeBridgeRuntimePolicy
     Properties:
       Name: AWS-RunShellScript
       AssociationName: !Sub gatewatch-${EnvironmentName}-web-deployment
@@ -795,7 +910,7 @@ Resources:
                 sleep 5
               done
               test -f /var/lib/gatewatch-bootstrap-ready
-              rm -rf /opt/gatewatch-release /tmp/gatewatch-release.zip
+              rm -rf /opt/gatewatch-release /tmp/gatewatch-release.zip /tmp/gatewatch-web.tar.gz
               aws s3api get-object \
                 --bucket '${ArtifactBucket}' \
                 --key '${ArtifactKey}' \
@@ -803,6 +918,13 @@ Resources:
                 --region '${AWS::Region}' \
                 /tmp/gatewatch-release.zip >/dev/null
               printf '%s  %s\n' '${ArtifactSha256}' /tmp/gatewatch-release.zip | sha256sum -c -
+              aws s3api get-object \
+                --bucket '${ArtifactBucket}' \
+                --key '${ImageArtifactKey}' \
+                --version-id '${ImageArtifactVersionId}' \
+                --region '${AWS::Region}' \
+                /tmp/gatewatch-web.tar.gz >/dev/null
+              printf '%s  %s\n' '${ImageArtifactSha256}' /tmp/gatewatch-web.tar.gz | sha256sum -c -
               mkdir -p /opt/gatewatch-release
               unzip -q /tmp/gatewatch-release.zip -d /opt/gatewatch-release
               cd /opt/gatewatch-release
@@ -825,6 +947,7 @@ Resources:
                 '${SnapshotRegion}' \
                 '${OrganizationEvidenceBucket}' \
                 '${OrganizationManifestKey}' \
+                '${AwsBridgeRuntimeRole.Arn}' \
                 '${ApplicationLogGroup}' \
                 "$RELEASE_ID" \
                 '${BedrockEnabled}' \
@@ -832,7 +955,9 @@ Resources:
                 '${GatewatchAiGuardrail.GuardrailId}' \
                 '${GatewatchAiGuardrailVersion.Version}' \
                 '${OAuth2ProxyImage}' \
-                '${NodeRuntimeImage}'
+                '${ApplicationImageRef}' \
+                '/tmp/gatewatch-web.tar.gz' \
+                '${ImageArtifactSha256}'
 
   NoCachePolicy:
     Type: AWS::CloudFront::CachePolicy
