@@ -9,6 +9,16 @@ fixes; GW-02, GW-05, GW-09, GW-10, and GW-14 have material code-level mitigation
 None are closed until the target-environment and independent-validation criteria
 below pass. See [SECURITY_UPDATE_2026-08-03.md](SECURITY_UPDATE_2026-08-03.md).
 
+**Implementation update (August 11, 2026):** Separate review branches now cover
+authoritative server-side IaC evaluation, digest-bound remediation approval,
+central authorization corrections, streaming body limits, formula-safe exports,
+canonical AI inputs, Cognito/MFA, WAF/TLS/origin isolation, forced RLS,
+non-owner database users, append-only audit history, Object Lock archival,
+legal-hold-aware scheduled retention, recovery controls, and pinned CI security
+analysis. These remain **in progress** until the PRs merge and AWS acceptance
+tests produce retained evidence. See
+[SECURITY_UPDATE_2026-08-11.md](SECURITY_UPDATE_2026-08-11.md).
+
 ## Status model
 
 - **Open:** No effective fix has been merged and deployed.

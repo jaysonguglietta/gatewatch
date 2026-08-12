@@ -14,8 +14,9 @@ infrastructure but do not copy local AWS credentials into Gatewatch.
 - VPC and at least two private subnets for Aurora when deploying the platform.
 - A Route 53 public hosted zone, a public application hostname, and a separate
   origin hostname.
-- An ACM certificate in `us-east-1` for the public hostname and a regional ACM
-  certificate for the origin hostname.
+- A public Route 53 hosted zone in the deployment account. The stack requests
+  and DNS-validates separate ACM certificates for the public and private-origin
+  hostnames.
 - Reviewed digest-pinned Node.js and oauth2-proxy container image references.
 - A reviewed organization root/OU allowlist and account exclusion list.
 
@@ -75,26 +76,49 @@ Apply the migrations in filename order through a controlled migration identity:
 3. [`0003_finding_search.sql`](../../db/postgres/0003_finding_search.sql) adds
    queue-ordering, observation-history, universal-evidence, resource-name,
    tag, JSONB, and trigram indexes for bounded organization-scale search.
+4. [`0004_bedrock_ai_analyst.sql`](../../db/postgres/0004_bedrock_ai_analyst.sql)
+   adds bounded AI analysis, feedback, and usage records.
+5. [`0005_security_governance.sql`](../../db/postgres/0005_security_governance.sql)
+   forces RLS on every workspace table, creates non-owner workload roles,
+   makes database audit history append-only, and installs bounded,
+   legal-hold-aware retention.
 
-The second migration enables row-level security on every organization-operations
-table. Each application transaction must set `app.workspace_id`; a missing or
-incorrect workspace context therefore fails closed. The Lambda runtime must not
-own tables or have schema-administration privileges.
+The final migration discovers every workspace-scoped table, enables and forces
+row-level security, and replaces its workspace policy. Each application
+transaction must set `app.workspace_id`; a missing or incorrect workspace
+context therefore fails closed. The deployment creates separate non-owner login
+principals for ingestion and maintenance. Workload credentials must never be
+changed to the Aurora master secret or granted `BYPASSRLS`, table ownership, or
+schema-administration privileges.
 
 ## 3. Deploy the data platform
 
-Package `infrastructure/lambda/ingest` and `backfill` with lockfile-based
-installs. Pass the organization evidence bucket and key outputs to
+Package `infrastructure/lambda/ingest`, `backfill`, and
+`governance-maintenance` with lockfile-based installs. Upload each artifact
+under an immutable versioned key. Pass the organization evidence bucket and key outputs to
 `gatewatch-aws-platform.yaml`:
 
 ```text
 OrganizationEvidenceBucketName=<collector EvidenceBucketName>
 OrganizationEvidenceKeyArn=<collector EvidenceKeyArn>
+WorkspaceId=<workspace UUID from migration 0001>
+GovernanceMaintenanceArtifactKey=<versioned maintenance zip key>
 ```
 
 The platform creates the EventBridge rule that forwards only canonical shard
 and run-manifest object keys to SQS. Confirm the queue policy source ARN and
-source account after deployment.
+source account after deployment. The platform also creates deletion-protected
+Aurora with 35-day recovery, RDS-managed master credentials, separate non-owner
+workload credentials, a compliance-mode Object Lock audit bucket, and an hourly
+single-concurrency maintenance worker with retries, a DLQ, and an alarm. The
+worker archives unexported audit rows before enforcing retention. Every SQS
+queue uses the dedicated rotating customer-managed queue key, every Lambda has
+active X-Ray tracing, and the audit archive writes server access logs to a
+separate retained SSE-S3 bucket. Cross-account forwarding stacks must receive
+both the ingestion queue ARN and the `QueueKeyArn` platform output.
+
+The Object Lock retention value is irreversible for protected object versions.
+Validate the compliance requirement and cost before deployment.
 
 ## 4. Deploy the identity and web stack
 
@@ -113,8 +137,6 @@ export AWS_REGION=us-east-1
 export GATEWATCH_PUBLIC_DOMAIN_NAME=gatewatch.example.com
 export GATEWATCH_ORIGIN_DOMAIN_NAME=gatewatch-origin.example.com
 export GATEWATCH_HOSTED_ZONE_ID=Z0123456789EXAMPLE
-export GATEWATCH_PUBLIC_CERTIFICATE_ARN=arn:aws:acm:us-east-1:111122223333:certificate/...
-export GATEWATCH_ORIGIN_CERTIFICATE_ARN=arn:aws:acm:us-east-1:111122223333:certificate/...
 export GATEWATCH_BOOTSTRAP_ADMIN_EMAIL=security-admin@example.com
 export GATEWATCH_COGNITO_DOMAIN_PREFIX=gatewatch-example
 export GATEWATCH_OAUTH2_PROXY_IMAGE=quay.io/oauth2-proxy/oauth2-proxy@sha256:...
@@ -139,7 +161,9 @@ transport; use a dedicated, monitored release role in production.
 The stack creates a Cognito user pool with named users, mandatory TOTP MFA,
 15-minute access and ID tokens, authorization-code flow, PKCE, and token
 revocation. CloudFront is protected by managed WAF rules and rate limiting;
-both viewer-to-edge and edge-to-ALB connections require TLS. The EC2 web
+both viewer-to-edge and edge-to-ALB connections require TLS. The ALB is an
+internal CloudFront VPC origin in two private subnets, so it has no public
+route or directly reachable endpoint. The EC2 web
 security group accepts traffic only from the ALB, and Nginx verifies a generated
 origin header on every non-health request.
 The ALB spans two public subnets, while the EC2 runtime and encrypted EFS mount
@@ -187,6 +211,11 @@ blocked at both SDK and network layers.
 - [ ] Duplicate S3 events do not create duplicate observation rows.
 - [ ] Malformed or excessive shards reach the DLQ without partial rows.
 - [ ] The platform queue cannot be written by an unapproved principal/rule.
+- [ ] All three queues report the expected `QueueKeyArn`, and an unapproved
+  principal cannot use that key for `Decrypt` or `GenerateDataKey`.
+- [ ] Audit archive server access logs arrive under `audit-archive-access/` in
+  the dedicated access-log bucket.
+- [ ] All four platform Lambdas emit active X-Ray traces without IAM denials.
 - [ ] Artifact checksum/version mismatch causes web deployment to fail.
 - [ ] Snapshot checksum mismatch causes `/api/aws-inventory` to fail closed.
 - [ ] Administrator and workflow audit events identify the Cognito subject and
@@ -200,6 +229,15 @@ blocked at both SDK and network layers.
 - [ ] CloudFront access logs arrive in the retained encrypted log bucket.
 - [ ] `app.workspace_id` is set on every Aurora application transaction and a
   cross-workspace query is rejected by row-level security.
+- [ ] Ingestion and maintenance database principals report `rolsuper=false`,
+  `rolbypassrls=false`, and own no application tables.
+- [ ] Workload attempts to update, delete, or truncate `audit_events` fail.
+- [ ] Every audit event has an immutable S3 version and archive-ledger row before
+  it becomes eligible for database retention.
+- [ ] Expired evidence is deleted in bounded batches while matching legal holds
+  preserve workspace, account, security-group, finding, and export records.
+- [ ] Aurora deletion is refused, the restorable time advances, and a quarterly
+  point-in-time restore to an isolated cluster passes consistency checks.
 - [ ] Account catalog changes appear in findings facets and groupings.
 - [ ] Revoked correlation mappings are excluded from reprocessing.
 - [ ] Monitor transitions create durable runs and notification outbox entries.

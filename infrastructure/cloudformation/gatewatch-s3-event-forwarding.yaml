@@ -11,6 +11,9 @@ Parameters:
     Default: AWSLogs/
   GatewatchIngestionQueueArn:
     Type: String
+  GatewatchIngestionQueueKeyArn:
+    Type: String
+    AllowedPattern: "^arn:[a-z0-9-]+:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]+$"
 
 Resources:
   ForwardingRole:
@@ -32,6 +35,11 @@ Resources:
               - Effect: Allow
                 Action: sqs:SendMessage
                 Resource: !Ref GatewatchIngestionQueueArn
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !Ref GatewatchIngestionQueueKeyArn
 
   ObjectCreatedRule:
     Type: AWS::Events::Rule

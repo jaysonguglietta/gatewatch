@@ -87,9 +87,16 @@ test("uses separate generated secrets and resource-scoped KMS permissions", asyn
   assert.match(template, /aws:ResourceOrgID: !Ref SourceOrganizationId/);
   assert.match(template, /WebEgressToFileSystem/);
   assert.match(template, /WebPrivateSubnet:/);
+  assert.match(template, /WebPrivateSubnetB:/);
   assert.match(template, /WebNatGateway:/);
   assert.match(template, /NatGatewayId: !Ref WebNatGateway/);
   assert.match(template, /WebInstance:[\s\S]*AssociatePublicIpAddress: false[\s\S]*SubnetId: !Ref WebPrivateSubnet/);
+  assert.match(template, /OriginLoadBalancer:[\s\S]*Scheme: internal[\s\S]*!Ref WebPrivateSubnetB/);
+  assert.match(template, /PrivateWebVpcOrigin:[\s\S]*Type: AWS::CloudFront::VpcOrigin/);
+  assert.match(template, /VpcOriginConfig:[\s\S]*VpcOriginId: !GetAtt PrivateWebVpcOrigin.Id/);
+  assert.match(template, /PublicCertificate:[\s\S]*ValidationMethod: DNS/);
+  assert.match(template, /OriginCertificate:[\s\S]*ValidationMethod: DNS/);
+  assert.doesNotMatch(template, /OriginLoadBalancer:[\s\S]*Scheme: internet-facing/);
   assert.doesNotMatch(template, /MapPublicIpOnLaunch: true/);
   assert.doesNotMatch(template, /Description: AWS APIs, package repositories, and container registry[\s\S]*IpProtocol: "-1"/);
 });
