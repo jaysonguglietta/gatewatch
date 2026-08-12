@@ -180,7 +180,8 @@ test("release CI scans the final image and emits SBOM and signed provenance", as
 
   assert.match(workflow, /NODE_RUNTIME_IMAGE: node:22-bookworm-slim@sha256:[a-f0-9]{64}/);
   assert.match(workflow, /docker buildx build[\s\S]*--platform linux\/arm64[\s\S]*infrastructure\/aws-web\/Dockerfile/);
-  assert.match(workflow, /docker\/setup-qemu-action@[a-f0-9]{40}/);
+  assert.match(workflow, /runs-on: ubuntu-24\.04-arm/);
+  assert.doesNotMatch(workflow, /docker\/setup-qemu-action/);
   assert.match(workflow, /docker\/setup-buildx-action@[a-f0-9]{40}/);
   assert.match(workflow, /image-ref: \$\{\{ env\.RELEASE_IMAGE \}\}/);
   assert.match(workflow, /severity: CRITICAL,HIGH/);
