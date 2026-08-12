@@ -17,6 +17,23 @@ test("constrains secret-scan exceptions to exact synthetic analyzer IDs and path
   assert.doesNotMatch(config, /samples\/\.\*/);
 });
 
+test("keeps every Aurora workspace column UUID-scoped and ships an atomic migration runner", async () => {
+  const [base, ai, runner, splitter] = await Promise.all([
+    source("db/postgres/0001_gatewatch_aws.sql"),
+    source("db/postgres/0004_bedrock_ai_analyst.sql"),
+    source("scripts/migrate-aws-platform.mjs"),
+    source("scripts/lib/split-postgres-sql.mjs"),
+  ]);
+
+  assert.match(base, /gatewatch\.migration_workspace_id/);
+  assert.equal((ai.match(/workspace_id UUID NOT NULL REFERENCES workspaces\(id\)/g) ?? []).length, 3);
+  assert.doesNotMatch(ai, /workspace_id TEXT/);
+  assert.match(runner, /begin-transaction/);
+  assert.match(runner, /rollback-transaction/);
+  assert.match(runner, /all_workspace_tables_force_rls/);
+  assert.match(splitter, /dollarTag/);
+});
+
 test("forces tenant isolation and keeps runtime database roles non-owner", async () => {
   const [migration, platform, ingest, backfill] = await Promise.all([
     source("db/postgres/0005_security_governance.sql"),
@@ -31,6 +48,8 @@ test("forces tenant isolation and keeps runtime database roles non-owner", async
   assert.match(migration, /REVOKE CREATE ON SCHEMA public FROM PUBLIC/);
   assert.match(platform, /gatewatch_runtime_login/);
   assert.match(platform, /gatewatch_maintenance_login/);
+  assert.match(platform, /for statement in statements:/);
+  assert.doesNotMatch(platform, /statement = f"""[\s\S]*ALTER ROLE gatewatch_runtime_login/);
   assert.match(platform, /DB_SECRET_ARN: !Ref RuntimeDatabaseSecret/);
   assert.match(platform, /DB_SECRET_ARN: !Ref MaintenanceDatabaseSecret/);
   assert.doesNotMatch(platform, /DB_SECRET_ARN: !GetAtt DatabaseCluster\.MasterUserSecret/);

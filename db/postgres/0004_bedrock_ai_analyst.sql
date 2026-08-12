@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS ai_analyses (
   id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL DEFAULT 'default',
+  workspace_id UUID NOT NULL REFERENCES workspaces(id),
   fingerprint TEXT NOT NULL DEFAULT '',
   mode TEXT NOT NULL CHECK (mode IN ('finding', 'hunt', 'digest', 'cluster', 'remediation')),
   evidence_hash TEXT NOT NULL,
@@ -24,7 +24,7 @@ CREATE INDEX IF NOT EXISTS ai_analyses_finding_idx ON ai_analyses (workspace_id,
 
 CREATE TABLE IF NOT EXISTS ai_feedback (
   id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL DEFAULT 'default',
+  workspace_id UUID NOT NULL REFERENCES workspaces(id),
   analysis_id TEXT NOT NULL REFERENCES ai_analyses(id) ON DELETE CASCADE,
   rating TEXT NOT NULL CHECK (rating IN ('useful', 'incorrect', 'incomplete')),
   reason TEXT NOT NULL DEFAULT '',
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS ai_feedback (
 );
 
 CREATE TABLE IF NOT EXISTS ai_usage_daily (
-  workspace_id TEXT NOT NULL DEFAULT 'default',
+  workspace_id UUID NOT NULL REFERENCES workspaces(id),
   usage_date DATE NOT NULL,
   actor TEXT NOT NULL,
   requests INTEGER NOT NULL DEFAULT 0 CHECK (requests >= 0),
