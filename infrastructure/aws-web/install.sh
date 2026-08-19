@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-if [[ "$#" -ne 30 ]]; then
-  echo "Usage: install.sh REGION ORIGIN_SECRET_ARN BRIDGE_SECRET_ARN COOKIE_SECRET_ARN JIRA_SECRET_ARN USER_POOL_ID USER_POOL_CLIENT_ID COGNITO_DOMAIN_PREFIX PUBLIC_URL BOOTSTRAP_ADMIN_EMAIL SNAPSHOT_BUCKET SNAPSHOT_KEY SNAPSHOT_MANIFEST_KEY SNAPSHOT_REGION ORGANIZATION_EVIDENCE_BUCKET ORGANIZATION_MANIFEST_KEY AUDIT_ARCHIVE_BUCKET WORKSPACE_ID BRIDGE_ROLE_ARN LOG_GROUP RELEASE_ID BEDROCK_ENABLED BEDROCK_MODEL_ID BEDROCK_GUARDRAIL_ID BEDROCK_GUARDRAIL_VERSION OAUTH2_PROXY_IMAGE APPLICATION_IMAGE_REF APPLICATION_IMAGE_ARCHIVE APPLICATION_IMAGE_SHA256 ADX_SECRET_ARN" >&2
+if [[ "$#" -ne 31 ]]; then
+  echo "Usage: install.sh REGION ORIGIN_SECRET_ARN BRIDGE_SECRET_ARN COOKIE_SECRET_ARN JIRA_SECRET_ARN USER_POOL_ID USER_POOL_CLIENT_ID COGNITO_DOMAIN_PREFIX PUBLIC_URL BOOTSTRAP_ADMIN_EMAIL SNAPSHOT_BUCKET SNAPSHOT_KEY SNAPSHOT_MANIFEST_KEY SNAPSHOT_REGION ORGANIZATION_EVIDENCE_BUCKET ORGANIZATION_MANIFEST_KEY AUDIT_ARCHIVE_BUCKET WORKSPACE_ID BRIDGE_ROLE_ARN LOG_GROUP RELEASE_ID BEDROCK_ENABLED BEDROCK_MODEL_ID BEDROCK_GUARDRAIL_ID BEDROCK_GUARDRAIL_VERSION OAUTH2_PROXY_IMAGE APPLICATION_IMAGE_REF APPLICATION_IMAGE_ARCHIVE APPLICATION_IMAGE_SHA256 ADX_SECRET_ARN ADX_SYNC_QUEUE_URL" >&2
   exit 2
 fi
 
@@ -37,6 +37,7 @@ APPLICATION_IMAGE_REF="${27}"
 APPLICATION_IMAGE_ARCHIVE="${28}"
 APPLICATION_IMAGE_SHA256="${29}"
 ADX_SECRET_ARN="${30}"
+ADX_SYNC_QUEUE_URL="${31}"
 PUBLIC_HOST="${PUBLIC_URL#https://}"
 
 if [[ "$PUBLIC_URL" != "https://$PUBLIC_HOST" || "$PUBLIC_HOST" == */* ]]; then
@@ -80,6 +81,11 @@ map "$gatewatch_health_request:$gatewatch_origin_header" $gatewatch_origin_allow
   "1:0" 1;
   "1:1" 1;
   "0:1" 1;
+}
+
+map $http_authorization $gatewatch_internal_worker {
+  default 0;
+  "Bearer __BRIDGE_TOKEN__" 1;
 }
 
 server {
@@ -127,6 +133,19 @@ server {
     return 302 /oauth2/sign_out;
   }
 
+  location = /api/internal/adx-sync {
+    if ($gatewatch_internal_worker = 0) {
+      return 403;
+    }
+    proxy_pass http://127.0.0.1:3000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Authorization $http_authorization;
+    proxy_read_timeout 60s;
+  }
+
   location / {
     auth_request /oauth2/auth;
     error_page 401 =403 /oauth2/sign_in;
@@ -151,6 +170,7 @@ server {
 }
 NGINX
 sed -i "s|__ORIGIN_TOKEN__|$ORIGIN_TOKEN|g" /etc/nginx/conf.d/gatewatch.conf
+sed -i "s|__BRIDGE_TOKEN__|$BRIDGE_TOKEN|g" /etc/nginx/conf.d/gatewatch.conf
 rm -f /etc/nginx/conf.d/default.conf
 nginx -t
 systemctl enable nginx
@@ -248,6 +268,7 @@ docker run -d \
   --env GATEWATCH_AWS_BRIDGE_TOKEN="$BRIDGE_TOKEN" \
   --env GATEWATCH_JIRA_SECRET_ARN="$JIRA_SECRET_ARN" \
   --env GATEWATCH_ADX_SECRET_ARN="$ADX_SECRET_ARN" \
+  --env GATEWATCH_ADX_SYNC_QUEUE_URL="$ADX_SYNC_QUEUE_URL" \
   --env GATEWATCH_SNAPSHOT_BUCKET="$SNAPSHOT_BUCKET" \
   --env GATEWATCH_SNAPSHOT_KEY="$SNAPSHOT_KEY" \
   --env GATEWATCH_SNAPSHOT_MANIFEST_KEY="$SNAPSHOT_MANIFEST_KEY" \

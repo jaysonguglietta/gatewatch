@@ -2704,6 +2704,13 @@ td small {
   background: #fafbfc;
 }
 
+.wizard-blocker {
+  align-self: center;
+  margin-right: auto;
+  color: var(--ink-500);
+  font-size: 9px;
+}
+
 .toast {
   position: fixed;
   right: 22px;
@@ -5579,7 +5586,7 @@ td small {
   overflow-x: auto;
   padding: 5px;
   margin-bottom: 18px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 12px;
   background: #fff;
 }
@@ -11343,6 +11350,111 @@ td small {
   word-break: break-word;
 }
 
+.freshness-alert,
+.federation-setup,
+.schema-discovery,
+.mapping-validator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--blue));
+}
+
+.freshness-alert {
+  border-color: color-mix(in srgb, #ef4444 45%, var(--line));
+  background: color-mix(in srgb, #ef4444 8%, var(--surface));
+  color: #b91c1c;
+}
+
+.freshness-alert p,
+.federation-setup p,
+.schema-discovery p,
+.mapping-validator p {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+}
+
+.freshness-alert span,
+.federation-setup span,
+.schema-discovery span,
+.mapping-validator span {
+  color: var(--ink-500);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.schema-discovery,
+.mapping-validator {
+  justify-content: space-between;
+}
+
+.schema-discovery > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.schema-columns {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 11px 13px;
+}
+
+.schema-columns span {
+  color: var(--ink-500);
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.mapping-validator p.passed { color: #15803d; }
+.mapping-validator p.failed { color: #b91c1c; }
+
+.mapping-samples,
+.mapping-validation-summary {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.mapping-samples article,
+.mapping-validation-summary p {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.35fr) 1fr;
+  gap: 10px;
+  align-items: center;
+  margin: 0;
+}
+
+.mapping-samples p,
+.mapping-validation-summary > div,
+.mapping-validation-summary p span {
+  display: grid;
+  gap: 2px;
+}
+
+.mapping-samples span,
+.mapping-validation-summary span {
+  color: var(--ink-500);
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .schema-discovery,
+  .mapping-validator { align-items: stretch; flex-direction: column; }
+  .mapping-samples article,
+  .mapping-validation-summary p { grid-template-columns: 1fr; }
+}
+
 .button-danger {
   border: 1px solid #efc5c6;
   background: white;
@@ -11686,6 +11798,36 @@ td small {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 13px;
+}
+
+.admin-source-modal .form-field {
+  margin-top: 0;
+}
+
+.admin-source-modal .form-field > input,
+.admin-source-modal .form-field > select {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: white;
+  outline: 0;
+}
+
+.admin-source-modal .form-field > input:focus,
+.admin-source-modal .form-field > select:focus {
+  border-color: #82afe9;
+  box-shadow: 0 0 0 3px rgba(40, 116, 232, 0.09);
+}
+
+.admin-source-modal .form-field > small {
+  position: static;
+  display: block;
+  margin-top: 5px;
+  color: var(--ink-500);
+  font-size: 9px;
+  line-height: 1.4;
 }
 
 .source-span-two {

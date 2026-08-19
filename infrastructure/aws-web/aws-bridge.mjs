@@ -2,7 +2,8 @@ import { createServer } from "node:http";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { BedrockRuntimeClient, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
 import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
+import { AssumeRoleCommand, GetWebIdentityTokenCommand, STSClient } from "@aws-sdk/client-sts";
+import { SendMessageBatchCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { fromTemporaryCredentials } from "@aws-sdk/credential-providers";
 import {
   GetSecretValueCommand,
@@ -26,6 +27,7 @@ const maxSnapshotBytes = 25 * 1024 * 1024;
 const maxManifestBytes = 8 * 1024 * 1024;
 const jiraSecretArn = process.env.GATEWATCH_JIRA_SECRET_ARN ?? "";
 const adxSecretArn = process.env.GATEWATCH_ADX_SECRET_ARN ?? "";
+const adxSyncQueueUrl = process.env.GATEWATCH_ADX_SYNC_QUEUE_URL ?? "";
 const region = process.env.AWS_REGION ?? "us-east-1";
 const bridgeRoleArn = process.env.GATEWATCH_AWS_BRIDGE_ROLE_ARN ?? "";
 if (!/^arn:[a-z0-9-]+:iam::[0-9]{12}:role\/[A-Za-z0-9+=,.@_\/-]{1,512}$/.test(bridgeRoleArn)) {
@@ -45,6 +47,8 @@ const bedrockModelId = process.env.GATEWATCH_BEDROCK_MODEL_ID ?? "us.amazon.nova
 const bedrockGuardrailId = process.env.GATEWATCH_BEDROCK_GUARDRAIL_ID ?? "";
 const bedrockGuardrailVersion = process.env.GATEWATCH_BEDROCK_GUARDRAIL_VERSION ?? "";
 const bedrock = new BedrockRuntimeClient({ region, credentials });
+const sts = new STSClient({ region, credentials });
+const sqs = new SQSClient({ region, credentials });
 
 if (!token || !snapshotBucket || !auditArchiveBucket || !/^[a-f0-9-]{36}$/.test(workspaceId)) {
   throw new Error("The AWS bridge requires its private token, snapshot bucket, audit archive, and workspace identity.");
@@ -635,6 +639,7 @@ function adxSource(input) {
   const batchSize = Math.trunc(Number(input.batchSize) || 500);
   const tenantId = text(input.tenantId, 36).toLowerCase();
   const clientId = text(input.clientId, 36).toLowerCase();
+  const authMode = text(input.authMode, 30) === "client-secret" ? "client-secret" : "federated";
   const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
   let parsed;
   try { parsed = new URL(clusterUrl); } catch { throw new Error("ADX_CLUSTER_INVALID"); }
@@ -664,6 +669,7 @@ function adxSource(input) {
     batchSize,
     tenantId,
     clientId,
+    authMode,
   };
 }
 
@@ -695,6 +701,10 @@ function adxCredential(input) {
 
 async function saveAdxCredential(input) {
   const source = adxSource(input);
+  if (source.authMode === "federated") {
+    await removeAdxCredential({ sourceId: source.sourceId });
+    return { configured: true, authMode: "federated" };
+  }
   const credential = adxCredential(input);
   const vault = await adxVault();
   vault.connections[source.sourceId] = credential;
@@ -749,12 +759,35 @@ function adxAuthority(clusterUrl, tenantId) {
 
 async function adxAccessToken(source, credential) {
   const body = new URLSearchParams({
-    client_id: credential.clientId,
-    client_secret: credential.clientSecret,
+    client_id: source.clientId,
     grant_type: "client_credentials",
     scope: `${source.clusterUrl}/.default`,
   });
-  const response = await fetch(adxAuthority(source.clusterUrl, credential.tenantId), {
+  if (source.authMode === "federated") {
+    let assertion;
+    try {
+      assertion = await sts.send(new GetWebIdentityTokenCommand({
+        Audience: ["api://AzureADTokenExchange"],
+        DurationSeconds: 300,
+        SigningAlgorithm: "RS256",
+        Tags: [
+          { Key: "application", Value: "gatewatch" },
+          { Key: "purpose", Value: "adx-read" },
+        ],
+      }));
+    } catch (error) {
+      if (error?.name === "OutboundWebIdentityFederationDisabledException") {
+        throw new Error("OutboundWebIdentityFederationDisabledException");
+      }
+      throw error;
+    }
+    if (!assertion.WebIdentityToken) throw new Error("ADX_FEDERATED_ASSERTION_FAILED");
+    body.set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
+    body.set("client_assertion", assertion.WebIdentityToken);
+  } else {
+    body.set("client_secret", credential.clientSecret);
+  }
+  const response = await fetch(adxAuthority(source.clusterUrl, source.tenantId), {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body,
@@ -777,6 +810,92 @@ function primaryAdxTable(payload) {
   }
   if (Array.isArray(payload?.Tables)) return payload.Tables[0];
   return null;
+}
+
+function adxResponseHasErrors(payload) {
+  return Array.isArray(payload) && payload.some((frame) => frame?.FrameType === "DataSetCompletion" && frame?.HasErrors);
+}
+
+async function executeAdx(source, token, csl, properties, maximumBytes = 5 * 1024 * 1024) {
+  const response = await fetch(`${source.clusterUrl}/v2/rest/query`, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      "x-ms-app": "Gatewatch",
+      "x-ms-client-version": "gatewatch-adx/2.0",
+    },
+    body: JSON.stringify({ db: source.database, csl, properties: JSON.stringify(properties) }),
+    redirect: "error",
+    signal: AbortSignal.timeout(25_000),
+  });
+  const payload = await boundedFetchJson(response, maximumBytes);
+  if (!response.ok || adxResponseHasErrors(payload)) {
+    const error = new Error("ADX_QUERY_FAILED");
+    error.statusCode = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+async function adxCredentialFor(source) {
+  if (source.authMode === "federated") return null;
+  const vault = await adxVault();
+  const credential = vault.connections[source.sourceId];
+  if (!credential) throw new Error("ADX_CREDENTIAL_NOT_CONFIGURED");
+  if (credential.tenantId !== source.tenantId || credential.clientId !== source.clientId) {
+    throw new Error("ADX_CREDENTIAL_IDENTITY_MISMATCH");
+  }
+  return credential;
+}
+
+async function discoverAdxSchema(input) {
+  const source = adxSource(input);
+  const credential = await adxCredentialFor(source);
+  const token = await adxAccessToken(source, credential);
+  const payload = await executeAdx(source, token, `table("${source.table}") | getschema`, {
+    Options: { servertimeout: "00:00:15", truncationmaxrecords: 500, truncationmaxsize: 1024 * 1024 },
+  }, 1024 * 1024);
+  const table = primaryAdxTable(payload);
+  if (!table || !Array.isArray(table.Columns) || !Array.isArray(table.Rows)) {
+    throw new Error("ADX_RESULT_SCHEMA_INVALID");
+  }
+  const names = table.Columns.map((column) => text(column?.ColumnName ?? column?.name, 127));
+  const columns = table.Rows.slice(0, 500).flatMap((values, index) => {
+    if (!Array.isArray(values)) return [];
+    const row = Object.fromEntries(names.map((name, position) => [name, values[position] ?? null]));
+    const name = text(row.ColumnName ?? row.columnName, 127);
+    const type = text(row.ColumnType ?? row.DataType ?? row.columnType, 80);
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,126}$/.test(name)) return [];
+    return [{ name, type: type || "unknown", ordinal: Number(row.ColumnOrdinal ?? index) }];
+  });
+  if (!columns.length) throw new Error("ADX_RESULT_SCHEMA_INVALID");
+  const discoveredAt = new Date().toISOString();
+  return {
+    columns,
+    fingerprint: createHash("sha256").update(JSON.stringify(columns)).digest("hex"),
+    discoveredAt,
+  };
+}
+
+async function enqueueAdxSources(input) {
+  if (!adxSyncQueueUrl) throw new Error("ADX_QUEUE_NOT_CONFIGURED");
+  const sourceIds = [...new Set(Array.isArray(input.sourceIds) ? input.sourceIds : [])]
+    .filter((value) => typeof value === "string" && /^src-[a-f0-9-]{36}$/.test(value))
+    .slice(0, 2_000);
+  let queued = 0;
+  for (let offset = 0; offset < sourceIds.length; offset += 10) {
+    const entries = sourceIds.slice(offset, offset + 10).map((sourceId, index) => ({
+      Id: `${offset + index}`,
+      MessageBody: JSON.stringify({ sourceId }),
+      MessageGroupId: sourceId,
+    }));
+    const result = await sqs.send(new SendMessageBatchCommand({ QueueUrl: adxSyncQueueUrl, Entries: entries }));
+    if (result.Failed?.length) throw new Error("ADX_QUEUE_SEND_FAILED");
+    queued += result.Successful?.length ?? 0;
+  }
+  return { queued };
 }
 
 function adxRecords(payload, source) {
@@ -849,12 +968,7 @@ async function queryAdx(input) {
   if (mode === "sync" && !/^[a-f0-9]{0,64}$/.test(checkpointCursor)) {
     throw new Error("ADX_CHECKPOINT_INVALID");
   }
-  const vault = await adxVault();
-  const credential = vault.connections[source.sourceId];
-  if (!credential) throw new Error("ADX_CREDENTIAL_NOT_CONFIGURED");
-  if (credential.tenantId !== source.tenantId || credential.clientId !== source.clientId) {
-    throw new Error("ADX_CREDENTIAL_IDENTITY_MISMATCH");
-  }
+  const credential = await adxCredentialFor(source);
   const token = await adxAccessToken(source, credential);
   const projection = source.queryMode === "payload-column"
     ? `| project GatewatchTimestamp=${source.timestampColumn}, GatewatchCursor=__gatewatch_cursor, GatewatchPayload=${source.payloadColumn}`
@@ -877,25 +991,7 @@ async function queryAdx(input) {
         }
       : {},
   };
-  const response = await fetch(`${source.clusterUrl}/v2/rest/query`, {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-      "x-ms-app": "Gatewatch",
-      "x-ms-client-version": "gatewatch-adx/1.0",
-    },
-    body: JSON.stringify({ db: source.database, csl: query, properties: JSON.stringify(properties) }),
-    redirect: "error",
-    signal: AbortSignal.timeout(25_000),
-  });
-  const payload = await boundedFetchJson(response, 5 * 1024 * 1024);
-  if (!response.ok) {
-    const error = new Error("ADX_QUERY_FAILED");
-    error.statusCode = response.status;
-    throw error;
-  }
+  const payload = await executeAdx(source, token, query, properties);
   const result = adxRecords(payload, source);
   return {
     columns: result.columns,
@@ -915,6 +1011,9 @@ function publicAdxError(error) {
   if (code === "ADX_CREDENTIAL_NOT_CONFIGURED") return "Save a Microsoft Entra application credential for this source.";
   if (code === "ADX_CREDENTIAL_IDENTITY_MISMATCH") return "The stored Microsoft Entra credential does not match this source. Edit the source and replace the client secret.";
   if (code === "ADX_CREDENTIAL_INVALID") return "Check the Microsoft Entra tenant, client ID, and client secret.";
+  if (code === "ADX_FEDERATED_ASSERTION_FAILED") return "AWS could not issue the short-lived workload identity assertion.";
+  if (code === "OutboundWebIdentityFederationDisabledException") return "Enable IAM Outbound Identity Federation in the Gatewatch AWS account.";
+  if (code === "ADX_QUEUE_NOT_CONFIGURED" || code === "ADX_QUEUE_SEND_FAILED") return "The distributed ADX synchronization queue is unavailable.";
   if (code === "ADX_SOURCE_INVALID" || code === "ADX_CLUSTER_INVALID") return "The Azure Data Explorer source configuration is invalid.";
   if (code === "ADX_RESPONSE_TOO_LARGE") return "Azure Data Explorer exceeded the five-megabyte response limit. Reduce the batch size.";
   if (status === 401 || code === "ADX_AUTHENTICATION_FAILED") return "Microsoft Entra rejected the application credential.";
@@ -956,6 +1055,12 @@ createServer(async (request, response) => {
     }
     if (request.method === "POST" && request.url === "/adx/test") {
       return json(response, 200, await queryAdx({ ...await requestBody(request), mode: "preview" }));
+    }
+    if (request.method === "POST" && request.url === "/adx/schema") {
+      return json(response, 200, await discoverAdxSchema(await requestBody(request)));
+    }
+    if (request.method === "POST" && request.url === "/adx/enqueue") {
+      return json(response, 200, await enqueueAdxSources(await requestBody(request)));
     }
     if (request.method === "POST" && request.url === "/adx/query") {
       return json(response, 200, await queryAdx(await requestBody(request)));

@@ -47,13 +47,21 @@ export async function syncAdxSource(
   }
 
   const runId = `run-${crypto.randomUUID()}`;
-  await env.DB.prepare(
-    `INSERT INTO ingestion_runs
-      (id, source_id, run_type, status, requested_by)
-     VALUES (?, ?, ?, 'running', ?)`,
-  ).bind(runId, source.id, runType, actor).run();
+  const leaseOwner = `adx-${crypto.randomUUID()}`;
+  const lease = await env.DB.prepare(
+    `UPDATE ingestion_sources SET adx_lease_owner = ?,
+        adx_lease_expires_at = datetime('now', '+3 minutes')
+     WHERE id = ? AND workspace_id = 'default'
+       AND (adx_lease_expires_at = '' OR adx_lease_expires_at < CURRENT_TIMESTAMP)`,
+  ).bind(leaseOwner, source.id).run() as { meta?: { changes?: number } };
+  if (!lease.meta?.changes) throw new Error("ADX_SOURCE_BUSY");
 
   try {
+    await env.DB.prepare(
+      `INSERT INTO ingestion_runs
+        (id, source_id, run_type, status, requested_by)
+       VALUES (?, ?, ?, 'running', ?)`,
+    ).bind(runId, source.id, runType, actor).run();
     const checkpoint = initialCheckpoint(source, runType);
     const query = await queryAdxSource(source, "sync", checkpoint.timestamp, checkpoint.cursor);
     let normalized: ReturnType<typeof parseAwsEvidenceText>["records"] = [];
@@ -66,7 +74,7 @@ export async function syncAdxSource(
         (!source.excludedAccounts.includes(record.accountId)) &&
         (!source.includedRegions.length || source.includedRegions.includes(record.region))
       );
-      skipped = parsed.skippedRecords;
+      skipped += parsed.skippedRecords;
       skipped += parsed.records.length - normalized.length;
       warnings = parsed.warnings;
     }
@@ -142,9 +150,10 @@ export async function syncAdxSource(
       ).bind(accepted, JSON.stringify({ timestamp: nextCheckpoint, cursor: nextCursor }), runId, source.id),
       env.DB.prepare(
         `UPDATE ingestion_sources SET status = ?,
-            last_successful_object_at = ?, adx_cursor_value = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE id = ? AND workspace_id = 'default'`,
-      ).bind(source.ingestionMode === "backfill" && !query.truncated ? "paused" : "live", nextCheckpoint, nextCursor, source.id),
+            last_successful_object_at = ?, adx_cursor_value = ?,
+            adx_lease_owner = '', adx_lease_expires_at = '', updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND workspace_id = 'default' AND adx_lease_owner = ?`,
+      ).bind(source.ingestionMode === "backfill" && !query.truncated ? "paused" : "live", nextCheckpoint, nextCursor, source.id, leaseOwner),
     ]);
     return {
       runId,
@@ -163,9 +172,10 @@ export async function syncAdxSource(
          WHERE id = ? AND source_id = ?`,
       ).bind(message, runId, source.id),
       env.DB.prepare(
-        `UPDATE ingestion_sources SET status = 'degraded', updated_at = CURRENT_TIMESTAMP
-         WHERE id = ? AND workspace_id = 'default'`,
-      ).bind(source.id),
+        `UPDATE ingestion_sources SET status = 'degraded', adx_lease_owner = '',
+            adx_lease_expires_at = '', updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND workspace_id = 'default' AND adx_lease_owner = ?`,
+      ).bind(source.id, leaseOwner),
     ]);
     throw error;
   }

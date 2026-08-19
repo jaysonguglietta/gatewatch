@@ -39,6 +39,7 @@ const migrationFiles = [
   "db/postgres/0005_security_governance.sql",
   "db/postgres/0006_exposure_operations.sql",
   "db/postgres/0007_azure_data_explorer_sources.sql",
+  "db/postgres/0008_adx_federation_scale_freshness.sql",
 ];
 
 for (const file of migrationFiles) {

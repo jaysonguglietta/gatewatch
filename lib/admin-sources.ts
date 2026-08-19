@@ -73,6 +73,19 @@ export type SourceStatus =
   | "paused";
 
 export type SourceProvider = "aws-s3" | "azure-data-explorer";
+export type AdxAuthMode = "federated" | "client-secret";
+
+export type AdxSchemaColumn = {
+  name: string;
+  type: string;
+  ordinal: number;
+};
+
+export type AdxSchemaSnapshot = {
+  columns: AdxSchemaColumn[];
+  fingerprint: string;
+  discoveredAt: string;
+};
 
 export type IngestionSource = {
   id: string;
@@ -102,7 +115,17 @@ export type IngestionSource = {
   adxBatchSize: number;
   adxTenantId: string;
   adxClientId: string;
+  adxAuthMode: AdxAuthMode;
+  adxSchema?: AdxSchemaSnapshot;
+  adxSchemaDiscoveredAt: string;
+  adxMappingValidatedAt: string;
   adxCursorValue: string;
+  adxLeaseOwner: string;
+  adxLeaseExpiresAt: string;
+  freshnessSlaMinutes: number;
+  freshnessStatus: "unknown" | "healthy" | "warning" | "breached";
+  freshnessCheckedAt: string;
+  freshnessLagMinutes: number;
   retentionDays: number;
   status: SourceStatus;
   testSummary?: ConnectionTestSummary;
@@ -131,6 +154,21 @@ export type ConnectionTestSummary = {
     lastModified: string;
   };
   detectedFormat?: string;
+  schema?: AdxSchemaSnapshot;
+  mappingValidation?: {
+    passed: boolean;
+    queried: number;
+    normalized: number;
+    skipped: number;
+    warnings: string[];
+    samples: Array<{
+      accountId: string;
+      region: string;
+      resource: string;
+      event: string;
+      observedAt: string;
+    }>;
+  };
 };
 
 export const defaultConfigResourceTypes = [
@@ -234,6 +272,10 @@ export function validateSourceInput(value: unknown) {
   const adxBatchSize = Math.trunc(Number(record.adxBatchSize) || 500);
   const adxTenantId = cleanText(record.adxTenantId, 36).toLowerCase();
   const adxClientId = cleanText(record.adxClientId, 36).toLowerCase();
+  const adxAuthMode: AdxAuthMode = cleanText(record.adxAuthMode, 30) === "client-secret"
+    ? "client-secret"
+    : "federated";
+  const freshnessSlaMinutes = Math.trunc(Number(record.freshnessSlaMinutes) || 30);
   const retentionDays = Math.min(
     3650,
     Math.max(30, Math.trunc(Number(record.retentionDays) || 365)),
@@ -299,6 +341,9 @@ export function validateSourceInput(value: unknown) {
     if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(adxClientId)) {
       errors.push("Enter a valid Microsoft Entra application (client) ID.");
     }
+    if (freshnessSlaMinutes < 5 || freshnessSlaMinutes > 10_080) {
+      errors.push("Choose a freshness objective between 5 minutes and 7 days.");
+    }
   }
   if (!["continuous", "backfill", "both"].includes(ingestionMode)) {
     errors.push("Choose a supported ingestion mode.");
@@ -348,7 +393,17 @@ export function validateSourceInput(value: unknown) {
       adxBatchSize: provider === "azure-data-explorer" ? adxBatchSize : 500,
       adxTenantId: provider === "azure-data-explorer" ? adxTenantId : "",
       adxClientId: provider === "azure-data-explorer" ? adxClientId : "",
+      adxAuthMode: provider === "azure-data-explorer" ? adxAuthMode : "federated",
+      adxSchema: undefined,
+      adxSchemaDiscoveredAt: "",
+      adxMappingValidatedAt: "",
       adxCursorValue: "",
+      adxLeaseOwner: "",
+      adxLeaseExpiresAt: "",
+      freshnessSlaMinutes: provider === "azure-data-explorer" ? freshnessSlaMinutes : 30,
+      freshnessStatus: "unknown" as const,
+      freshnessCheckedAt: "",
+      freshnessLagMinutes: 0,
       retentionDays,
     },
   };

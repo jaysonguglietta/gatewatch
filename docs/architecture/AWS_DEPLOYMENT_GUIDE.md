@@ -217,18 +217,31 @@ blocked at both SDK and network layers.
 
 ### Azure Data Explorer source
 
-If the same AWS logs are centralized in ADX, deploy the current web stack so it
-creates `AzureDataExplorerCredentialsSecret` and the five-minute private sync
-association. In **Administration → Data sources**, choose Azure Data Explorer,
-then specify the cluster, database, table, timestamp column, evidence type, and
-row mapping.
+If the same AWS logs are centralized in ADX, deploy the current web stack. It
+creates the five-minute dispatcher, encrypted FIFO worker/DLQ, a 25-concurrency
+Lambda consumer, freshness alarms, and a retained compatibility secret for
+legacy sources.
 
-Create a dedicated Microsoft Entra application and grant it `viewer` access to
-only the selected ADX database. Enter its tenant ID, client ID, and secret in
-the source wizard. The bridge stores one credential object under that source ID
-inside Secrets Manager; the application database stores only tenant/client IDs.
-Run **Test connection**, inspect **Preview rows**, activate the source, then run
-the initial synchronization.
+Enable AWS IAM outbound identity federation once in the Gatewatch AWS account:
+
+```bash
+aws iam enable-outbound-web-identity-federation --profile personal
+```
+
+Create a dedicated Microsoft Entra application and grant its service principal
+`viewer` access only to the selected ADX database. Add an **Other issuer**
+federated credential whose issuer is the AWS account issuer URL, subject is the
+stack's `AzureDataExplorerFederatedSubject` output, and audience is the
+`AzureDataExplorerFederatedAudience` output. These values are exact and
+case-sensitive.
+
+In **Administration → Data sources**, choose Azure Data Explorer, enter the
+tenant/client IDs and table coordinates, discover the live schema, select the
+autocomplete-backed timestamp/payload mapping, and validate five samples.
+Then run **Test connection**, activate, and perform the initial sync. New sources
+store no Entra client secret. Existing secret-based sources can be migrated by
+switching authentication mode after the federated trust exists; a successful
+save removes that source's compatibility credential.
 
 For Private Link clusters, verify that the Gatewatch private subnet resolves and
 routes to the validated `*.kusto.*` hostname over TCP 443. Do not add an arbitrary
@@ -293,14 +306,24 @@ proxy or custom cluster domain; the bridge intentionally rejects them.
 - [ ] Disabling Bedrock produces a labeled deterministic fallback and does not affect findings.
 - [ ] Parallel requests stop at the per-user/workspace daily counters.
 - [ ] The ADX credential is absent from browser responses, SQLite, Aurora, and logs.
+- [ ] AWS outbound identity federation is enabled, and the Entra issuer, bridge
+  role subject, and `api://AzureADTokenExchange` audience match exactly.
+- [ ] A new ADX source can test without any client secret, and the bridge role
+  cannot request a workload token for another audience or longer than 300 seconds.
 - [ ] An ADX application with database `viewer` access can test and preview, while
   the same identity cannot execute management commands or write to the table.
+- [ ] Schema discovery autocompletes real columns; removed or mistyped mapping
+  columns prevent activation; malformed samples display sanitized row failures.
 - [ ] Non-Kusto URLs, URL credentials, paths, redirects, and injected table or
   column identifiers are rejected before any outbound request.
 - [ ] Manual and scheduled ADX syncs advance the timestamp checkpoint only after
   evidence writes complete, and replayed rows do not create duplicate evidence.
 - [ ] Oversized, malformed, throttled, or unauthorized ADX responses create a
   failed run and degraded source without exposing tokens or provider internals.
+- [ ] More than 20 active sources enter the FIFO queue, run concurrently without
+  overlapping the same source, and retry to the DLQ after five failures.
+- [ ] A stopped upstream ADX table transitions from warning to one deduplicated
+  freshness alert and CloudWatch alarm, then resolves after event-time catches up.
 
 ## Rollback
 

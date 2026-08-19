@@ -46,11 +46,13 @@ import {
   sourceTypeDefinition,
   sourceTypeDefinitions,
   type ConnectionTestSummary,
+  type AdxSchemaSnapshot,
+  type AdxAuthMode,
   type IngestionSource,
   type SourceProvider,
   type SourceType,
 } from "../lib/admin-sources";
-import type { AdxPreview } from "../lib/azure-data-explorer";
+import type { AdxMappingValidation, AdxPreview } from "../lib/azure-data-explorer";
 import type { JiraStatus } from "../lib/jira-bridge";
 
 type AdminTab =
@@ -109,6 +111,17 @@ type AdminPayload = {
   audits: AuditEvent[];
   roles: Role[];
   objectStats: ObjectStat[];
+  sourceAlerts: Array<{
+    id: string;
+    sourceId: string;
+    alertType: string;
+    status: string;
+    severity: string;
+    summary: string;
+    firstObservedAt: string;
+    lastObservedAt: string;
+    resolvedAt: string;
+  }>;
   architecture: Record<string, string>;
   settings: {
     retention?: { eventDays: number; evidenceDays: number; auditDays: number };
@@ -168,7 +181,9 @@ type SourceDraft = {
   adxTenantId: string;
   adxClientId: string;
   adxClientSecret: string;
+  adxAuthMode: AdxAuthMode;
   adxCursorValue: string;
+  freshnessSlaMinutes: number;
   retentionDays: number;
 };
 
@@ -201,7 +216,9 @@ const emptyDraft = (): SourceDraft => ({
   adxTenantId: "",
   adxClientId: "",
   adxClientSecret: "",
+  adxAuthMode: "federated",
   adxCursorValue: "",
+  freshnessSlaMinutes: 30,
   retentionDays: 365,
 });
 
@@ -269,6 +286,8 @@ export default function AdminView({
   const [selectedSource, setSelectedSource] =
     useState<IngestionSource | null>(null);
   const [adxPreview, setAdxPreview] = useState<AdxPreview | null>(null);
+  const [adxDraftSchema, setAdxDraftSchema] = useState<AdxSchemaSnapshot | null>(null);
+  const [adxDraftValidation, setAdxDraftValidation] = useState<AdxMappingValidation | null>(null);
   const [roleEmail, setRoleEmail] = useState("");
   const [roleName, setRoleName] = useState("analyst");
   const [retention, setRetention] = useState({
@@ -487,6 +506,57 @@ export default function AdminView({
     }
   }
 
+  async function inspectAdxDraft(action: "inspect-draft" | "validate-draft") {
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/sources", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action,
+          clientSecret: draft.adxClientSecret,
+          source: draft,
+        }),
+      });
+      const payload = await response.json() as {
+        schema?: AdxSchemaSnapshot;
+        preview?: AdxPreview;
+        validation?: AdxMappingValidation;
+        error?: string;
+      };
+      if (!response.ok) throw new Error(payload.error ?? "ADX inspection failed.");
+      if (payload.schema) {
+        setAdxDraftSchema(payload.schema);
+        setAdxDraftValidation(null);
+        const timeColumn = payload.schema.columns.find((column) =>
+          /^(timegenerated|timestamp|eventtime|start|end)$/i.test(column.name),
+        );
+        const payloadColumn = payload.schema.columns.find((column) =>
+          /^(rawevent|payload|event|record|body)$/i.test(column.name)
+          && /dynamic|string/i.test(column.type),
+        );
+        setDraft((current) => ({
+          ...current,
+          adxTimestampColumn: timeColumn?.name ?? current.adxTimestampColumn,
+          adxPayloadColumn: payloadColumn?.name ?? current.adxPayloadColumn,
+        }));
+        onToast(`Discovered ${payload.schema.columns.length} ADX columns.`);
+      }
+      if (payload.validation) {
+        setAdxDraftValidation(payload.validation);
+        if (payload.preview) setAdxPreview(payload.preview);
+        onToast(payload.validation.passed
+          ? `Validated ${payload.validation.normalized} sample AWS record(s).`
+          : "The sample did not match the selected AWS evidence type.");
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "ADX inspection failed.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function settingAction(payload: Record<string, unknown>) {
     setSaving(true);
     setError("");
@@ -554,6 +624,26 @@ export default function AdminView({
     ["audit", "Audit log", FileClock],
   ];
 
+  const providerLocationReady = Boolean(
+    draft.name.trim()
+      && (draft.provider === "aws-s3"
+        ? draft.bucketArn.trim() && draft.region.trim()
+        : draft.adxClusterUrl.trim() && draft.adxDatabase.trim() && draft.adxTable.trim()),
+  );
+  const sourceIdentityReady = Boolean(
+    draft.provider === "aws-s3"
+      ? draft.roleArn.trim()
+      : draft.adxTenantId.trim()
+        && draft.adxClientId.trim()
+        && (draft.adxAuthMode === "federated" || editingId || draft.adxClientSecret.trim()),
+  );
+  const wizardStepReady = wizardStep === 1 ? providerLocationReady : sourceIdentityReady;
+  const wizardStepBlocker = wizardStep === 1
+    ? "Complete the source name and provider location."
+    : draft.provider === "aws-s3"
+      ? "Enter the dedicated IAM role ARN."
+      : `Enter the Entra tenant and application IDs${draft.adxAuthMode === "client-secret" && !editingId ? " plus the legacy client secret" : ""}.`;
+
   return (
     <>
       <div className="page-header">
@@ -574,6 +664,8 @@ export default function AdminView({
             className="button button-primary"
             onClick={() => {
               setDraft(emptyDraft());
+              setAdxDraftSchema(null);
+              setAdxDraftValidation(null);
               setEditingId("");
               setWizardStep(1);
               setWizardOpen(true);
@@ -750,7 +842,7 @@ export default function AdminView({
                     <span><strong>Mode</strong>{source.ingestionMode}</span>
                     <span><strong>Last test</strong>{formatDate(source.lastTestedAt)}</span>
                     <span><strong>{source.provider === "azure-data-explorer" ? "Checkpoint" : "Last object"}</strong>{formatDate(source.lastSuccessfulObjectAt)}</span>
-                    <span><strong>Retention</strong>{source.retentionDays} days</span>
+                    <span><strong>{source.provider === "azure-data-explorer" ? "Freshness" : "Retention"}</strong>{source.provider === "azure-data-explorer" ? `${source.freshnessStatus} · ${source.freshnessLagMinutes}m / ${source.freshnessSlaMinutes}m` : `${source.retentionDays} days`}</span>
                   </div>
                   {selectedSource?.id === source.id ? (
                     <div className="admin-source-detail">
@@ -759,7 +851,9 @@ export default function AdminView({
                           <span><strong>Cluster</strong><code>{source.adxClusterUrl}</code></span>
                           <span><strong>Database / table</strong><code>{source.adxDatabase}.{source.adxTable}</code></span>
                           <span><strong>Entra application</strong><code>{source.adxClientId}</code></span>
+                          <span><strong>Authentication</strong><code>{source.adxAuthMode === "federated" ? "AWS workload federation" : "Legacy client secret"}</code></span>
                           <span><strong>Checkpoint column</strong><code>{source.adxTimestampColumn}</code></span>
+                          <span><strong>Schema</strong><code>{source.adxSchema?.columns?.length ?? 0} columns · {formatDate(source.adxSchemaDiscoveredAt)}</code></span>
                         </div>
                       ) : (
                         <div className="connection-details">
@@ -768,6 +862,20 @@ export default function AdminView({
                           <span><strong>KMS key</strong><code>{source.kmsKeyArn || "Bucket-default encryption"}</code></span>
                         </div>
                       )}
+                      {source.provider === "azure-data-explorer" && data.sourceAlerts.some((alert) => alert.sourceId === source.id && alert.status === "open") ? (
+                        <div className="freshness-alert" role="status">
+                          <AlertTriangle size={18} />
+                          <p><strong>Freshness objective breached</strong><span>{data.sourceAlerts.find((alert) => alert.sourceId === source.id && alert.status === "open")?.summary}</span></p>
+                        </div>
+                      ) : null}
+                      {source.provider === "azure-data-explorer" && source.testSummary?.mappingValidation ? (
+                        <div className="mapping-validation-summary">
+                          <div><strong>Sample mapping</strong><span>{source.testSummary.mappingValidation.normalized}/{source.testSummary.mappingValidation.queried} normalized · validated {formatDate(source.adxMappingValidatedAt)}</span></div>
+                          {source.testSummary.mappingValidation.samples.map((sample, index) => (
+                            <p key={`${sample.accountId}-${sample.resource}-${index}`}><code>{sample.accountId || "unknown account"}</code><span>{sample.region || "unknown region"} · {sample.event || "unknown event"} · {sample.resource || "unknown resource"}</span></p>
+                          ))}
+                        </div>
+                      ) : null}
                       {source.testSummary?.checks?.length ? (
                         <div className="connection-checks">
                           {source.testSummary.checks.map((item) => (
@@ -839,9 +947,13 @@ export default function AdminView({
                               adxTenantId: source.adxTenantId,
                               adxClientId: source.adxClientId,
                               adxClientSecret: "",
+                              adxAuthMode: source.adxAuthMode,
                               adxCursorValue: source.adxCursorValue,
+                              freshnessSlaMinutes: source.freshnessSlaMinutes,
                               retentionDays: source.retentionDays,
                             });
+                            setAdxDraftSchema(source.adxSchema ?? null);
+                            setAdxDraftValidation(source.testSummary?.mappingValidation ?? null);
                             setEditingId(source.id);
                             setWizardStep(1);
                             setWizardOpen(true);
@@ -898,6 +1010,8 @@ export default function AdminView({
                 className="button button-primary"
                 onClick={() => {
                   setDraft(emptyDraft());
+                  setAdxDraftSchema(null);
+                  setAdxDraftValidation(null);
                   setEditingId("");
                   setWizardStep(1);
                   setWizardOpen(true);
@@ -1118,6 +1232,13 @@ export default function AdminView({
                         includedAccounts: [],
                         excludedAccounts: [],
                         includedRegions: [],
+                        adxSchemaDiscoveredAt: "",
+                        adxMappingValidatedAt: "",
+                        adxLeaseOwner: "",
+                        adxLeaseExpiresAt: "",
+                        freshnessStatus: "unknown" as const,
+                        freshnessCheckedAt: "",
+                        freshnessLagMinutes: 0,
                         status: "draft" as const,
                       };
                       download(`gatewatch-${draft.sourceType}-read-role.yaml`, sourceAccessCloudFormation(preview));
@@ -1127,10 +1248,13 @@ export default function AdminView({
                     <Download size={15} /> Download role template
                     </button>
                   </> : <>
-                    <div className="permission-banner"><KeyRound size={19} /><p><strong>Use a dedicated database viewer</strong><span>Grant the Entra application viewer access only to the configured ADX database. Gatewatch stores its secret in the isolated AWS credential vault.</span></p></div>
+                    <div className="permission-banner"><KeyRound size={19} /><p><strong>Use a dedicated database viewer</strong><span>Grant the Entra application viewer access only to the configured ADX database. AWS workload federation uses five-minute signed assertions and stores no Azure credential.</span></p></div>
+                    <label className="form-field"><span>Authentication</span><select value={draft.adxAuthMode} onChange={(event) => setDraft((current) => ({ ...current, adxAuthMode: event.target.value as AdxAuthMode, adxClientSecret: "" }))}><option value="federated">AWS workload identity federation</option><option value="client-secret">Legacy client secret</option></select><small>Federation is recommended and requires IAM Outbound Identity Federation plus an Entra federated credential.</small></label>
                     <label className="form-field"><span>Microsoft Entra tenant ID</span><input value={draft.adxTenantId} onChange={(event) => setDraft((current) => ({ ...current, adxTenantId: event.target.value }))} placeholder="00000000-0000-4000-8000-000000000000" /></label>
                     <label className="form-field"><span>Application (client) ID</span><input value={draft.adxClientId} onChange={(event) => setDraft((current) => ({ ...current, adxClientId: event.target.value }))} placeholder="00000000-0000-4000-8000-000000000000" /></label>
-                    <label className="form-field"><span>Client secret {editingId ? <em>Optional when unchanged</em> : null}</span><input type="password" autoComplete="new-password" value={draft.adxClientSecret} onChange={(event) => setDraft((current) => ({ ...current, adxClientSecret: event.target.value }))} placeholder={editingId ? "Stored securely — enter only to replace" : "Microsoft Entra client secret"} /><small>The authenticated server immediately relays this to the isolated AWS bridge; it is never stored in the application database.</small></label>
+                    {draft.adxAuthMode === "client-secret" ? <label className="form-field"><span>Client secret {editingId ? <em>Optional when unchanged</em> : null}</span><input type="password" autoComplete="new-password" value={draft.adxClientSecret} onChange={(event) => setDraft((current) => ({ ...current, adxClientSecret: event.target.value }))} placeholder={editingId ? "Stored securely — enter only to replace" : "Microsoft Entra client secret"} /><small>Legacy compatibility only. The server relays it to the isolated AWS credential vault and never stores it in the application database.</small></label> : (
+                      <div className="federation-setup"><ShieldCheck size={18} /><p><strong>No client secret required</strong><span>Configure the Entra federated credential with audience <code>api://AzureADTokenExchange</code> and the exact AWS bridge-role subject and issuer shown in the deployment outputs.</span></p></div>
+                    )}
                   </>}
                 </div>
               ) : null}
@@ -1139,10 +1263,22 @@ export default function AdminView({
                   <label className="form-field"><span>Ingestion mode</span><select value={draft.ingestionMode} onChange={(event) => setDraft((current) => ({ ...current, ingestionMode: event.target.value as SourceDraft["ingestionMode"] }))}><option value="both">Continuous + historical backfill</option><option value="continuous">Continuous deliveries only</option><option value="backfill">Historical backfill only</option></select></label>
                   <label className="form-field"><span>Backfill start</span><input type="date" disabled={draft.ingestionMode === "continuous"} value={draft.backfillStart} onChange={(event) => setDraft((current) => ({ ...current, backfillStart: event.target.value }))} /></label>
                   {draft.provider === "azure-data-explorer" ? <>
-                    <label className="form-field"><span>Timestamp column</span><input value={draft.adxTimestampColumn} onChange={(event) => setDraft((current) => ({ ...current, adxTimestampColumn: event.target.value }))} placeholder="TimeGenerated" /><small>Used for deterministic incremental checkpoints.</small></label>
+                    <div className="schema-discovery source-span-two">
+                      <div><Database size={19} /><p><strong>Live schema and sample mapper</strong><span>Discover the table, choose columns with autocomplete, then prove the selected AWS parser against five read-only sample rows.</span></p></div>
+                      <button className="button button-secondary" disabled={saving} onClick={() => void inspectAdxDraft("inspect-draft")}><Search size={15} /> Discover schema</button>
+                    </div>
+                    {adxDraftSchema ? <div className="schema-columns source-span-two" aria-live="polite"><strong>{adxDraftSchema.columns.length} columns discovered</strong><span>{adxDraftSchema.columns.slice(0, 18).map((column) => `${column.name} · ${column.type}`).join("   ")}{adxDraftSchema.columns.length > 18 ? `   +${adxDraftSchema.columns.length - 18} more` : ""}</span></div> : null}
+                    <datalist id="adx-schema-columns">{adxDraftSchema?.columns.map((column) => <option key={column.name} value={column.name}>{column.type}</option>)}</datalist>
+                    <label className="form-field"><span>Timestamp column</span><input list="adx-schema-columns" value={draft.adxTimestampColumn} onChange={(event) => { setDraft((current) => ({ ...current, adxTimestampColumn: event.target.value })); setAdxDraftValidation(null); }} placeholder="TimeGenerated" /><small>Mapped to the deterministic timestamp + row-hash checkpoint.</small></label>
                     <label className="form-field"><span>Row mapping</span><select value={draft.adxQueryMode} onChange={(event) => setDraft((current) => ({ ...current, adxQueryMode: event.target.value as SourceDraft["adxQueryMode"] }))}><option value="whole-row">Use the complete ADX row</option><option value="payload-column">Parse one dynamic/JSON column</option></select></label>
-                    <label className="form-field"><span>Payload column</span><input disabled={draft.adxQueryMode === "whole-row"} value={draft.adxPayloadColumn} onChange={(event) => setDraft((current) => ({ ...current, adxPayloadColumn: event.target.value }))} placeholder="RawEvent" /></label>
+                    <label className="form-field"><span>Payload column</span><input list="adx-schema-columns" disabled={draft.adxQueryMode === "whole-row"} value={draft.adxPayloadColumn} onChange={(event) => { setDraft((current) => ({ ...current, adxPayloadColumn: event.target.value })); setAdxDraftValidation(null); }} placeholder="RawEvent" /><small>{draft.adxQueryMode === "payload-column" ? "Choose a dynamic or JSON string column containing the original AWS record." : "The complete row will be passed to the selected AWS parser."}</small></label>
                     <label className="form-field"><span>Rows per sync</span><input type="number" min={10} max={1000} value={draft.adxBatchSize} onChange={(event) => setDraft((current) => ({ ...current, adxBatchSize: Number(event.target.value) }))} /><small>Hard limit: 1,000 rows and 5 MB per query.</small></label>
+                    <label className="form-field"><span>Freshness objective</span><div className="input-suffix"><input type="number" min={5} max={10080} value={draft.freshnessSlaMinutes} onChange={(event) => setDraft((current) => ({ ...current, freshnessSlaMinutes: Number(event.target.value) }))} /><em>minutes</em></div><small>Warning at 80%; high-severity alert after breach.</small></label>
+                    <div className="mapping-validator source-span-two">
+                      <button className="button button-secondary" disabled={saving || !adxDraftSchema} onClick={() => void inspectAdxDraft("validate-draft")}><BadgeCheck size={15} /> Validate five sample rows</button>
+                      {adxDraftValidation ? <p className={adxDraftValidation.passed ? "passed" : "failed"}><strong>{adxDraftValidation.passed ? "Mapping validated" : "Mapping needs attention"}</strong><span>{adxDraftValidation.normalized}/{adxDraftValidation.queried} rows normalized · {adxDraftValidation.skipped} skipped</span></p> : <p><strong>Validation required</strong><span>Activation remains unavailable until a live test confirms schema and sample compatibility.</span></p>}
+                    </div>
+                    {adxDraftValidation?.samples.length ? <div className="mapping-samples source-span-two">{adxDraftValidation.samples.map((sample, index) => <article key={`${sample.accountId}-${sample.resource}-${index}`}><code>{sample.accountId || "unknown account"}</code><p><strong>{sample.event || "unknown event"}</strong><span>{sample.region || "unknown region"} · {sample.resource || "unknown resource"}</span></p></article>)}</div> : null}
                   </> : null}
                   <label className="form-field"><span>Included accounts <em>Optional</em></span><textarea value={draft.includedAccounts} onChange={(event) => setDraft((current) => ({ ...current, includedAccounts: event.target.value }))} placeholder="111122223333, 444455556666" /><small>Leave blank to accept every account in the source.</small></label>
                   <label className="form-field"><span>Included regions <em>Optional</em></span><textarea value={draft.includedRegions} onChange={(event) => setDraft((current) => ({ ...current, includedRegions: event.target.value }))} placeholder="us-east-1, us-west-2" /><small>Leave blank to accept every delivered region.</small></label>
@@ -1163,7 +1299,10 @@ export default function AdminView({
             <div className="modal-footer">
               <button className="button button-secondary" onClick={() => wizardStep === 1 ? setWizardOpen(false) : setWizardStep((step) => step - 1)}>{wizardStep === 1 ? "Cancel" : "Back"}</button>
               {wizardStep < 3 ? (
-                <button className="button button-primary" onClick={() => setWizardStep((step) => step + 1)}>Continue <ChevronRight size={15} /></button>
+                <>
+                  {!wizardStepReady ? <small className="wizard-blocker" role="status">{wizardStepBlocker}</small> : null}
+                  <button className="button button-primary" disabled={!wizardStepReady} onClick={() => { setError(""); setWizardStep((step) => step + 1); }}>Continue <ChevronRight size={15} /></button>
+                </>
               ) : (
                 <button className="button button-primary" disabled={saving} onClick={() => void createSource()}>{saving ? <><RefreshCw size={15} className="spin" />Saving…</> : <><Check size={15} />{editingId ? "Save changes" : "Save draft"}</>}</button>
               )}

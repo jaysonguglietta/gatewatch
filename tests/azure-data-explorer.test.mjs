@@ -29,6 +29,8 @@ const validSource = {
   adxTenantId: "12345678-1234-4123-8123-1234567890ab",
   adxClientId: "abcdefab-1234-4123-8123-1234567890ab",
   adxClientSecret: "must-never-be-persisted",
+  adxAuthMode: "federated",
+  freshnessSlaMinutes: 30,
 };
 
 test("ADX source validation preserves only non-secret, bounded configuration", () => {
@@ -39,8 +41,16 @@ test("ADX source validation preserves only non-secret, bounded configuration", (
   assert.equal(result.source.adxDatabase, "SecurityLogs");
   assert.equal(result.source.adxTable, "CloudTrail");
   assert.equal(result.source.adxBatchSize, 500);
+  assert.equal(result.source.adxAuthMode, "federated");
+  assert.equal(result.source.freshnessSlaMinutes, 30);
   assert.equal("adxClientSecret" in result.source, false);
   assert.deepEqual(result.source.includedAccounts, ["111122223333", "444455556666"]);
+});
+
+test("ADX freshness and federation settings fail closed", () => {
+  assert.ok(validateSourceInput({ ...validSource, freshnessSlaMinutes: 4 }).errors.some((error) => error.includes("freshness")));
+  assert.ok(validateSourceInput({ ...validSource, freshnessSlaMinutes: 10081 }).errors.some((error) => error.includes("freshness")));
+  assert.equal(validateSourceInput({ ...validSource, adxAuthMode: "unexpected" }).source.adxAuthMode, "federated");
 });
 
 test("ADX cluster validation rejects SSRF-capable and ambiguous endpoints", () => {
@@ -75,9 +85,51 @@ test("ADX bridge uses parameterized checkpoints, bounded reads, and isolated cre
   assert.match(bridge, /truncationmaxsize: 5 \* 1024 \* 1024/);
   assert.match(bridge, /redirect: "error"/);
   assert.match(bridge, /GATEWATCH_ADX_SECRET_ARN/);
+  assert.match(bridge, /GetWebIdentityTokenCommand/);
+  assert.match(bridge, /api:\/\/AzureADTokenExchange/);
+  assert.match(bridge, /client_assertion_type/);
+  assert.match(bridge, /adxAuthority\(source\.clusterUrl, source\.tenantId\)/);
+  assert.doesNotMatch(bridge, /adxAuthority\(source\.clusterUrl, credential\.tenantId\)/);
+  assert.match(bridge, /table\(\"\$\{source\.table\}\"\) \| getschema/);
+  assert.match(bridge, /\/adx\/schema/);
+  assert.match(bridge, /SendMessageBatchCommand/);
   assert.match(bridge, /\/adx\/config/);
   assert.match(bridge, /\/adx\/query/);
   assert.doesNotMatch(bridge, /eval\(|new Function\(/);
+});
+
+test("ADX scheduler fans out through FIFO SQS and lease-aware Lambda workers", () => {
+  const template = source("infrastructure/cloudformation/gatewatch-aws-web.yaml");
+  const route = source("app/api/internal/adx-sync/route.ts");
+  const sync = source("lib/adx-ingestion.ts");
+  assert.match(template, /AzureDataExplorerSyncQueue:/);
+  assert.match(template, /FifoQueue: true/);
+  assert.match(template, /AzureDataExplorerWorkerEventSource:/);
+  assert.match(template, /MaximumConcurrency: 25/);
+  assert.match(template, /sts:GetWebIdentityToken/);
+  assert.match(template, /sts:IdentityTokenAudience: api:\/\/AzureADTokenExchange/);
+  assert.match(route, /LIMIT 2000/);
+  assert.match(route, /enqueueAdxSources/);
+  assert.match(route, /\["live", "degraded"\]\.includes/);
+  assert.match(route, /auditMany/);
+  assert.match(sync, /adx_lease_expires_at = datetime\('now', '\+3 minutes'\)/);
+  assert.match(sync, /ADX_SOURCE_BUSY/);
+});
+
+test("ADX schema discovery, sample validation, and freshness alerts are first-class UI", () => {
+  const view = source("app/admin-view.tsx");
+  const freshness = source("lib/adx-freshness.ts");
+  assert.match(view, /Discover schema/);
+  assert.match(view, /adx-schema-columns/);
+  assert.match(view, /Validate five sample rows/);
+  assert.match(view, /Freshness objective/);
+  assert.match(view, /AWS workload identity federation/);
+  assert.match(view, /disabled={!wizardStepReady}/);
+  assert.match(view, /Enter the Entra tenant and application IDs/);
+  assert.match(freshness, /freshness-breach/);
+  assert.match(freshness, /updated_at AS updatedAt/);
+  assert.match(freshness, /ON CONFLICT\(workspace_id, source_id, alert_type\)/);
+  assert.match(freshness, /status = 'resolved'/);
 });
 
 test("ADX deployment creates a retained secret and scheduled internal sync", () => {
@@ -88,6 +140,7 @@ test("ADX deployment creates a retained secret and scheduled internal sync", () 
   assert.match(template, /ManageAzureDataExplorerCredentials/);
   assert.match(template, /AzureDataExplorerSyncAssociation:/);
   assert.match(template, /api\/internal\/adx-sync/);
+  assert.ok(Buffer.byteLength(template) <= 51_200, "web template must remain directly deployable");
   assert.match(installer, /GATEWATCH_ADX_SECRET_ARN/);
 });
 
@@ -100,6 +153,11 @@ test("ADX production schema is workspace isolated and migration-managed", () => 
   assert.match(migration, /CREATE POLICY workspace_isolation/);
   assert.match(migration, /provider = 'azure-data-explorer'/);
   assert.match(runner, /0007_azure_data_explorer_sources\.sql/);
+  const federationMigration = source("db/postgres/0008_adx_federation_scale_freshness.sql");
+  assert.match(federationMigration, /CREATE TABLE ingestion_source_alerts/);
+  assert.match(federationMigration, /FORCE ROW LEVEL SECURITY/);
+  assert.match(federationMigration, /adx_auth_mode/);
+  assert.match(runner, /0008_adx_federation_scale_freshness\.sql/);
 });
 
 test("ADX administration supports configuration, preview, activation, and sync", () => {
@@ -113,4 +171,6 @@ test("ADX administration supports configuration, preview, activation, and sync",
   assert.match(route, /queryAdxSource\(existing, "preview"\)/);
   assert.match(route, /syncAdxSource\(existing, auth\.user/);
   assert.match(route, /clientSecret\.slice\(0, 2_000\)/);
+  assert.match(route, /error instanceof AdxConnectionError/);
+  assert.match(route, /function parseAdxSchema/);
 });
