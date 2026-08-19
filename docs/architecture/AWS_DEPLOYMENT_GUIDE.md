@@ -82,9 +82,13 @@ Apply the migrations in filename order through a controlled migration identity:
    forces RLS on every workspace table, creates non-owner workload roles,
    makes database audit history append-only, and installs bounded,
    legal-hold-aware retention.
+6. [`0006_exposure_operations.sql`](../../db/postgres/0006_exposure_operations.sql)
+   adds AWS verification runs, provider correlations, graph edges, governed
+   remediation, owner actions, incidents, policy packs, exposure SLO snapshots,
+   and enrichment extensions with forced workspace isolation.
 
-The final migration discovers every workspace-scoped table, enables and forces
-row-level security, and replaces its workspace policy. Each application
+The governance migration and each later product migration enable and force
+row-level security on every workspace-scoped table. Each application
 transaction must set `app.workspace_id`; a missing or incorrect workspace
 context therefore fails closed. The deployment creates separate non-owner login
 principals for ingestion and maintenance. Workload credentials must never be

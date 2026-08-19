@@ -1,5 +1,27 @@
 # Gatewatch AWS ingestion product brief
 
+## Exposure operations release (August 2026)
+
+- **Target users:** central cloud-security teams, application owners, incident
+  responders, platform engineers, and auditors across 500+ AWS accounts.
+- **Core problem:** a finding is not an outcome; teams need durable proof,
+  ownership, controlled change, re-verification, and exposure-time measurement.
+- **Primary workflow:** verify with AWS-native analysis, reconcile provider
+  signals, inspect the attack graph, simulate a choke-point fix, obtain
+  independent approval, canary the change, re-verify it, and close owner work.
+- **Main views:** command center, AWS verification, attack graph, remediation,
+  owner actions, incident mode, policy packs, and extension administration.
+- **Key models:** verification run, exposure correlation, graph edge, remediation
+  plan, owner action, incident, policy pack, SLO snapshot, and extension.
+- **Edge cases:** duplicate managed findings, analyzer limitations, stale paths,
+  shared groups, conflicting controllers, failed rollback, self-approval,
+  partial coverage, and inconclusive post-change verification.
+- **Assumptions:** AWS evidence remains authoritative; AI stays advisory; AWS
+  mutation requires an approved delivery adapter and separate human approver.
+- **Done:** the workspace and governed state machines are functional and durable,
+  the AWS schema is forced behind RLS, migration verification fails closed, and
+  unavailable execution adapters are labeled rather than simulated.
+
 ## Bedrock AI analyst release (August 2026)
 
 - **Target users:** cloud-security analysts reviewing consolidated findings from

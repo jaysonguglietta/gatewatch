@@ -37,6 +37,7 @@ const migrationFiles = [
   "db/postgres/0003_finding_search.sql",
   "db/postgres/0004_bedrock_ai_analyst.sql",
   "db/postgres/0005_security_governance.sql",
+  "db/postgres/0006_exposure_operations.sql",
 ];
 
 for (const file of migrationFiles) {
@@ -105,4 +106,8 @@ const verification = aws(
       AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'workspace_id' AND NOT a.attisdropped)
     GROUP BY w.id`,
 );
+const verified = verification.records?.[0]?.[1]?.booleanValue === true;
+if (!verified) {
+  throw new Error("Migration verification failed: every workspace-scoped table must have ENABLE and FORCE RLS");
+}
 process.stdout.write(`${JSON.stringify(verification.records)}\n`);

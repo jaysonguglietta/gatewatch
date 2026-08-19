@@ -118,6 +118,7 @@ import DailyFindingsView from "./daily-findings-view";
 import ReportingView from "./reporting-view";
 import OrganizationOperationsView from "./organization-operations-view";
 import OrganizationCoveragePanel from "./organization-coverage-panel";
+import ExposureOperationsView from "./exposure-operations-view";
 import {
   DriftInboxView,
   ExposureIntelligenceView,
@@ -145,7 +146,8 @@ type View =
   | "drift"
   | "ownership"
   | "metrics"
-  | "operations";
+  | "operations"
+  | "exposure-operations";
 
 type DrawerTab = "evidence" | "connectivity" | "change" | "risk";
 
@@ -555,6 +557,7 @@ export default function SecurityDashboard() {
         { id: "inventory" as View, label: "Daily findings", icon: FileCheck2 },
         { id: "overview" as View, label: "Broad access", icon: Gauge },
         { id: "exposure" as View, label: "Exposure intelligence", icon: Zap },
+        { id: "exposure-operations" as View, label: "Exposure operations", icon: Activity },
         { id: "drift" as View, label: "Drift inbox", icon: AlertTriangle },
         { id: "recommendations" as View, label: "Recommendations", icon: Sparkles },
       ],
@@ -817,6 +820,9 @@ export default function SecurityDashboard() {
           {view === "admin" ? <AdminView onToast={setToast} /> : null}
           {view === "exposure" ? (
             <ExposureIntelligenceView onToast={setToast} />
+          ) : null}
+          {view === "exposure-operations" ? (
+            <ExposureOperationsView onToast={setToast} />
           ) : null}
           {view === "recommendations" ? (
             <RecommendationCenterView onToast={setToast} />

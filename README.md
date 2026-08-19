@@ -9,6 +9,12 @@ resources, and vulnerability context.
 
 ## Product surfaces
 
+- A closed-loop **Exposure Operations** workspace that coordinates AWS-native
+  reachability verification, Security Hub exposure-trait reconciliation,
+  attack-graph choke points, three-mode remediation delivery, automatic
+  re-verification, owner actions, incident paths, policy packs, extension
+  governance, executive narratives, and confirmed-exposure SLOs
+
 - An **Organization Operations** plane for AWS Organizations account metadata,
   regional evidence-health heatmaps, temporal finding state, reversible evidence
   correlation, recurring monitors, governed exports, retention, legal holds, and
@@ -180,10 +186,17 @@ transactional database. Apply the production migrations in filename order from
 workspace isolation, and `0003_finding_search.sql` adds the bounded search,
 temporal-history, and JSONB/trigram indexes used by the organization-scale
 findings workflow. `0004_bedrock_ai_analyst.sql` adds model analysis, feedback,
-and daily usage records without copying raw evidence. Raw objects remain in the configured S3 bucket;
+and daily usage records without copying raw evidence. `0005_security_governance.sql`
+adds forced tenant isolation, immutable audit archival, retention, and legal
+holds. `0006_exposure_operations.sql` adds verification runs, provider
+correlations, graph edges, remediation plans, owner actions, incidents, policy
+packs, outcome SLOs, and enrichment extensions. Raw objects remain in the configured S3 bucket;
 normalized events, configuration items, traffic observations, network
 analyses, service access, managed findings, current rule versions, findings,
 and evidence references are stored in Aurora.
+
+The migration runner fails closed unless every public relation containing a
+`workspace_id` column has both row-level security enabled and forced.
 
 Open **Reports → Organization operations** to manage account context, inspect
 regional evidence health and finding lifecycle state, resolve evidence to a

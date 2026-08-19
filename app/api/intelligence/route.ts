@@ -11,6 +11,8 @@ import {
   safeJson,
 } from "../../../lib/server-admin";
 import { cleanText } from "../../../lib/admin-sources";
+import { operationInitialStatuses, operationTransitions } from "../../../lib/exposure-operations";
+import { canonicalJson } from "../../../lib/security-integrity";
 
 const kinds = new Set([
   "recommendation",
@@ -19,6 +21,14 @@ const kinds = new Set([
   "exception",
   "iac-guardrail",
   "hygiene",
+  "verification-run",
+  "exposure-correlation",
+  "remediation-plan",
+  "owner-action",
+  "incident",
+  "policy-pack",
+  "extension",
+  "evidence-gap",
 ]);
 
 const statuses: Record<string, Set<string>> = {
@@ -34,6 +44,14 @@ const statuses: Record<string, Set<string>> = {
   exception: new Set(["requested", "approved", "rejected", "revoked", "expired"]),
   "iac-guardrail": new Set(["enabled", "disabled", "monitor"]),
   hygiene: new Set(["open", "scheduled", "resolved", "accepted"]),
+  "verification-run": new Set(["queued", "running", "verified", "unreachable", "inconclusive", "failed"]),
+  "exposure-correlation": new Set(["open", "confirmed", "reconciled", "dismissed"]),
+  "remediation-plan": new Set(["draft", "simulated", "awaiting-approval", "approved", "executing", "verifying", "completed", "rolled-back", "failed"]),
+  "owner-action": new Set(["open", "accepted", "blocked", "completed", "overdue"]),
+  incident: new Set(["open", "investigating", "contained", "resolved"]),
+  "policy-pack": new Set(["draft", "monitor", "enforced", "disabled"]),
+  extension: new Set(["enabled", "disabled", "error"]),
+  "evidence-gap": new Set(["open", "collecting", "resolved", "accepted"]),
 };
 
 async function ensureSchema() {
@@ -162,7 +180,7 @@ export async function POST(request: Request) {
         : "{}";
 
     const existingRecord = await env.DB.prepare(
-      `SELECT kind, subject_id AS subjectId, status,
+      `SELECT kind, subject_id AS subjectId, status, payload,
               created_by AS createdBy, updated_at AS updatedAt
        FROM product_workflow_records
        WHERE id = ? AND workspace_id = 'default'`,
@@ -172,6 +190,7 @@ export async function POST(request: Request) {
       status: string;
       createdBy: string;
       updatedAt: string;
+      payload: string;
     }>();
 
     if (!id || !kinds.has(kind) || !subjectId || !statuses[kind]?.has(status)) {
@@ -186,6 +205,36 @@ export async function POST(request: Request) {
     ) {
       return apiJson(
         { error: "Workflow kind and subject identity cannot be changed after creation." },
+        409,
+      );
+    }
+    const initialStatus = operationInitialStatuses[kind as keyof typeof operationInitialStatuses];
+    if (!existingRecord && initialStatus && status !== initialStatus) {
+      return apiJson(
+        { error: `${kind} must be created in the ${initialStatus} state.` },
+        409,
+      );
+    }
+    const governedTransitions = operationTransitions[kind as keyof typeof operationTransitions];
+    if (
+      existingRecord &&
+      governedTransitions &&
+      existingRecord.status !== status &&
+      !governedTransitions[existingRecord.status]?.includes(status)
+    ) {
+      return apiJson(
+        { error: `Transition from ${existingRecord.status} to ${status} is not allowed for ${kind}.` },
+        409,
+      );
+    }
+    if (
+      kind === "remediation-plan" &&
+      existingRecord &&
+      existingRecord.status !== "draft" &&
+      canonicalJson(safeJson(existingRecord.payload, {})) !== canonicalJson(safeJson(payload, {}))
+    ) {
+      return apiJson(
+        { error: "A simulated remediation payload is immutable; return it to draft before changing content." },
         409,
       );
     }
@@ -208,6 +257,9 @@ export async function POST(request: Request) {
     }
     if (
       kind === "iac-guardrail" ||
+      (kind === "remediation-plan" && ["approved", "executing", "completed", "rolled-back"].includes(status)) ||
+      (kind === "policy-pack" && ["enforced", "disabled"].includes(status)) ||
+      (kind === "extension" && (status === "enabled" || Boolean(existingRecord))) ||
       (kind === "exception" && ["approved", "rejected", "revoked"].includes(status))
     ) {
       const authorization = await requireAdmin(request);
@@ -217,6 +269,16 @@ export async function POST(request: Request) {
           403,
         );
       }
+    }
+    if (
+      kind === "remediation-plan" &&
+      status === "approved" &&
+      existingRecord?.createdBy === user
+    ) {
+      return apiJson(
+        { error: "Remediation authors cannot approve their own production change." },
+        409,
+      );
     }
     if (kind === "exception" && ["approved", "rejected"].includes(status)) {
       if (existingRecord?.createdBy === user) {

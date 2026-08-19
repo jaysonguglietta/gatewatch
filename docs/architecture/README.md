@@ -14,6 +14,7 @@ collection, and low idle cost.
 | [AWS deployment guide](AWS_DEPLOYMENT_GUIDE.md) | Prerequisites, packaging, stack order, parameters, validation, and rollback |
 | [Organization operations](ORGANIZATION_OPERATIONS.md) | Account context, correlation, monitors, exports, retention, legal holds, scoring, and operational limits |
 | [Bedrock AI security analyst](BEDROCK_AI_ANALYST.md) | Advisory AI workflows, evidence boundary, schema, IAM, guardrails, budgets, audit, and failure behavior |
+| [Exposure operations](EXPOSURE_OPERATIONS.md) | AWS path verification, provider correlation, attack graph, guarded remediation, owner/incident workflows, SLOs, policies, and extensions |
 | [Operations runbook](OPERATIONS_RUNBOOK.md) | Daily checks, partial runs, failed accounts, replay, incident handling, and recovery |
 | [Cost and capacity](COST_AND_CAPACITY.md) | Cost drivers, concurrency controls, capacity assumptions, and scaling signals |
 | [Migration plan](MIGRATION_PLAN.md) | Safe transition from the legacy aggregate snapshot to sharded evidence and Aurora |
