@@ -33,6 +33,8 @@
 | CloudWatch | Log bytes and retention | Structured concise logs, 90-day hot retention |
 | NAT/data transfer | Workloads placed behind NAT | Prefer VPC endpoints where justified |
 | Bedrock analysis | Input/output tokens on uncached analyst requests | Nova 2 Lite, compact evidence, 4,000-token output cap, seven-day cache, per-user/workspace daily budgets |
+| Azure Data Explorer | Query frequency, scanned extents, returned rows, cross-cloud egress | Five-minute dispatch, timestamp predicate, 1,000-row/5 MB cap, source filters |
+| ADX worker queue | Active sources, Lambda duration, retries, DLQ retention | FIFO message group per source, 25 concurrent workers, atomic source leases |
 
 ## Capacity controls
 
@@ -45,6 +47,10 @@ Starting values:
 - collection schedule: every `6 hours`;
 - evidence retention: `400 days`;
 - worker memory: `1536 MB`, timeout `15 minutes`.
+- ADX dispatcher limit: `2,000` active sources per cycle;
+- ADX worker reserved/max concurrency: `25`;
+- ADX source lease: `3 minutes`;
+- default ADX freshness objective: `30 minutes`.
 
 Increase account concurrency only after checking EC2 API throttling, Lambda
 regional concurrency, KMS request rates, and Step Functions Map Run metrics.
@@ -68,6 +74,10 @@ Scale or optimize when:
 - paginated findings queries exceed the interactive latency objective;
 - manifests approach the 8 MB application limit;
 - one account worker regularly approaches 15 minutes.
+- an ADX source repeatedly returns a full batch, indicating checkpoint lag;
+- ADX query duration, throttling, or cross-cloud transfer grows unexpectedly.
+- ADX FIFO age exceeds ten minutes or any job reaches the dead-letter queue;
+- source freshness enters warning at 80% or breaches its configured objective.
 
 At very large scale, write a compact coverage summary plus paginated target
 manifests instead of increasing the 8 MB limit.

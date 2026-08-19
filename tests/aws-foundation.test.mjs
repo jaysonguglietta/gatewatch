@@ -18,14 +18,14 @@ test("ships the complete AWS administration workflow", async () => {
     source("lib/admin-sources.ts"),
   ]);
 
-  assert.match(view, /Add S3 source/);
+  assert.match(view, /Add log source/);
   assert.match(view, /Test connection/);
   assert.match(view, /Ingestion runs/);
   assert.match(view, /Access & roles/);
   assert.match(view, /Administrative audit log/);
   assert.match(route, /Administrator access is required/);
-  assert.match(route, /successful live AWS connection test is required/i);
-  assert.match(route, /Raw S3 objects were not modified/);
+  assert.match(route, /successful live connection test is required/i);
+  assert.match(route, /Source logs were not modified/);
   assert.match(settings, /You cannot remove your own administrator assignment/);
   assert.match(schema, /ingestionSources/);
   assert.match(schema, /normalizedCloudTrailEvents/);

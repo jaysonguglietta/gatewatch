@@ -22,11 +22,9 @@ Parameters:
     MinLength: 1
     MaxLength: 1024
     AllowedPattern: "^[A-Za-z0-9._-]+$"
-    Description: Immutable S3 VersionId for the release artifact.
   ArtifactSha256:
     Type: String
     AllowedPattern: "^[a-f0-9]{64}$"
-    Description: Expected SHA-256 digest for the exact release artifact bytes.
   ImageArtifactKey:
     Type: String
     MinLength: 1
@@ -37,15 +35,12 @@ Parameters:
     MinLength: 1
     MaxLength: 1024
     AllowedPattern: "^[A-Za-z0-9._-]+$"
-    Description: Immutable S3 VersionId for the scanned production image archive.
   ImageArtifactSha256:
     Type: String
     AllowedPattern: "^[a-f0-9]{64}$"
-    Description: Expected SHA-256 digest for the attested production image archive.
   ApplicationImageRef:
     Type: String
     AllowedPattern: "^gatewatch-web:[a-f0-9]{40}$"
-    Description: Exact image tag embedded in the verified release archive.
   SnapshotBucket:
     Type: String
     AllowedPattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
@@ -64,7 +59,6 @@ Parameters:
     Type: String
     Default: ""
     AllowedPattern: "^$|^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
-    Description: Optional EvidenceBucketName output from the organization collector.
   OrganizationManifestKey:
     Type: String
     Default: manifests/latest.json
@@ -75,11 +69,9 @@ Parameters:
   PublicDomainName:
     Type: String
     AllowedPattern: "^[a-z0-9](?:[a-z0-9.-]{1,251}[a-z0-9])$"
-    Description: Public Gatewatch DNS name; the stack provisions and validates its ACM certificate.
   OriginDomainName:
     Type: String
     AllowedPattern: "^[a-z0-9](?:[a-z0-9.-]{1,251}[a-z0-9])$"
-    Description: Dedicated private ALB origin DNS name; the stack provisions and validates its ACM certificate.
   HostedZoneId:
     Type: AWS::Route53::HostedZone::Id
   BootstrapAdminEmail:
@@ -88,11 +80,9 @@ Parameters:
   CognitoDomainPrefix:
     Type: String
     AllowedPattern: "^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$"
-    Description: Globally unique Cognito managed-login domain prefix.
   OAuth2ProxyImage:
     Type: String
     AllowedPattern: "^[^[:space:]@]+@sha256:[a-f0-9]{64}$"
-    Description: Digest-pinned oauth2-proxy image.
   SnapshotKmsKeyArn:
     Type: String
     AllowedPattern: "^arn:[a-z0-9-]+:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]+$"
@@ -103,7 +93,6 @@ Parameters:
   AuditArchiveBucket:
     Type: String
     AllowedPattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
-    Description: Compliance Object Lock bucket created by the Gatewatch data platform.
   AuditArchiveKmsKeyArn:
     Type: String
     AllowedPattern: "^arn:[a-z0-9-]+:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]+$"
@@ -113,7 +102,6 @@ Parameters:
   SourceOrganizationId:
     Type: String
     AllowedPattern: "^o-[a-z0-9]{10,32}$"
-    Description: AWS Organization containing every approved Gatewatch evidence role.
   InstanceType:
     Type: String
     Default: t4g.small
@@ -126,13 +114,11 @@ Parameters:
     AllowedValues:
       - "true"
       - "false"
-    Description: Enables review-only Bedrock analyst workflows. Deterministic findings remain authoritative.
   BedrockModelId:
     Type: String
     Default: us.amazon.nova-2-lite-v1:0
     AllowedValues:
       - us.amazon.nova-2-lite-v1:0
-    Description: US-geo inference profile approved for Gatewatch structured analysis.
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
@@ -431,6 +417,139 @@ Resources:
         - Key: DataClassification
           Value: Credential
 
+  AzureDataExplorerCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Per-source Microsoft Entra credentials for read-only Azure Data Explorer queries
+      SecretString: '{"connections":{}}'
+      Tags:
+        - Key: Application
+          Value: Gatewatch
+        - Key: DataClassification
+          Value: Credential
+
+  AzureDataExplorerSyncDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub gatewatch-${EnvironmentName}-adx-sync-dlq.fifo
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      MessageRetentionPeriod: 1209600
+      KmsMasterKeyId: alias/aws/sqs
+
+  AzureDataExplorerSyncQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub gatewatch-${EnvironmentName}-adx-sync.fifo
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      VisibilityTimeout: 360
+      MessageRetentionPeriod: 345600
+      ReceiveMessageWaitTimeSeconds: 20
+      KmsMasterKeyId: alias/aws/sqs
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AzureDataExplorerSyncDeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  AzureDataExplorerWorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ReadGatewatchWorkerToken
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref AwsBridgeSecret
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt AzureDataExplorerSyncQueue.Arn
+
+  AzureDataExplorerWorker:
+    Type: AWS::Lambda::Function
+    DependsOn: AzureDataExplorerWorkerLogGroup
+    Properties:
+      FunctionName: !Sub gatewatch-${EnvironmentName}-adx-worker
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt AzureDataExplorerWorkerRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      ReservedConcurrentExecutions: 25
+      Environment:
+        Variables:
+          GATEWATCH_INTERNAL_ENDPOINT: !Sub https://${PublicDomainName}/api/internal/adx-sync
+          GATEWATCH_BRIDGE_SECRET_ID: !Ref AwsBridgeSecret
+      Code:
+        ZipFile: |
+          const { SecretsManagerClient, GetSecretValueCommand } = require("@aws-sdk/client-secrets-manager");
+          const client = new SecretsManagerClient({});
+          let token;
+          async function credential(refresh) {
+            if (!token || refresh) token = (await client.send(new GetSecretValueCommand({
+              SecretId: process.env.GATEWATCH_BRIDGE_SECRET_ID,
+            }))).SecretString || "";
+            return token;
+          }
+          async function dispatch(sourceId, refresh) {
+            return fetch(process.env.GATEWATCH_INTERNAL_ENDPOINT, {
+              method: "POST",
+              headers: { authorization: `Bearer ${await credential(refresh)}`, "content-type": "application/json" },
+              body: JSON.stringify({ sourceId }),
+              redirect: "error",
+              signal: AbortSignal.timeout(55000),
+            });
+          }
+          exports.handler = async (event) => {
+            const failures = [];
+            await Promise.all(event.Records.map(async record => {
+              try {
+                const sourceId = JSON.parse(record.body).sourceId || "";
+                if (!/^src-[a-f0-9-]{36}$/.test(sourceId)) throw new Error("invalid source");
+                let response = await dispatch(sourceId);
+                if ([401, 403].includes(response.status)) response = await dispatch(sourceId, true);
+                if (!response.ok && response.status !== 202) throw new Error(`status ${response.status}`);
+              } catch {
+                failures.push({ itemIdentifier: record.messageId });
+              }
+            }));
+            return { batchItemFailures: failures };
+          };
+
+  AzureDataExplorerWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/gatewatch-${EnvironmentName}-adx-worker
+      RetentionInDays: 90
+
+  AzureDataExplorerWorkerEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt AzureDataExplorerSyncQueue.Arn
+      FunctionName: !Ref AzureDataExplorerWorker
+      BatchSize: 1
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+      ScalingConfig:
+        MaximumConcurrency: 25
+
   GatewatchAiGuardrail:
     Type: AWS::Bedrock::Guardrail
     Properties:
@@ -716,8 +835,11 @@ Resources:
 
   AwsBridgeRuntimeRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks: [W3037]
     Properties:
-      Description: AWS permissions available only to the isolated Gatewatch bridge container.
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -772,6 +894,25 @@ Resources:
                   - secretsmanager:GetSecretValue
                   - secretsmanager:PutSecretValue
                 Resource: !Ref JiraIntegrationSecret
+              - Sid: ManageAzureDataExplorerCredentials
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:PutSecretValue
+                Resource: !Ref AzureDataExplorerCredentialsSecret
+              - Sid: EnqueueAzureDataExplorerSync
+                Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt AzureDataExplorerSyncQueue.Arn
+              - Sid: ExchangeAwsWorkloadIdentity
+                Effect: Allow
+                Action: sts:GetWebIdentityToken
+                Resource: "*"
+                Condition:
+                  ForAllValues:StringEquals:
+                    sts:IdentityTokenAudience: api://AzureADTokenExchange
+                  NumericLessThanEquals:
+                    sts:DurationSeconds: 300
               - Sid: InvokeApprovedGatewatchModel
                 Effect: Allow
                 Action: bedrock:InvokeModel
@@ -1064,7 +1205,9 @@ Resources:
                 '${OAuth2ProxyImage}' \
                 '${ApplicationImageRef}' \
                 '/tmp/gatewatch-web.tar.gz' \
-                '${ImageArtifactSha256}'
+                '${ImageArtifactSha256}' \
+                '${AzureDataExplorerCredentialsSecret}' \
+                '${AzureDataExplorerSyncQueue}'
 
   AuditOutboxDeliveryAssociation:
     Type: AWS::SSM::Association
@@ -1093,6 +1236,35 @@ Resources:
                 --max-time 60 \
                 http://127.0.0.1:3000/api/internal/audit-outbox >/dev/null
 
+  AzureDataExplorerSyncAssociation:
+    Type: AWS::SSM::Association
+    DependsOn: WebDeploymentAssociation
+    Properties:
+      Name: AWS-RunShellScript
+      AssociationName: !Sub gatewatch-${EnvironmentName}-adx-sync
+      ApplyOnlyAtCronInterval: true
+      ScheduleExpression: rate(5 minutes)
+      Targets:
+        - Key: InstanceIds
+          Values:
+            - !Ref WebInstance
+      Parameters:
+        commands:
+          - !Sub |
+              set -euo pipefail
+              TOKEN=$(aws secretsmanager get-secret-value \
+                --region '${AWS::Region}' \
+                --secret-id '${AwsBridgeSecret}' \
+                --query SecretString \
+                --output text)
+              curl --fail --silent --show-error \
+                --request POST \
+                --header "Authorization: Bearer $TOKEN" \
+                --header 'Content-Type: application/json' \
+                --data '{}' \
+                --max-time 60 \
+                http://127.0.0.1:3000/api/internal/adx-sync >/dev/null
+
   AuditOutboxFailureMetric:
     Type: AWS::Logs::MetricFilter
     Properties:
@@ -1114,6 +1286,88 @@ Resources:
       EvaluationPeriods: 1
       DatapointsToAlarm: 1
       Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  AzureDataExplorerSyncFailureMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      FilterPattern: '{ $.event = "adx_sync_failed" }'
+      MetricTransformations:
+        - MetricNamespace: Gatewatch/Security
+          MetricName: AzureDataExplorerSyncFailures
+          MetricValue: "1"
+
+  AzureDataExplorerSyncFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: One or more Azure Data Explorer sources failed to synchronize.
+      Namespace: Gatewatch/Security
+      MetricName: AzureDataExplorerSyncFailures
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  AzureDataExplorerFreshnessMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      FilterPattern: '{ $.event = "adx_freshness_breached" }'
+      MetricTransformations:
+        - MetricNamespace: Gatewatch/Security
+          MetricName: AzureDataExplorerFreshnessBreaches
+          MetricValue: "1"
+
+  AzureDataExplorerFreshnessAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: One or more Azure Data Explorer sources exceeded their freshness objective.
+      Namespace: Gatewatch/Security
+      MetricName: AzureDataExplorerFreshnessBreaches
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  AzureDataExplorerDeadLetterAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Azure Data Explorer synchronization jobs exhausted retries.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt AzureDataExplorerSyncDeadLetterQueue.QueueName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  AzureDataExplorerQueueAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Azure Data Explorer synchronization queue is not draining within ten minutes.
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt AzureDataExplorerSyncQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 600
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
 
@@ -1269,19 +1523,22 @@ Resources:
 
 Outputs:
   DashboardUrl:
-    Description: HTTPS URL for the Gatewatch web dashboard
     Value: !Sub https://${PublicDomainName}
   CognitoUserPoolId:
-    Description: User pool providing individual identities and MFA.
     Value: !Ref GatewatchUserPool
   JiraIntegrationSecretArn:
-    Description: Secret containing the Jira Cloud integration configuration.
     Value: !Ref JiraIntegrationSecret
+  AzureDataExplorerCredentialsSecretArn:
+    Value: !Ref AzureDataExplorerCredentialsSecret
+  AzureDataExplorerFederatedSubject:
+    Value: !GetAtt AwsBridgeRuntimeRole.Arn
+  AzureDataExplorerFederatedAudience:
+    Value: api://AzureADTokenExchange
+  AzureDataExplorerSyncQueueUrl:
+    Value: !Ref AzureDataExplorerSyncQueue
   BedrockModelId:
-    Description: Approved Bedrock inference profile used by Gatewatch.
     Value: !Ref BedrockModelId
   BedrockGuardrailId:
-    Description: Versioned prompt-attack guardrail applied to Gatewatch inference.
     Value: !GetAtt GatewatchAiGuardrail.GuardrailId
   BedrockGuardrailVersion:
     Value: !GetAtt GatewatchAiGuardrailVersion.Version

@@ -40,6 +40,15 @@ aggregate `state` field by itself.
 
 ## Data flow
 
+S3 sources arrive through object events. Azure Data Explorer sources use a
+timestamp checkpoint and a five-minute dispatcher that publishes source IDs to
+an SQS FIFO queue. Up to 25 Lambda workers call the private source sync endpoint;
+atomic per-source leases prevent scheduled and manual overlap. Both paths emit
+the same bounded `aws_evidence_records` model, source lineage, and stable
+fingerprints. ADX checkpoints combine the source timestamp with a deterministic
+SHA-256 row hash so equal-timestamp batches resume without gaps; neither path is
+allowed to overwrite raw evidence.
+
 ```mermaid
 sequenceDiagram
   autonumber
@@ -73,6 +82,17 @@ sequenceDiagram
   S3-->>Queue: manifest event
   Ingest->>DB: finalize run and coverage
 ```
+
+For ADX, the AWS bridge exchanges a five-minute AWS workload assertion for a
+short-lived Entra token. Legacy sources can temporarily use an isolated
+per-source Secrets Manager entry. The bridge discovers the table schema and
+executes generated read-only KQL, returning at most 1,000 rows/5 MB. The
+application validates five mapped samples through the selected AWS parser,
+then validates every synchronized record shape, applies account/Region scope,
+inserts duplicate-safe normalized evidence, and only then advances the source
+checkpoint. Preview and schema queries never persist rows. A scheduled freshness
+evaluator compares the newest successful event-time checkpoint to the source
+objective and maintains one open or resolved alert per source.
 
 ## PostgreSQL entities
 

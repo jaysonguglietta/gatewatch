@@ -281,6 +281,7 @@ export const ingestionSources = sqliteTable(
     id: text("id").primaryKey(),
     workspaceId: text("workspace_id").notNull().default("default"),
     name: text("name").notNull(),
+    provider: text("provider").notNull().default("aws-s3"),
     sourceType: text("source_type").notNull(),
     bucketArn: text("bucket_arn").notNull(),
     bucketName: text("bucket_name").notNull(),
@@ -298,6 +299,26 @@ export const ingestionSources = sqliteTable(
     configResourceTypes: text("config_resource_types")
       .notNull()
       .default("[]"),
+    adxClusterUrl: text("adx_cluster_url").notNull().default(""),
+    adxDatabase: text("adx_database").notNull().default(""),
+    adxTable: text("adx_table").notNull().default(""),
+    adxTimestampColumn: text("adx_timestamp_column").notNull().default(""),
+    adxPayloadColumn: text("adx_payload_column").notNull().default(""),
+    adxQueryMode: text("adx_query_mode").notNull().default("whole-row"),
+    adxBatchSize: integer("adx_batch_size").notNull().default(500),
+    adxTenantId: text("adx_tenant_id").notNull().default(""),
+    adxClientId: text("adx_client_id").notNull().default(""),
+    adxAuthMode: text("adx_auth_mode").notNull().default("federated"),
+    adxSchema: text("adx_schema").notNull().default("{}"),
+    adxSchemaDiscoveredAt: text("adx_schema_discovered_at").notNull().default(""),
+    adxMappingValidatedAt: text("adx_mapping_validated_at").notNull().default(""),
+    adxCursorValue: text("adx_cursor_value").notNull().default(""),
+    adxLeaseOwner: text("adx_lease_owner").notNull().default(""),
+    adxLeaseExpiresAt: text("adx_lease_expires_at").notNull().default(""),
+    freshnessSlaMinutes: integer("freshness_sla_minutes").notNull().default(30),
+    freshnessStatus: text("freshness_status").notNull().default("unknown"),
+    freshnessCheckedAt: text("freshness_checked_at").notNull().default(""),
+    freshnessLagMinutes: integer("freshness_lag_minutes").notNull().default(0),
     retentionDays: integer("retention_days").notNull().default(365),
     status: text("status").notNull().default("draft"),
     testSummary: text("test_summary").notNull().default("{}"),
@@ -318,6 +339,30 @@ export const ingestionSources = sqliteTable(
       table.bucketName,
       table.objectPrefix,
     ),
+  ],
+);
+
+export const ingestionSourceAlerts = sqliteTable(
+  "ingestion_source_alerts",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default("default"),
+    sourceId: text("source_id").notNull(),
+    alertType: text("alert_type").notNull(),
+    status: text("status").notNull().default("open"),
+    severity: text("severity").notNull().default("high"),
+    summary: text("summary").notNull(),
+    firstObservedAt: text("first_observed_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    lastObservedAt: text("last_observed_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    resolvedAt: text("resolved_at").notNull().default(""),
+  },
+  (table) => [
+    uniqueIndex("ingestion_source_alerts_identity_unique").on(
+      table.workspaceId,
+      table.sourceId,
+      table.alertType,
+    ),
+    index("ingestion_source_alerts_status_idx").on(table.workspaceId, table.status),
   ],
 );
 

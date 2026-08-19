@@ -9,6 +9,12 @@ resources, and vulnerability context.
 
 ## Product surfaces
 
+- A closed-loop **Exposure Operations** workspace that coordinates AWS-native
+  reachability verification, Security Hub exposure-trait reconciliation,
+  attack-graph choke points, three-mode remediation delivery, automatic
+  re-verification, owner actions, incident paths, policy packs, extension
+  governance, executive narratives, and confirmed-exposure SLOs
+
 - An **Organization Operations** plane for AWS Organizations account metadata,
   regional evidence-health heatmaps, temporal finding state, reversible evidence
   correlation, recurring monitors, governed exports, retention, legal holds, and
@@ -110,8 +116,10 @@ resources, and vulnerability context.
   Hub, and Terraform access manifests
 - Organization-scale collection health with explicit run, account, and
   account/Region status, attention filters, and pagination for 500+ accounts
-- Administrator configuration for CloudTrail and AWS Config S3 sources,
-  including prefix-scoped IAM role templates, live-capable STS/S3 verification,
+- Administrator configuration for AWS evidence in S3 or Azure Data Explorer,
+  including passwordless AWS-to-Entra workload federation, live schema discovery,
+  column autocomplete, sample-record mapping validation, freshness objectives,
+  distributed polling, bounded previews, checkpointed synchronization,
   historical backfill controls, ingestion health, roles, retention, and audit
 - AWS production foundations for Aurora PostgreSQL Serverless v2, bounded and
   idempotent SQS/Lambda ingestion, Step Functions backfills, dead-letter
@@ -159,6 +167,9 @@ The static IaC parsing and safety model is documented in
 The Bedrock data boundary, model controls, IAM policy, failure behavior, and
 operating procedure are documented in
 [`docs/architecture/BEDROCK_AI_ANALYST.md`](docs/architecture/BEDROCK_AI_ANALYST.md).
+The ADX credential boundary, fixed KQL shape, mapping, checkpoint, and operating
+procedure are documented in
+[`docs/architecture/AZURE_DATA_EXPLORER.md`](docs/architecture/AZURE_DATA_EXPLORER.md).
 
 Review decisions are persisted through the configured Cloudflare D1 `DB`
 binding. Stable finding fingerprints, current analyst workflow, append-only
@@ -180,10 +191,21 @@ transactional database. Apply the production migrations in filename order from
 workspace isolation, and `0003_finding_search.sql` adds the bounded search,
 temporal-history, and JSONB/trigram indexes used by the organization-scale
 findings workflow. `0004_bedrock_ai_analyst.sql` adds model analysis, feedback,
-and daily usage records without copying raw evidence. Raw objects remain in the configured S3 bucket;
+and daily usage records without copying raw evidence. `0005_security_governance.sql`
+adds forced tenant isolation, immutable audit archival, retention, and legal
+holds. `0006_exposure_operations.sql` adds verification runs, provider
+correlations, graph edges, remediation plans, owner actions, incidents, policy
+  packs, outcome SLOs, and enrichment extensions. `0007_azure_data_explorer_sources.sql`
+  adds provider-aware ADX metadata and a forced-RLS checkpoint table.
+  `0008_adx_federation_scale_freshness.sql` adds passwordless authentication
+  state, discovered schemas, source leases, freshness objectives, and
+  tenant-isolated source alerts. Raw objects remain in the configured S3 bucket or ADX table;
 normalized events, configuration items, traffic observations, network
 analyses, service access, managed findings, current rule versions, findings,
 and evidence references are stored in Aurora.
+
+The migration runner fails closed unless every public relation containing a
+`workspace_id` column has both row-level security enabled and forced.
 
 Open **Reports → Organization operations** to manage account context, inspect
 regional evidence health and finding lifecycle state, resolve evidence to a
@@ -205,6 +227,12 @@ Open **Admin config** in the application navigation to:
   Reachability Analyzer, Network Access Analyzer, ELB, WAF, CloudFront,
   API Gateway, Route 53 Resolver, Network Firewall, GuardDuty, Security Hub,
   and Inspector evidence
+- Add an Azure Data Explorer source by choosing the AWS evidence type, cluster,
+  database, table, timestamp column, and complete-row or JSON payload mapping
+- Discover the ADX schema, autocomplete columns, and validate five sample rows
+  through the real AWS parser before activation
+- Use short-lived AWS workload federation by default, set a source freshness
+  objective, and process five-minute polling through the horizontally scaled queue
 - Generate a least-privilege cross-account read-role template
 - Validate source structure locally and perform live STS/S3 tests when an AWS
   runtime identity is present
@@ -230,6 +258,13 @@ reports “AWS runtime verification pending” because it does not have a Gatewa
 application role. Connection activation becomes available only after the
 deployed runtime successfully assumes the configured source role, lists the
 prefix, and performs a bounded object read.
+
+New ADX sources use AWS IAM outbound identity federation and do not have a
+client secret. The bridge exchanges a five-minute AWS workload assertion for a
+short-lived Entra token and executes only generated, parameterized, bounded read
+queries. Legacy client-secret sources retain an isolated Secrets Manager entry
+until migrated. Local development reports runtime verification pending until
+the AWS bridge is available.
 
 AWS deployment assets are under `infrastructure/`:
 

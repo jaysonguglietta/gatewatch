@@ -1,5 +1,56 @@
 # Gatewatch AWS ingestion product brief
 
+## Azure Data Explorer source release (August 2026)
+
+- **Target users:** central security teams that aggregate AWS logs from hundreds
+  of accounts into Azure Data Explorer while operating Gatewatch in AWS.
+- **Core problem:** analysts need ADX-hosted AWS evidence in the same deduplicated,
+  security-group-centric workflow as S3 evidence without copying credentials to
+  the browser or allowing arbitrary KQL.
+- **Primary workflow:** choose ADX, specify cluster/database/table and AWS evidence
+  type, discover the live schema, map autocomplete-backed columns, validate five
+  sample rows, establish passwordless Entra trust, test, activate, backfill, and
+  continuously synchronize from a timestamp checkpoint.
+- **Main screens:** the existing administration source list, three-step source
+  wizard, bounded row preview, connection checks, source health, and run history.
+- **Key models:** provider-aware ingestion source, federated identity mode,
+  discovered schema, validated mapping, leased checkpoint, freshness objective,
+  source alert, normalized evidence record, and ingestion run.
+- **Edge cases:** malicious cluster URLs or identifiers, invalid/rotated secrets,
+  empty tables, malformed JSON payloads, duplicate rows, late data, equal
+  timestamps, response truncation, rate limits, and transient cross-cloud errors.
+- **Assumptions:** source rows preserve recognizable AWS fields; the Entra app has
+  database viewer access; current security-group state remains authoritative
+  from the AWS inventory collector.
+- **Done:** administrators can configure, discover, map, validate, activate,
+  manually sync, backfill, pause, and delete ADX sources; active sources dispatch
+  every five minutes through a 25-concurrency SQS/Lambda worker pool; source
+  leases prevent overlapping work; freshness state opens and resolves deduplicated
+  alerts; results are bounded, normalized, filtered, deduplicated, checkpointed,
+  and audited; new sources require no persistent Entra secret.
+
+## Exposure operations release (August 2026)
+
+- **Target users:** central cloud-security teams, application owners, incident
+  responders, platform engineers, and auditors across 500+ AWS accounts.
+- **Core problem:** a finding is not an outcome; teams need durable proof,
+  ownership, controlled change, re-verification, and exposure-time measurement.
+- **Primary workflow:** verify with AWS-native analysis, reconcile provider
+  signals, inspect the attack graph, simulate a choke-point fix, obtain
+  independent approval, canary the change, re-verify it, and close owner work.
+- **Main views:** command center, AWS verification, attack graph, remediation,
+  owner actions, incident mode, policy packs, and extension administration.
+- **Key models:** verification run, exposure correlation, graph edge, remediation
+  plan, owner action, incident, policy pack, SLO snapshot, and extension.
+- **Edge cases:** duplicate managed findings, analyzer limitations, stale paths,
+  shared groups, conflicting controllers, failed rollback, self-approval,
+  partial coverage, and inconclusive post-change verification.
+- **Assumptions:** AWS evidence remains authoritative; AI stays advisory; AWS
+  mutation requires an approved delivery adapter and separate human approver.
+- **Done:** the workspace and governed state machines are functional and durable,
+  the AWS schema is forced behind RLS, migration verification fails closed, and
+  unavailable execution adapters are labeled rather than simulated.
+
 ## Bedrock AI analyst release (August 2026)
 
 - **Target users:** cloud-security analysts reviewing consolidated findings from

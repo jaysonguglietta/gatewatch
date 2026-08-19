@@ -34,6 +34,32 @@ After a model, prompt, schema, or Guardrail change, invoke one confirmed,
 internal, and evidence-incomplete fixture. Confirm exact verdict preservation,
 valid citations, audit events, usage, fallback, and no AWS mutation path.
 
+## Azure Data Explorer source health
+
+Open **Administration → Data sources**, expand the ADX source, and inspect its
+authentication mode, discovered schema, mapping validation, freshness state,
+checkpoint, connection checks, open alert, and ingestion runs.
+
+| Symptom | Check | Response |
+|---|---|---|
+| Federated authentication rejected | AWS outbound federation status; exact Entra issuer, role-ARN subject, audience; propagation time | Correct the trust and retest; do not add a client secret as a workaround |
+| Legacy authentication rejected | Secret rotation, tenant ID, client ID | Replace the legacy secret, test, then migrate the source to federation |
+| Viewer access denied | ADX database role assignment | Grant database `viewer`; never grant cluster admin to solve a read failure |
+| Table or column missing | Refresh schema; compare saved fingerprint and selected columns | Pause, rediscover, remap, sample-validate, test, reactivate |
+| Source degraded after timeout/429 | ADX query health and application logs | Wait or reduce batch size; test before reactivation |
+| Full 1,000-row batches every cycle | Checkpoint age and source arrival rate | Reduce schedule interval only after capacity review, or partition sources |
+| Rows fetched but none normalized | Evidence type and complete-row/payload mapping | Preview sanitized rows and select the matching AWS evidence type |
+| Freshness warning/breach | Event-time checkpoint, SLA, upstream ADX ingestion, queue age | Restore the stopped upstream feed or drain backlog; changing the SLA requires a documented operational decision |
+| Queue age alarm | SQS oldest message, Lambda throttles/errors, ADX 429s | Restore worker capacity or reduce pressure; preserve FIFO ordering and source leases |
+| Dead-letter alarm | Failed message and source run history | Correct the source, redrive one sanitized test message, then redrive the queue in bounded batches |
+
+Do not paste workload assertions, client secrets, access tokens, or raw security
+records into tickets. `adx_sync_failed` and freshness events contain metadata
+only. A sync failure does not advance the checkpoint, so retry is duplicate-safe.
+Freshness uses the newest successfully normalized event timestamp; an empty but
+reachable table can therefore breach, and a historical backfill stays stale
+until it catches up.
+
 ## Collection health triage
 
 ### Partial account

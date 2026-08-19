@@ -2,7 +2,8 @@ import { createServer } from "node:http";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { BedrockRuntimeClient, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
 import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
+import { AssumeRoleCommand, GetWebIdentityTokenCommand, STSClient } from "@aws-sdk/client-sts";
+import { SendMessageBatchCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { fromTemporaryCredentials } from "@aws-sdk/credential-providers";
 import {
   GetSecretValueCommand,
@@ -25,6 +26,8 @@ const maxRequestBytes = 96_000;
 const maxSnapshotBytes = 25 * 1024 * 1024;
 const maxManifestBytes = 8 * 1024 * 1024;
 const jiraSecretArn = process.env.GATEWATCH_JIRA_SECRET_ARN ?? "";
+const adxSecretArn = process.env.GATEWATCH_ADX_SECRET_ARN ?? "";
+const adxSyncQueueUrl = process.env.GATEWATCH_ADX_SYNC_QUEUE_URL ?? "";
 const region = process.env.AWS_REGION ?? "us-east-1";
 const bridgeRoleArn = process.env.GATEWATCH_AWS_BRIDGE_ROLE_ARN ?? "";
 if (!/^arn:[a-z0-9-]+:iam::[0-9]{12}:role\/[A-Za-z0-9+=,.@_\/-]{1,512}$/.test(bridgeRoleArn)) {
@@ -44,6 +47,8 @@ const bedrockModelId = process.env.GATEWATCH_BEDROCK_MODEL_ID ?? "us.amazon.nova
 const bedrockGuardrailId = process.env.GATEWATCH_BEDROCK_GUARDRAIL_ID ?? "";
 const bedrockGuardrailVersion = process.env.GATEWATCH_BEDROCK_GUARDRAIL_VERSION ?? "";
 const bedrock = new BedrockRuntimeClient({ region, credentials });
+const sts = new STSClient({ region, credentials });
+const sqs = new SQSClient({ region, credentials });
 
 if (!token || !snapshotBucket || !auditArchiveBucket || !/^[a-f0-9-]{36}$/.test(workspaceId)) {
   throw new Error("The AWS bridge requires its private token, snapshot bucket, audit archive, and workspace identity.");
@@ -617,6 +622,407 @@ async function testSource(source) {
   };
 }
 
+const ADX_CLUSTER_SUFFIXES = [
+  ".kusto.windows.net",
+  ".kusto.usgovcloudapi.net",
+  ".kusto.chinacloudapi.cn",
+];
+
+function adxSource(input) {
+  const sourceId = text(input.sourceId, 80);
+  const clusterUrl = text(input.clusterUrl, 400).replace(/\/$/, "");
+  const database = text(input.database, 127);
+  const table = text(input.table, 127);
+  const timestampColumn = text(input.timestampColumn, 127);
+  const payloadColumn = text(input.payloadColumn, 127);
+  const queryMode = text(input.queryMode, 30);
+  const batchSize = Math.trunc(Number(input.batchSize) || 500);
+  const tenantId = text(input.tenantId, 36).toLowerCase();
+  const clientId = text(input.clientId, 36).toLowerCase();
+  const authMode = text(input.authMode, 30) === "client-secret" ? "client-secret" : "federated";
+  const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+  let parsed;
+  try { parsed = new URL(clusterUrl); } catch { throw new Error("ADX_CLUSTER_INVALID"); }
+  const hostname = parsed.hostname.toLowerCase();
+  if (
+    !/^src-[a-f0-9-]{36}$/.test(sourceId) ||
+    parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port ||
+    (parsed.pathname !== "/" && parsed.pathname !== "") || parsed.search || parsed.hash ||
+    !ADX_CLUSTER_SUFFIXES.some((suffix) => hostname.endsWith(suffix)) ||
+    hostname.split(".").some((label) => !/^[a-z0-9-]{1,63}$/.test(label)) ||
+    ![database, table, timestampColumn].every((value) => /^[A-Za-z_][A-Za-z0-9_]{0,126}$/.test(value)) ||
+    (payloadColumn && !/^[A-Za-z_][A-Za-z0-9_]{0,126}$/.test(payloadColumn)) ||
+    !["whole-row", "payload-column"].includes(queryMode) ||
+    (queryMode === "payload-column" && !payloadColumn) ||
+    batchSize < 10 || batchSize > 1000 || !uuid.test(tenantId) || !uuid.test(clientId)
+  ) {
+    throw new Error("ADX_SOURCE_INVALID");
+  }
+  return {
+    sourceId,
+    clusterUrl: `https://${hostname}`,
+    database,
+    table,
+    timestampColumn,
+    payloadColumn,
+    queryMode,
+    batchSize,
+    tenantId,
+    clientId,
+    authMode,
+  };
+}
+
+async function adxVault() {
+  if (!adxSecretArn) throw new Error("ADX_NOT_AVAILABLE");
+  const result = await secrets.send(new GetSecretValueCommand({ SecretId: adxSecretArn }));
+  try {
+    const parsed = JSON.parse(result.SecretString || "{}");
+    return {
+      connections: parsed.connections && typeof parsed.connections === "object" && !Array.isArray(parsed.connections)
+        ? parsed.connections
+        : {},
+    };
+  } catch {
+    throw new Error("ADX_SECRET_INVALID");
+  }
+}
+
+function adxCredential(input) {
+  const tenantId = text(input.tenantId, 36).toLowerCase();
+  const clientId = text(input.clientId, 36).toLowerCase();
+  const clientSecret = typeof input.clientSecret === "string" ? input.clientSecret.slice(0, 2_000) : "";
+  const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+  if (!uuid.test(tenantId) || !uuid.test(clientId) || clientSecret.length < 16 || /[\u0000\r\n]/.test(clientSecret)) {
+    throw new Error("ADX_CREDENTIAL_INVALID");
+  }
+  return { tenantId, clientId, clientSecret };
+}
+
+async function saveAdxCredential(input) {
+  const source = adxSource(input);
+  if (source.authMode === "federated") {
+    await removeAdxCredential({ sourceId: source.sourceId });
+    return { configured: true, authMode: "federated" };
+  }
+  const credential = adxCredential(input);
+  const vault = await adxVault();
+  vault.connections[source.sourceId] = credential;
+  await secrets.send(new PutSecretValueCommand({
+    SecretId: adxSecretArn,
+    SecretString: JSON.stringify(vault),
+  }));
+  return { configured: true };
+}
+
+async function removeAdxCredential(input) {
+  const sourceId = text(input.sourceId, 80);
+  if (!/^src-[a-f0-9-]{36}$/.test(sourceId)) throw new Error("ADX_SOURCE_INVALID");
+  const vault = await adxVault();
+  const removed = Boolean(vault.connections[sourceId]);
+  delete vault.connections[sourceId];
+  await secrets.send(new PutSecretValueCommand({
+    SecretId: adxSecretArn,
+    SecretString: JSON.stringify(vault),
+  }));
+  return { removed };
+}
+
+async function boundedFetchJson(response, maximumBytes) {
+  const declared = Number(response.headers.get("content-length") || 0);
+  if (declared > maximumBytes) throw new Error("ADX_RESPONSE_TOO_LARGE");
+  const chunks = [];
+  let received = 0;
+  const reader = response.body?.getReader();
+  if (reader) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > maximumBytes) {
+        await reader.cancel();
+        throw new Error("ADX_RESPONSE_TOO_LARGE");
+      }
+      chunks.push(Buffer.from(value));
+    }
+  }
+  const body = Buffer.concat(chunks).toString("utf8");
+  try { return body ? JSON.parse(body) : {}; } catch { throw new Error("ADX_RESPONSE_INVALID"); }
+}
+
+function adxAuthority(clusterUrl, tenantId) {
+  const hostname = new URL(clusterUrl).hostname;
+  if (hostname.endsWith(".kusto.usgovcloudapi.net")) return `https://login.microsoftonline.us/${tenantId}/oauth2/v2.0/token`;
+  if (hostname.endsWith(".kusto.chinacloudapi.cn")) return `https://login.chinacloudapi.cn/${tenantId}/oauth2/v2.0/token`;
+  return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+}
+
+async function adxAccessToken(source, credential) {
+  const body = new URLSearchParams({
+    client_id: source.clientId,
+    grant_type: "client_credentials",
+    scope: `${source.clusterUrl}/.default`,
+  });
+  if (source.authMode === "federated") {
+    let assertion;
+    try {
+      assertion = await sts.send(new GetWebIdentityTokenCommand({
+        Audience: ["api://AzureADTokenExchange"],
+        DurationSeconds: 300,
+        SigningAlgorithm: "RS256",
+        Tags: [
+          { Key: "application", Value: "gatewatch" },
+          { Key: "purpose", Value: "adx-read" },
+        ],
+      }));
+    } catch (error) {
+      if (error?.name === "OutboundWebIdentityFederationDisabledException") {
+        throw new Error("OutboundWebIdentityFederationDisabledException");
+      }
+      throw error;
+    }
+    if (!assertion.WebIdentityToken) throw new Error("ADX_FEDERATED_ASSERTION_FAILED");
+    body.set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
+    body.set("client_assertion", assertion.WebIdentityToken);
+  } else {
+    body.set("client_secret", credential.clientSecret);
+  }
+  const response = await fetch(adxAuthority(source.clusterUrl, source.tenantId), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body,
+    redirect: "error",
+    signal: AbortSignal.timeout(12_000),
+  });
+  const payload = await boundedFetchJson(response, 256 * 1024);
+  if (!response.ok || typeof payload.access_token !== "string" || payload.access_token.length < 100) {
+    const error = new Error("ADX_AUTHENTICATION_FAILED");
+    error.statusCode = response.status;
+    throw error;
+  }
+  return payload.access_token;
+}
+
+function primaryAdxTable(payload) {
+  if (Array.isArray(payload)) {
+    return payload.find((frame) => frame?.FrameType === "DataTable" && frame?.TableKind === "PrimaryResult")
+      ?? payload.find((frame) => Array.isArray(frame?.Columns) && Array.isArray(frame?.Rows));
+  }
+  if (Array.isArray(payload?.Tables)) return payload.Tables[0];
+  return null;
+}
+
+function adxResponseHasErrors(payload) {
+  return Array.isArray(payload) && payload.some((frame) => frame?.FrameType === "DataSetCompletion" && frame?.HasErrors);
+}
+
+async function executeAdx(source, token, csl, properties, maximumBytes = 5 * 1024 * 1024) {
+  const response = await fetch(`${source.clusterUrl}/v2/rest/query`, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      "x-ms-app": "Gatewatch",
+      "x-ms-client-version": "gatewatch-adx/2.0",
+    },
+    body: JSON.stringify({ db: source.database, csl, properties: JSON.stringify(properties) }),
+    redirect: "error",
+    signal: AbortSignal.timeout(25_000),
+  });
+  const payload = await boundedFetchJson(response, maximumBytes);
+  if (!response.ok || adxResponseHasErrors(payload)) {
+    const error = new Error("ADX_QUERY_FAILED");
+    error.statusCode = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+async function adxCredentialFor(source) {
+  if (source.authMode === "federated") return null;
+  const vault = await adxVault();
+  const credential = vault.connections[source.sourceId];
+  if (!credential) throw new Error("ADX_CREDENTIAL_NOT_CONFIGURED");
+  if (credential.tenantId !== source.tenantId || credential.clientId !== source.clientId) {
+    throw new Error("ADX_CREDENTIAL_IDENTITY_MISMATCH");
+  }
+  return credential;
+}
+
+async function discoverAdxSchema(input) {
+  const source = adxSource(input);
+  const credential = await adxCredentialFor(source);
+  const token = await adxAccessToken(source, credential);
+  const payload = await executeAdx(source, token, `table("${source.table}") | getschema`, {
+    Options: { servertimeout: "00:00:15", truncationmaxrecords: 500, truncationmaxsize: 1024 * 1024 },
+  }, 1024 * 1024);
+  const table = primaryAdxTable(payload);
+  if (!table || !Array.isArray(table.Columns) || !Array.isArray(table.Rows)) {
+    throw new Error("ADX_RESULT_SCHEMA_INVALID");
+  }
+  const names = table.Columns.map((column) => text(column?.ColumnName ?? column?.name, 127));
+  const columns = table.Rows.slice(0, 500).flatMap((values, index) => {
+    if (!Array.isArray(values)) return [];
+    const row = Object.fromEntries(names.map((name, position) => [name, values[position] ?? null]));
+    const name = text(row.ColumnName ?? row.columnName, 127);
+    const type = text(row.ColumnType ?? row.DataType ?? row.columnType, 80);
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,126}$/.test(name)) return [];
+    return [{ name, type: type || "unknown", ordinal: Number(row.ColumnOrdinal ?? index) }];
+  });
+  if (!columns.length) throw new Error("ADX_RESULT_SCHEMA_INVALID");
+  const discoveredAt = new Date().toISOString();
+  return {
+    columns,
+    fingerprint: createHash("sha256").update(JSON.stringify(columns)).digest("hex"),
+    discoveredAt,
+  };
+}
+
+async function enqueueAdxSources(input) {
+  if (!adxSyncQueueUrl) throw new Error("ADX_QUEUE_NOT_CONFIGURED");
+  const sourceIds = [...new Set(Array.isArray(input.sourceIds) ? input.sourceIds : [])]
+    .filter((value) => typeof value === "string" && /^src-[a-f0-9-]{36}$/.test(value))
+    .slice(0, 2_000);
+  let queued = 0;
+  for (let offset = 0; offset < sourceIds.length; offset += 10) {
+    const entries = sourceIds.slice(offset, offset + 10).map((sourceId, index) => ({
+      Id: `${offset + index}`,
+      MessageBody: JSON.stringify({ sourceId }),
+      MessageGroupId: sourceId,
+    }));
+    const result = await sqs.send(new SendMessageBatchCommand({ QueueUrl: adxSyncQueueUrl, Entries: entries }));
+    if (result.Failed?.length) throw new Error("ADX_QUEUE_SEND_FAILED");
+    queued += result.Successful?.length ?? 0;
+  }
+  return { queued };
+}
+
+function adxRecords(payload, source) {
+  const table = primaryAdxTable(payload);
+  if (!table || !Array.isArray(table.Columns) || !Array.isArray(table.Rows)) {
+    throw new Error("ADX_RESULT_SCHEMA_INVALID");
+  }
+  const columns = table.Columns.map((column, index) => text(column?.ColumnName ?? column?.name, 127) || `column_${index + 1}`);
+  const records = [];
+  let skippedRows = 0;
+  let queriedRows = 0;
+  let nextCheckpoint = "";
+  let nextCursor = "";
+  for (const values of table.Rows.slice(0, source.batchSize)) {
+    queriedRows += 1;
+    if (!Array.isArray(values)) {
+      skippedRows += 1;
+      continue;
+    }
+    const row = Object.fromEntries(columns.map((column, index) => [column, values[index] ?? null]));
+    const cursorValue = text(row.GatewatchCursor ?? row.__gatewatch_cursor, 64).toLowerCase();
+    const timestampValue = source.queryMode === "payload-column"
+      ? row.GatewatchTimestamp
+      : row[source.timestampColumn];
+    const timestamp = typeof timestampValue === "string" && Number.isFinite(Date.parse(timestampValue))
+      ? new Date(timestampValue).toISOString()
+      : "";
+    if (timestamp && (timestamp > nextCheckpoint || (timestamp === nextCheckpoint && cursorValue > nextCursor))) {
+      nextCheckpoint = timestamp;
+      nextCursor = cursorValue;
+    }
+    if (source.queryMode === "payload-column") {
+      const raw = row.GatewatchPayload;
+      let parsed = raw;
+      if (typeof raw === "string") {
+        try { parsed = JSON.parse(raw); } catch { skippedRows += 1; continue; }
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        skippedRows += 1;
+        continue;
+      }
+      records.push(timestamp && !parsed[source.timestampColumn]
+        ? { ...parsed, [source.timestampColumn]: timestamp }
+        : parsed);
+    } else {
+      delete row.__gatewatch_cursor;
+      records.push(timestamp && !row.timestamp && !row.eventTime && !row.time
+        ? { ...row, timestamp }
+        : row);
+    }
+  }
+  return {
+    columns: columns.filter((column) => column !== "__gatewatch_cursor" && column !== "GatewatchCursor"),
+    records,
+    skippedRows,
+    queriedRows,
+    nextCheckpoint,
+    nextCursor,
+  };
+}
+
+async function queryAdx(input) {
+  const source = adxSource(input);
+  const mode = text(input.mode, 20) === "sync" ? "sync" : "preview";
+  const checkpointDate = new Date(text(input.checkpoint, 80));
+  const checkpointCursor = text(input.cursor, 64).toLowerCase();
+  if (mode === "sync" && !Number.isFinite(checkpointDate.getTime())) {
+    throw new Error("ADX_CHECKPOINT_INVALID");
+  }
+  if (mode === "sync" && !/^[a-f0-9]{0,64}$/.test(checkpointCursor)) {
+    throw new Error("ADX_CHECKPOINT_INVALID");
+  }
+  const credential = await adxCredentialFor(source);
+  const token = await adxAccessToken(source, credential);
+  const projection = source.queryMode === "payload-column"
+    ? `| project GatewatchTimestamp=${source.timestampColumn}, GatewatchCursor=__gatewatch_cursor, GatewatchPayload=${source.payloadColumn}`
+    : "";
+  const limit = mode === "preview" ? 5 : source.batchSize;
+  const query = mode === "sync"
+    ? `declare query_parameters(gatewatch_checkpoint:datetime, gatewatch_cursor:string, gatewatch_limit:long);\ntable("${source.table}")\n| extend __gatewatch_cursor=hash_sha256(tostring(pack_all()))\n| where ${source.timestampColumn} > gatewatch_checkpoint or (${source.timestampColumn} == gatewatch_checkpoint and __gatewatch_cursor > gatewatch_cursor)\n| order by ${source.timestampColumn} asc, __gatewatch_cursor asc\n| take gatewatch_limit\n${projection}`
+    : `table("${source.table}")\n| extend __gatewatch_cursor=hash_sha256(tostring(pack_all()))\n| order by ${source.timestampColumn} desc, __gatewatch_cursor desc\n| take ${limit}\n${projection}`;
+  const properties = {
+    Options: {
+      servertimeout: "00:00:20",
+      truncationmaxrecords: limit,
+      truncationmaxsize: 5 * 1024 * 1024,
+    },
+    Parameters: mode === "sync"
+      ? {
+          gatewatch_checkpoint: `datetime(${checkpointDate.toISOString()})`,
+          gatewatch_cursor: checkpointCursor,
+          gatewatch_limit: `long(${limit})`,
+        }
+      : {},
+  };
+  const payload = await executeAdx(source, token, query, properties);
+  const result = adxRecords(payload, source);
+  return {
+    columns: result.columns,
+    records: result.records,
+    rowCount: result.queriedRows,
+    skippedRows: result.skippedRows,
+    truncated: result.queriedRows >= limit,
+    nextCheckpoint: result.nextCheckpoint,
+    nextCursor: result.nextCursor,
+  };
+}
+
+function publicAdxError(error) {
+  const code = error instanceof Error ? error.message : "";
+  const status = Number(error?.statusCode ?? 0);
+  if (code === "ADX_NOT_AVAILABLE") return "Azure Data Explorer credentials are not enabled in this deployment.";
+  if (code === "ADX_CREDENTIAL_NOT_CONFIGURED") return "Save a Microsoft Entra application credential for this source.";
+  if (code === "ADX_CREDENTIAL_IDENTITY_MISMATCH") return "The stored Microsoft Entra credential does not match this source. Edit the source and replace the client secret.";
+  if (code === "ADX_CREDENTIAL_INVALID") return "Check the Microsoft Entra tenant, client ID, and client secret.";
+  if (code === "ADX_FEDERATED_ASSERTION_FAILED") return "AWS could not issue the short-lived workload identity assertion.";
+  if (code === "OutboundWebIdentityFederationDisabledException") return "Enable IAM Outbound Identity Federation in the Gatewatch AWS account.";
+  if (code === "ADX_QUEUE_NOT_CONFIGURED" || code === "ADX_QUEUE_SEND_FAILED") return "The distributed ADX synchronization queue is unavailable.";
+  if (code === "ADX_SOURCE_INVALID" || code === "ADX_CLUSTER_INVALID") return "The Azure Data Explorer source configuration is invalid.";
+  if (code === "ADX_RESPONSE_TOO_LARGE") return "Azure Data Explorer exceeded the five-megabyte response limit. Reduce the batch size.";
+  if (status === 401 || code === "ADX_AUTHENTICATION_FAILED") return "Microsoft Entra rejected the application credential.";
+  if (status === 403) return "The Microsoft Entra application needs viewer access to the configured ADX database.";
+  if (status === 404) return "The Azure Data Explorer cluster, database, or table was not found.";
+  if (status === 429) return "Azure Data Explorer rate-limited the request. Wait and retry.";
+  return "Azure Data Explorer could not complete the bounded read-only query.";
+}
+
 createServer(async (request, response) => {
   try {
     if (request.url === "/health") {
@@ -640,6 +1046,24 @@ createServer(async (request, response) => {
     }
     if (request.method === "POST" && request.url === "/test-source") {
       return json(response, 200, await testSource(await requestBody(request)));
+    }
+    if (request.method === "POST" && request.url === "/adx/config") {
+      return json(response, 200, await saveAdxCredential(await requestBody(request)));
+    }
+    if (request.method === "POST" && request.url === "/adx/remove") {
+      return json(response, 200, await removeAdxCredential(await requestBody(request)));
+    }
+    if (request.method === "POST" && request.url === "/adx/test") {
+      return json(response, 200, await queryAdx({ ...await requestBody(request), mode: "preview" }));
+    }
+    if (request.method === "POST" && request.url === "/adx/schema") {
+      return json(response, 200, await discoverAdxSchema(await requestBody(request)));
+    }
+    if (request.method === "POST" && request.url === "/adx/enqueue") {
+      return json(response, 200, await enqueueAdxSources(await requestBody(request)));
+    }
+    if (request.method === "POST" && request.url === "/adx/query") {
+      return json(response, 200, await queryAdx(await requestBody(request)));
     }
     if (request.method === "GET" && request.url === "/jira/status") {
       return json(response, 200, jiraStatus(await jiraSecret()));
@@ -672,9 +1096,12 @@ createServer(async (request, response) => {
     const isJiraRequest = request.url?.startsWith("/jira/");
     const isBedrockRequest = request.url?.startsWith("/bedrock/");
     const isAuditRequest = request.url?.startsWith("/audit/");
+    const isAdxRequest = request.url?.startsWith("/adx/");
     return json(response, 502, {
       error: isJiraRequest
         ? publicJiraError(error)
+        : isAdxRequest
+          ? publicAdxError(error)
         : isBedrockRequest
           ? "Bedrock analysis failed"
           : isAuditRequest

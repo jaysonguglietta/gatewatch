@@ -139,13 +139,26 @@ export function sameOrigin(request: Request) {
   }
 }
 
+let adminSchemaPromise: Promise<void> | null = null;
+
 export async function ensureAdminSchema() {
+  if (!adminSchemaPromise) adminSchemaPromise = initializeAdminSchema();
+  try {
+    await adminSchemaPromise;
+  } catch (error) {
+    adminSchemaPromise = null;
+    throw error;
+  }
+}
+
+async function initializeAdminSchema() {
   await env.DB.batch([
     env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS ingestion_sources (
         id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL DEFAULT 'default',
         name TEXT NOT NULL,
+        provider TEXT NOT NULL DEFAULT 'aws-s3',
         source_type TEXT NOT NULL,
         bucket_arn TEXT NOT NULL,
         bucket_name TEXT NOT NULL,
@@ -161,6 +174,26 @@ export async function ensureAdminSchema() {
         excluded_accounts TEXT NOT NULL DEFAULT '[]',
         included_regions TEXT NOT NULL DEFAULT '[]',
         config_resource_types TEXT NOT NULL DEFAULT '[]',
+        adx_cluster_url TEXT NOT NULL DEFAULT '',
+        adx_database TEXT NOT NULL DEFAULT '',
+        adx_table TEXT NOT NULL DEFAULT '',
+        adx_timestamp_column TEXT NOT NULL DEFAULT '',
+        adx_payload_column TEXT NOT NULL DEFAULT '',
+        adx_query_mode TEXT NOT NULL DEFAULT 'whole-row',
+        adx_batch_size INTEGER NOT NULL DEFAULT 500,
+        adx_tenant_id TEXT NOT NULL DEFAULT '',
+        adx_client_id TEXT NOT NULL DEFAULT '',
+        adx_auth_mode TEXT NOT NULL DEFAULT 'federated',
+        adx_schema TEXT NOT NULL DEFAULT '{}',
+        adx_schema_discovered_at TEXT NOT NULL DEFAULT '',
+        adx_mapping_validated_at TEXT NOT NULL DEFAULT '',
+        adx_cursor_value TEXT NOT NULL DEFAULT '',
+        adx_lease_owner TEXT NOT NULL DEFAULT '',
+        adx_lease_expires_at TEXT NOT NULL DEFAULT '',
+        freshness_sla_minutes INTEGER NOT NULL DEFAULT 30,
+        freshness_status TEXT NOT NULL DEFAULT 'unknown',
+        freshness_checked_at TEXT NOT NULL DEFAULT '',
+        freshness_lag_minutes INTEGER NOT NULL DEFAULT 0,
         retention_days INTEGER NOT NULL DEFAULT 365,
         status TEXT NOT NULL DEFAULT 'draft',
         test_summary TEXT NOT NULL DEFAULT '{}',
@@ -169,6 +202,21 @@ export async function ensureAdminSchema() {
         created_by TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+    ),
+    env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS ingestion_source_alerts (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL DEFAULT 'default',
+        source_id TEXT NOT NULL,
+        alert_type TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        severity TEXT NOT NULL DEFAULT 'high',
+        summary TEXT NOT NULL,
+        first_observed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_observed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        resolved_at TEXT NOT NULL DEFAULT '',
+        UNIQUE (workspace_id, source_id, alert_type)
       )`,
     ),
     env.DB.prepare(
@@ -206,6 +254,29 @@ export async function ensureAdminSchema() {
         first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         processed_at TEXT NOT NULL DEFAULT ''
       )`,
+    ),
+    env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS aws_evidence_records (
+        fingerprint TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL DEFAULT 'default',
+        source_id TEXT NOT NULL,
+        raw_object_id TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        evidence_class TEXT NOT NULL,
+        observed_at TEXT NOT NULL DEFAULT '',
+        account_id TEXT NOT NULL DEFAULT '',
+        region TEXT NOT NULL DEFAULT '',
+        resource_type TEXT NOT NULL DEFAULT '',
+        resource_id TEXT NOT NULL DEFAULT '',
+        event_name TEXT NOT NULL DEFAULT '',
+        disposition TEXT NOT NULL DEFAULT '',
+        normalized_payload TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+    ),
+    env.DB.prepare(
+      `CREATE INDEX IF NOT EXISTS aws_evidence_universal_search_idx
+       ON aws_evidence_records (workspace_id, observed_at, account_id, region, resource_id)`,
     ),
     env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS audit_events (
@@ -454,10 +525,55 @@ export async function ensureAdminSchema() {
        ON ingestion_runs (source_id, started_at)`,
     ),
     env.DB.prepare(
+      `CREATE INDEX IF NOT EXISTS ingestion_source_alerts_status_idx
+       ON ingestion_source_alerts (workspace_id, status, last_observed_at)`,
+    ),
+    env.DB.prepare(
       `CREATE INDEX IF NOT EXISTS audit_events_workspace_created_idx
        ON audit_events (workspace_id, created_at)`,
     ),
   ]);
+
+  const existingSourceColumns = new Set(
+    (
+      await env.DB.prepare("PRAGMA table_info(ingestion_sources)").all<{
+        name: string;
+      }>()
+    ).results.map((column) => column.name),
+  );
+  const sourceColumnMigrations = [
+    ["provider", "ALTER TABLE ingestion_sources ADD COLUMN provider TEXT NOT NULL DEFAULT 'aws-s3'"],
+    ["adx_cluster_url", "ALTER TABLE ingestion_sources ADD COLUMN adx_cluster_url TEXT NOT NULL DEFAULT ''"],
+    ["adx_database", "ALTER TABLE ingestion_sources ADD COLUMN adx_database TEXT NOT NULL DEFAULT ''"],
+    ["adx_table", "ALTER TABLE ingestion_sources ADD COLUMN adx_table TEXT NOT NULL DEFAULT ''"],
+    ["adx_timestamp_column", "ALTER TABLE ingestion_sources ADD COLUMN adx_timestamp_column TEXT NOT NULL DEFAULT ''"],
+    ["adx_payload_column", "ALTER TABLE ingestion_sources ADD COLUMN adx_payload_column TEXT NOT NULL DEFAULT ''"],
+    ["adx_query_mode", "ALTER TABLE ingestion_sources ADD COLUMN adx_query_mode TEXT NOT NULL DEFAULT 'whole-row'"],
+    ["adx_batch_size", "ALTER TABLE ingestion_sources ADD COLUMN adx_batch_size INTEGER NOT NULL DEFAULT 500"],
+    ["adx_tenant_id", "ALTER TABLE ingestion_sources ADD COLUMN adx_tenant_id TEXT NOT NULL DEFAULT ''"],
+    ["adx_client_id", "ALTER TABLE ingestion_sources ADD COLUMN adx_client_id TEXT NOT NULL DEFAULT ''"],
+    ["adx_auth_mode", "ALTER TABLE ingestion_sources ADD COLUMN adx_auth_mode TEXT NOT NULL DEFAULT 'client-secret'"],
+    ["adx_schema", "ALTER TABLE ingestion_sources ADD COLUMN adx_schema TEXT NOT NULL DEFAULT '{}'"],
+    ["adx_schema_discovered_at", "ALTER TABLE ingestion_sources ADD COLUMN adx_schema_discovered_at TEXT NOT NULL DEFAULT ''"],
+    ["adx_mapping_validated_at", "ALTER TABLE ingestion_sources ADD COLUMN adx_mapping_validated_at TEXT NOT NULL DEFAULT ''"],
+    ["adx_cursor_value", "ALTER TABLE ingestion_sources ADD COLUMN adx_cursor_value TEXT NOT NULL DEFAULT ''"],
+    ["adx_lease_owner", "ALTER TABLE ingestion_sources ADD COLUMN adx_lease_owner TEXT NOT NULL DEFAULT ''"],
+    ["adx_lease_expires_at", "ALTER TABLE ingestion_sources ADD COLUMN adx_lease_expires_at TEXT NOT NULL DEFAULT ''"],
+    ["freshness_sla_minutes", "ALTER TABLE ingestion_sources ADD COLUMN freshness_sla_minutes INTEGER NOT NULL DEFAULT 30"],
+    ["freshness_status", "ALTER TABLE ingestion_sources ADD COLUMN freshness_status TEXT NOT NULL DEFAULT 'unknown'"],
+    ["freshness_checked_at", "ALTER TABLE ingestion_sources ADD COLUMN freshness_checked_at TEXT NOT NULL DEFAULT ''"],
+    ["freshness_lag_minutes", "ALTER TABLE ingestion_sources ADD COLUMN freshness_lag_minutes INTEGER NOT NULL DEFAULT 0"],
+  ] as const;
+  for (const [column, statement] of sourceColumnMigrations) {
+    if (existingSourceColumns.has(column)) continue;
+    try {
+      await env.DB.prepare(statement).run();
+    } catch (error) {
+      if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) {
+        throw error;
+      }
+    }
+  }
 
   // Runtime schema initialization must also upgrade databases created by older
   // releases. CREATE TABLE IF NOT EXISTS preserves those tables unchanged, so
@@ -598,6 +714,59 @@ export async function deliverAuditOutbox(limit = 20) {
   return outcome;
 }
 
+export type AuditEntry = {
+  actor: string;
+  action: string;
+  targetType: string;
+  targetId: string;
+  summary: string;
+  metadata?: Record<string, unknown>;
+};
+
+export async function auditMany(entries: AuditEntry[]) {
+  if (!entries.length) return;
+  await ensureAdminSchema();
+  const statements: ReturnType<(typeof env.DB)["prepare"]>[] = [];
+  for (const entry of entries.slice(0, 5_000)) {
+    const id = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    const actor = entry.actor;
+    const metadata = entry.metadata ?? {};
+    const metadataJson = JSON.stringify(metadata);
+    const boundedMetadata = metadataJson.length <= 8_000
+      ? metadata
+      : { truncated: true, originalBytes: metadataJson.length };
+    const summary = entry.summary.slice(0, 800);
+    const payload = JSON.stringify({
+      schemaVersion: "1.0",
+      id,
+      workspaceId: "default",
+      actorSubject: actor,
+      action: entry.action,
+      targetType: entry.targetType,
+      targetId: entry.targetId,
+      summary,
+      metadata: boundedMetadata,
+      createdAt,
+    });
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO audit_events
+          (id, actor, action, target_type, target_id, summary, metadata, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(id, actor, entry.action, entry.targetType, entry.targetId, summary, JSON.stringify(boundedMetadata), createdAt),
+      env.DB.prepare(
+        `INSERT INTO audit_archive_outbox (event_id, payload, created_at)
+         VALUES (?, ?, ?)`,
+      ).bind(id, payload, createdAt),
+    );
+  }
+  for (let offset = 0; offset < statements.length; offset += 100) {
+    await env.DB.batch(statements.slice(offset, offset + 100));
+  }
+  await deliverAuditOutbox().catch(() => undefined);
+}
+
 export async function audit(
   actor: string,
   action: string,
@@ -606,47 +775,7 @@ export async function audit(
   summary: string,
   metadata: Record<string, unknown> = {},
 ) {
-  await ensureAdminSchema();
-  const id = crypto.randomUUID();
-  const createdAt = new Date().toISOString();
-  const metadataJson = JSON.stringify(metadata);
-  const boundedMetadata = metadataJson.length <= 8_000
-    ? metadata
-    : { truncated: true, originalBytes: metadataJson.length };
-  const event = {
-    schemaVersion: "1.0",
-    id,
-    workspaceId: "default",
-    actorSubject: actor,
-    action,
-    targetType,
-    targetId,
-    summary: summary.slice(0, 800),
-    metadata: boundedMetadata,
-    createdAt,
-  };
-  const payload = JSON.stringify(event);
-  await env.DB.batch([
-    env.DB.prepare(
-    `INSERT INTO audit_events
-      (id, actor, action, target_type, target_id, summary, metadata, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(
-      id,
-      actor,
-      action,
-      targetType,
-      targetId,
-      summary.slice(0, 800),
-      JSON.stringify(boundedMetadata),
-      createdAt,
-    ),
-    env.DB.prepare(
-      `INSERT INTO audit_archive_outbox (event_id, payload, created_at)
-       VALUES (?, ?, ?)`,
-    ).bind(id, payload, createdAt),
-  ]);
-  await deliverAuditOutbox().catch(() => undefined);
+  await auditMany([{ actor, action, targetType, targetId, summary, metadata }]);
 }
 
 export type NotificationPolicy = {
