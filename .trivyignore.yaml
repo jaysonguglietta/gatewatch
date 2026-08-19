@@ -1,4 +1,14 @@
 misconfigurations:
+  - id: AWS-0135
+    paths:
+      - "infrastructure/cloudformation/gatewatch-aws-web.yaml"
+    expired_at: 2027-02-19
+    statement: >-
+      SEC-EX-002: ADX synchronization messages contain only opaque source IDs,
+      dispatch metadata, and retry controls; credentials and AWS evidence never
+      enter either queue. Both queues use the AWS-managed SQS KMS key. Owner:
+      Gatewatch security maintainer. Move to a dedicated customer-managed key
+      when per-queue key administration or cross-account delivery is required.
   - id: AWS-0104
     paths:
       - "infrastructure/cloudformation/gatewatch-aws-web.yaml"

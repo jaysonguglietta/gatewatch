@@ -437,7 +437,7 @@ Resources:
       FifoQueue: true
       ContentBasedDeduplication: true
       MessageRetentionPeriod: 1209600
-      SqsManagedSseEnabled: true
+      KmsMasterKeyId: alias/aws/sqs
 
   AzureDataExplorerSyncQueue:
     Type: AWS::SQS::Queue
@@ -448,7 +448,7 @@ Resources:
       VisibilityTimeout: 360
       MessageRetentionPeriod: 345600
       ReceiveMessageWaitTimeSeconds: 20
-      SqsManagedSseEnabled: true
+      KmsMasterKeyId: alias/aws/sqs
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt AzureDataExplorerSyncDeadLetterQueue.Arn
         maxReceiveCount: 5
@@ -835,8 +835,11 @@ Resources:
 
   AwsBridgeRuntimeRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks: [W3037]
     Properties:
-      Description: AWS permissions available only to the isolated Gatewatch bridge container.
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
