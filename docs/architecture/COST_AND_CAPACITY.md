@@ -33,6 +33,7 @@
 | CloudWatch | Log bytes and retention | Structured concise logs, 90-day hot retention |
 | NAT/data transfer | Workloads placed behind NAT | Prefer VPC endpoints where justified |
 | Bedrock analysis | Input/output tokens on uncached analyst requests | Nova 2 Lite, compact evidence, 4,000-token output cap, seven-day cache, per-user/workspace daily budgets |
+| Azure Data Explorer | Query frequency, scanned extents, returned rows, cross-cloud egress | Five-minute polling, timestamp predicate, 1,000-row/5 MB cap, source filters |
 
 ## Capacity controls
 
@@ -68,6 +69,8 @@ Scale or optimize when:
 - paginated findings queries exceed the interactive latency objective;
 - manifests approach the 8 MB application limit;
 - one account worker regularly approaches 15 minutes.
+- an ADX source repeatedly returns a full batch, indicating checkpoint lag;
+- ADX query duration, throttling, or cross-cloud transfer grows unexpectedly.
 
 At very large scale, write a compact coverage summary plus paginated target
 manifests instead of increasing the 8 MB limit.

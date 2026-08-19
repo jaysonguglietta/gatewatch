@@ -431,6 +431,19 @@ Resources:
         - Key: DataClassification
           Value: Credential
 
+  AzureDataExplorerCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Per-source Microsoft Entra credentials for read-only Azure Data Explorer queries
+      SecretString: '{"connections":{}}'
+      Tags:
+        - Key: Application
+          Value: Gatewatch
+        - Key: DataClassification
+          Value: Credential
+
   GatewatchAiGuardrail:
     Type: AWS::Bedrock::Guardrail
     Properties:
@@ -772,6 +785,12 @@ Resources:
                   - secretsmanager:GetSecretValue
                   - secretsmanager:PutSecretValue
                 Resource: !Ref JiraIntegrationSecret
+              - Sid: ManageAzureDataExplorerCredentials
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:PutSecretValue
+                Resource: !Ref AzureDataExplorerCredentialsSecret
               - Sid: InvokeApprovedGatewatchModel
                 Effect: Allow
                 Action: bedrock:InvokeModel
@@ -1064,7 +1083,8 @@ Resources:
                 '${OAuth2ProxyImage}' \
                 '${ApplicationImageRef}' \
                 '/tmp/gatewatch-web.tar.gz' \
-                '${ImageArtifactSha256}'
+                '${ImageArtifactSha256}' \
+                '${AzureDataExplorerCredentialsSecret}'
 
   AuditOutboxDeliveryAssociation:
     Type: AWS::SSM::Association
@@ -1093,6 +1113,33 @@ Resources:
                 --max-time 60 \
                 http://127.0.0.1:3000/api/internal/audit-outbox >/dev/null
 
+  AzureDataExplorerSyncAssociation:
+    Type: AWS::SSM::Association
+    DependsOn: WebDeploymentAssociation
+    Properties:
+      Name: AWS-RunShellScript
+      AssociationName: !Sub gatewatch-${EnvironmentName}-adx-sync
+      ApplyOnlyAtCronInterval: true
+      ScheduleExpression: rate(5 minutes)
+      Targets:
+        - Key: InstanceIds
+          Values:
+            - !Ref WebInstance
+      Parameters:
+        commands:
+          - !Sub |
+              set -euo pipefail
+              TOKEN=$(aws secretsmanager get-secret-value \
+                --region '${AWS::Region}' \
+                --secret-id '${AwsBridgeSecret}' \
+                --query SecretString \
+                --output text)
+              curl --fail --silent --show-error \
+                --request POST \
+                --header "Authorization: Bearer $TOKEN" \
+                --max-time 180 \
+                http://127.0.0.1:3000/api/internal/adx-sync >/dev/null
+
   AuditOutboxFailureMetric:
     Type: AWS::Logs::MetricFilter
     Properties:
@@ -1109,6 +1156,30 @@ Resources:
       AlarmDescription: Gatewatch could not archive one or more application audit events.
       Namespace: Gatewatch/Security
       MetricName: AuditOutboxDeliveryFailures
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  AzureDataExplorerSyncFailureMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      FilterPattern: '{ $.event = "adx_sync_failed" }'
+      MetricTransformations:
+        - MetricNamespace: Gatewatch/Security
+          MetricName: AzureDataExplorerSyncFailures
+          MetricValue: "1"
+
+  AzureDataExplorerSyncFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: One or more Azure Data Explorer sources failed to synchronize.
+      Namespace: Gatewatch/Security
+      MetricName: AzureDataExplorerSyncFailures
       Statistic: Sum
       Period: 300
       EvaluationPeriods: 1
@@ -1277,6 +1348,9 @@ Outputs:
   JiraIntegrationSecretArn:
     Description: Secret containing the Jira Cloud integration configuration.
     Value: !Ref JiraIntegrationSecret
+  AzureDataExplorerCredentialsSecretArn:
+    Description: Retained secret containing per-source Microsoft Entra client credentials.
+    Value: !Ref AzureDataExplorerCredentialsSecret
   BedrockModelId:
     Description: Approved Bedrock inference profile used by Gatewatch.
     Value: !Ref BedrockModelId

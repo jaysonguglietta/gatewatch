@@ -38,6 +38,7 @@ const migrationFiles = [
   "db/postgres/0004_bedrock_ai_analyst.sql",
   "db/postgres/0005_security_governance.sql",
   "db/postgres/0006_exposure_operations.sql",
+  "db/postgres/0007_azure_data_explorer_sources.sql",
 ];
 
 for (const file of migrationFiles) {

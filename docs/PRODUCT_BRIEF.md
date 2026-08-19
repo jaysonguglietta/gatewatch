@@ -1,5 +1,30 @@
 # Gatewatch AWS ingestion product brief
 
+## Azure Data Explorer source release (August 2026)
+
+- **Target users:** central security teams that aggregate AWS logs from hundreds
+  of accounts into Azure Data Explorer while operating Gatewatch in AWS.
+- **Core problem:** analysts need ADX-hosted AWS evidence in the same deduplicated,
+  security-group-centric workflow as S3 evidence without copying credentials to
+  the browser or allowing arbitrary KQL.
+- **Primary workflow:** choose ADX, specify cluster/database/table and AWS evidence
+  type, store a source-specific Entra credential, test, preview, activate, backfill,
+  and continuously synchronize from a timestamp checkpoint.
+- **Main screens:** the existing administration source list, three-step source
+  wizard, bounded row preview, connection checks, source health, and run history.
+- **Key models:** provider-aware ingestion source, credential reference, fixed
+  query mapping, checkpoint, normalized evidence record, and ingestion run.
+- **Edge cases:** malicious cluster URLs or identifiers, invalid/rotated secrets,
+  empty tables, malformed JSON payloads, duplicate rows, late data, equal
+  timestamps, response truncation, rate limits, and transient cross-cloud errors.
+- **Assumptions:** source rows preserve recognizable AWS fields; the Entra app has
+  database viewer access; current security-group state remains authoritative
+  from the AWS inventory collector.
+- **Done:** administrators can configure, test, preview, activate, manually sync,
+  backfill, pause, and delete ADX sources; active sources poll every five minutes;
+  results are bounded, normalized, filtered, deduplicated, checkpointed, and
+  audited; secrets remain in the isolated AWS bridge credential vault.
+
 ## Exposure operations release (August 2026)
 
 - **Target users:** central cloud-security teams, application owners, incident

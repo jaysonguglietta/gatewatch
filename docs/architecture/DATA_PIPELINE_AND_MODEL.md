@@ -40,6 +40,13 @@ aggregate `state` field by itself.
 
 ## Data flow
 
+S3 sources arrive through object events. Azure Data Explorer sources use a
+timestamp checkpoint and the private scheduled sync endpoint. Both paths emit
+the same bounded `aws_evidence_records` model, source lineage, and stable
+fingerprints. ADX checkpoints combine the source timestamp with a deterministic
+SHA-256 row hash so equal-timestamp batches resume without gaps; neither path is
+allowed to overwrite raw evidence.
+
 ```mermaid
 sequenceDiagram
   autonumber
@@ -73,6 +80,12 @@ sequenceDiagram
   S3-->>Queue: manifest event
   Ingest->>DB: finalize run and coverage
 ```
+
+For ADX, the AWS bridge obtains a short-lived Entra token from a per-source
+Secrets Manager entry, executes a generated read-only KQL query, and returns at
+most 1,000 rows/5 MB. The application validates the selected AWS record shape,
+applies account/Region scope, inserts duplicate-safe normalized evidence, and
+only then advances the source checkpoint. Preview queries never persist rows.
 
 ## PostgreSQL entities
 

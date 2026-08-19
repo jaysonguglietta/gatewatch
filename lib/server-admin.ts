@@ -146,6 +146,7 @@ export async function ensureAdminSchema() {
         id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL DEFAULT 'default',
         name TEXT NOT NULL,
+        provider TEXT NOT NULL DEFAULT 'aws-s3',
         source_type TEXT NOT NULL,
         bucket_arn TEXT NOT NULL,
         bucket_name TEXT NOT NULL,
@@ -161,6 +162,16 @@ export async function ensureAdminSchema() {
         excluded_accounts TEXT NOT NULL DEFAULT '[]',
         included_regions TEXT NOT NULL DEFAULT '[]',
         config_resource_types TEXT NOT NULL DEFAULT '[]',
+        adx_cluster_url TEXT NOT NULL DEFAULT '',
+        adx_database TEXT NOT NULL DEFAULT '',
+        adx_table TEXT NOT NULL DEFAULT '',
+        adx_timestamp_column TEXT NOT NULL DEFAULT '',
+        adx_payload_column TEXT NOT NULL DEFAULT '',
+        adx_query_mode TEXT NOT NULL DEFAULT 'whole-row',
+        adx_batch_size INTEGER NOT NULL DEFAULT 500,
+        adx_tenant_id TEXT NOT NULL DEFAULT '',
+        adx_client_id TEXT NOT NULL DEFAULT '',
+        adx_cursor_value TEXT NOT NULL DEFAULT '',
         retention_days INTEGER NOT NULL DEFAULT 365,
         status TEXT NOT NULL DEFAULT 'draft',
         test_summary TEXT NOT NULL DEFAULT '{}',
@@ -206,6 +217,29 @@ export async function ensureAdminSchema() {
         first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         processed_at TEXT NOT NULL DEFAULT ''
       )`,
+    ),
+    env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS aws_evidence_records (
+        fingerprint TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL DEFAULT 'default',
+        source_id TEXT NOT NULL,
+        raw_object_id TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        evidence_class TEXT NOT NULL,
+        observed_at TEXT NOT NULL DEFAULT '',
+        account_id TEXT NOT NULL DEFAULT '',
+        region TEXT NOT NULL DEFAULT '',
+        resource_type TEXT NOT NULL DEFAULT '',
+        resource_id TEXT NOT NULL DEFAULT '',
+        event_name TEXT NOT NULL DEFAULT '',
+        disposition TEXT NOT NULL DEFAULT '',
+        normalized_payload TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+    ),
+    env.DB.prepare(
+      `CREATE INDEX IF NOT EXISTS aws_evidence_universal_search_idx
+       ON aws_evidence_records (workspace_id, observed_at, account_id, region, resource_id)`,
     ),
     env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS audit_events (
@@ -458,6 +492,37 @@ export async function ensureAdminSchema() {
        ON audit_events (workspace_id, created_at)`,
     ),
   ]);
+
+  const existingSourceColumns = new Set(
+    (
+      await env.DB.prepare("PRAGMA table_info(ingestion_sources)").all<{
+        name: string;
+      }>()
+    ).results.map((column) => column.name),
+  );
+  const sourceColumnMigrations = [
+    ["provider", "ALTER TABLE ingestion_sources ADD COLUMN provider TEXT NOT NULL DEFAULT 'aws-s3'"],
+    ["adx_cluster_url", "ALTER TABLE ingestion_sources ADD COLUMN adx_cluster_url TEXT NOT NULL DEFAULT ''"],
+    ["adx_database", "ALTER TABLE ingestion_sources ADD COLUMN adx_database TEXT NOT NULL DEFAULT ''"],
+    ["adx_table", "ALTER TABLE ingestion_sources ADD COLUMN adx_table TEXT NOT NULL DEFAULT ''"],
+    ["adx_timestamp_column", "ALTER TABLE ingestion_sources ADD COLUMN adx_timestamp_column TEXT NOT NULL DEFAULT ''"],
+    ["adx_payload_column", "ALTER TABLE ingestion_sources ADD COLUMN adx_payload_column TEXT NOT NULL DEFAULT ''"],
+    ["adx_query_mode", "ALTER TABLE ingestion_sources ADD COLUMN adx_query_mode TEXT NOT NULL DEFAULT 'whole-row'"],
+    ["adx_batch_size", "ALTER TABLE ingestion_sources ADD COLUMN adx_batch_size INTEGER NOT NULL DEFAULT 500"],
+    ["adx_tenant_id", "ALTER TABLE ingestion_sources ADD COLUMN adx_tenant_id TEXT NOT NULL DEFAULT ''"],
+    ["adx_client_id", "ALTER TABLE ingestion_sources ADD COLUMN adx_client_id TEXT NOT NULL DEFAULT ''"],
+    ["adx_cursor_value", "ALTER TABLE ingestion_sources ADD COLUMN adx_cursor_value TEXT NOT NULL DEFAULT ''"],
+  ] as const;
+  for (const [column, statement] of sourceColumnMigrations) {
+    if (existingSourceColumns.has(column)) continue;
+    try {
+      await env.DB.prepare(statement).run();
+    } catch (error) {
+      if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) {
+        throw error;
+      }
+    }
+  }
 
   // Runtime schema initialization must also upgrade databases created by older
   // releases. CREATE TABLE IF NOT EXISTS preserves those tables unchanged, so

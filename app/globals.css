@@ -11311,6 +11311,38 @@ td small {
   gap: 7px;
 }
 
+.adx-preview {
+  background: #07131f;
+  border: 1px solid #173551;
+  border-radius: 10px;
+  color: #d8e8f7;
+  margin: 12px 0;
+  overflow: hidden;
+}
+
+.adx-preview > div {
+  align-items: center;
+  background: #0d2031;
+  border-bottom: 1px solid #173551;
+  display: flex;
+  justify-content: space-between;
+  padding: 9px 12px;
+}
+
+.adx-preview > div strong { font-size: 11px; }
+.adx-preview > div span { color: #9eb7cc; font-size: 9px; }
+
+.adx-preview pre {
+  font-size: 9px;
+  line-height: 1.55;
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .button-danger {
   border: 1px solid #efc5c6;
   background: white;

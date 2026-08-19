@@ -72,9 +72,12 @@ export type SourceStatus =
   | "degraded"
   | "paused";
 
+export type SourceProvider = "aws-s3" | "azure-data-explorer";
+
 export type IngestionSource = {
   id: string;
   name: string;
+  provider: SourceProvider;
   sourceType: SourceType;
   bucketArn: string;
   bucketName: string;
@@ -90,6 +93,16 @@ export type IngestionSource = {
   excludedAccounts: string[];
   includedRegions: string[];
   configResourceTypes: string[];
+  adxClusterUrl: string;
+  adxDatabase: string;
+  adxTable: string;
+  adxTimestampColumn: string;
+  adxPayloadColumn: string;
+  adxQueryMode: "whole-row" | "payload-column";
+  adxBatchSize: number;
+  adxTenantId: string;
+  adxClientId: string;
+  adxCursorValue: string;
   retentionDays: number;
   status: SourceStatus;
   testSummary?: ConnectionTestSummary;
@@ -160,12 +173,49 @@ export function normalizePrefix(value: string) {
   return value.replace(/^\/+/, "").replace(/\/{2,}/g, "/");
 }
 
+const adxSuffixes = [
+  ".kusto.windows.net",
+  ".kusto.usgovcloudapi.net",
+  ".kusto.chinacloudapi.cn",
+] as const;
+
+export function normalizeAdxClusterUrl(value: unknown) {
+  if (typeof value !== "string") return "";
+  try {
+    const url = new URL(value.trim());
+    const hostname = url.hostname.toLowerCase();
+    if (
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      url.port ||
+      (url.pathname !== "/" && url.pathname !== "") ||
+      url.search ||
+      url.hash ||
+      !adxSuffixes.some((suffix) => hostname.endsWith(suffix)) ||
+      hostname.split(".").some((label) => !/^[a-z0-9-]{1,63}$/.test(label))
+    ) {
+      return "";
+    }
+    return `https://${hostname}`;
+  } catch {
+    return "";
+  }
+}
+
+export function validAdxIdentifier(value: string) {
+  return /^[A-Za-z_][A-Za-z0-9_]{0,126}$/.test(value);
+}
+
 export function validateSourceInput(value: unknown) {
   const record =
     value && typeof value === "object"
       ? (value as Record<string, unknown>)
       : {};
   const sourceType = cleanText(record.sourceType, 30) as SourceType;
+  const provider: SourceProvider = cleanText(record.provider, 30) === "azure-data-explorer"
+    ? "azure-data-explorer"
+    : "aws-s3";
   const bucketArn = cleanText(record.bucketArn, 300);
   const roleArn = cleanText(record.roleArn, 300);
   const region = cleanText(record.region, 40);
@@ -175,6 +225,15 @@ export function validateSourceInput(value: unknown) {
   const backfillStart = cleanText(record.backfillStart, 20);
   const externalId = cleanText(record.externalId, 128);
   const objectPrefix = normalizePrefix(cleanText(record.objectPrefix, 900));
+  const adxClusterUrl = normalizeAdxClusterUrl(record.adxClusterUrl);
+  const adxDatabase = cleanText(record.adxDatabase, 127);
+  const adxTable = cleanText(record.adxTable, 127);
+  const adxTimestampColumn = cleanText(record.adxTimestampColumn, 127);
+  const adxPayloadColumn = cleanText(record.adxPayloadColumn, 127);
+  const adxQueryMode = cleanText(record.adxQueryMode, 30);
+  const adxBatchSize = Math.trunc(Number(record.adxBatchSize) || 500);
+  const adxTenantId = cleanText(record.adxTenantId, 36).toLowerCase();
+  const adxClientId = cleanText(record.adxClientId, 36).toLowerCase();
   const retentionDays = Math.min(
     3650,
     Math.max(30, Math.trunc(Number(record.retentionDays) || 365)),
@@ -187,38 +246,59 @@ export function validateSourceInput(value: unknown) {
   if (!sourceTypes.includes(sourceType)) {
     errors.push("Choose a supported AWS evidence source.");
   }
-  if (!/^arn:(aws|aws-us-gov|aws-cn):s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucketArn)) {
-    errors.push("Enter a valid S3 bucket ARN.");
-  }
-  if (!/^[a-z]{2}(-gov)?-[a-z]+-\d$/.test(region)) {
-    errors.push("Enter a valid AWS region.");
-  }
-  if (
-    !/^arn:(aws|aws-us-gov|aws-cn):iam::\d{12}:role\/[\w+=,.@/-]{1,512}$/.test(
-      roleArn,
-    )
-  ) {
-    errors.push("Enter a valid IAM role ARN.");
-  }
-  if (!/^[A-Za-z0-9+=,.@:/_-]{16,128}$/.test(externalId)) {
-    errors.push("Use a 16–128 character external ID without whitespace or control characters.");
-  }
-  if (
-    /[\u0000-\u001f\u007f]/.test(objectPrefix)
-    || objectPrefix.includes("\\")
-  ) {
-    errors.push("The S3 prefix cannot contain control characters or backslashes.");
-  }
-  if (organizationId && !/^o-[a-z0-9]{10,32}$/.test(organizationId)) {
-    errors.push("Enter a valid AWS Organizations ID or leave it blank.");
-  }
-  if (
-    kmsKeyArn &&
-    !/^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:\d{12}:key\/[a-f0-9-]{20,}$/.test(
-      kmsKeyArn,
-    )
-  ) {
-    errors.push("Enter a valid KMS key ARN or leave it blank.");
+  if (provider === "aws-s3") {
+    if (!/^arn:(aws|aws-us-gov|aws-cn):s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucketArn)) {
+      errors.push("Enter a valid S3 bucket ARN.");
+    }
+    if (!/^[a-z]{2}(-gov)?-[a-z]+-\d$/.test(region)) {
+      errors.push("Enter a valid AWS region.");
+    }
+    if (!/^arn:(aws|aws-us-gov|aws-cn):iam::\d{12}:role\/[\w+=,.@/-]{1,512}$/.test(roleArn)) {
+      errors.push("Enter a valid IAM role ARN.");
+    }
+    if (!/^[A-Za-z0-9+=,.@:/_-]{16,128}$/.test(externalId)) {
+      errors.push("Use a 16–128 character external ID without whitespace or control characters.");
+    }
+    if (/[\u0000-\u001f\u007f]/.test(objectPrefix) || objectPrefix.includes("\\")) {
+      errors.push("The S3 prefix cannot contain control characters or backslashes.");
+    }
+    if (organizationId && !/^o-[a-z0-9]{10,32}$/.test(organizationId)) {
+      errors.push("Enter a valid AWS Organizations ID or leave it blank.");
+    }
+    if (kmsKeyArn && !/^arn:(aws|aws-us-gov|aws-cn):kms:[a-z0-9-]+:\d{12}:key\/[a-f0-9-]{20,}$/.test(kmsKeyArn)) {
+      errors.push("Enter a valid KMS key ARN or leave it blank.");
+    }
+  } else {
+    if (!adxClusterUrl) {
+      errors.push("Enter an HTTPS Azure Data Explorer cluster URL on an approved Kusto domain.");
+    }
+    for (const [label, identifier] of [
+      ["database", adxDatabase],
+      ["table", adxTable],
+      ["timestamp column", adxTimestampColumn],
+    ] as const) {
+      if (!validAdxIdentifier(identifier)) {
+        errors.push(`Use a simple Kusto identifier for the ${label}: letters, numbers, and underscores only.`);
+      }
+    }
+    if (adxPayloadColumn && !validAdxIdentifier(adxPayloadColumn)) {
+      errors.push("Use a simple Kusto identifier for the payload column.");
+    }
+    if (!new Set(["whole-row", "payload-column"]).has(adxQueryMode)) {
+      errors.push("Choose a supported Azure Data Explorer row mapping.");
+    }
+    if (adxQueryMode === "payload-column" && !adxPayloadColumn) {
+      errors.push("Choose the dynamic or JSON payload column.");
+    }
+    if (adxBatchSize < 10 || adxBatchSize > 1000) {
+      errors.push("Choose an Azure Data Explorer batch size between 10 and 1,000 rows.");
+    }
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(adxTenantId)) {
+      errors.push("Enter a valid Microsoft Entra tenant ID.");
+    }
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(adxClientId)) {
+      errors.push("Enter a valid Microsoft Entra application (client) ID.");
+    }
   }
   if (!["continuous", "backfill", "both"].includes(ingestionMode)) {
     errors.push("Choose a supported ingestion mode.");
@@ -234,15 +314,16 @@ export function validateSourceInput(value: unknown) {
     errors,
     source: {
       name: cleanText(record.name, 120),
+      provider,
       sourceType,
-      bucketArn,
-      bucketName: bucketNameFromArn(bucketArn),
-      region,
-      objectPrefix,
-      roleArn,
-      externalId,
-      kmsKeyArn,
-      organizationId,
+      bucketArn: provider === "aws-s3" ? bucketArn : "",
+      bucketName: provider === "aws-s3" ? bucketNameFromArn(bucketArn) : "",
+      region: provider === "aws-s3" ? region : "",
+      objectPrefix: provider === "aws-s3" ? objectPrefix : "",
+      roleArn: provider === "aws-s3" ? roleArn : "",
+      externalId: provider === "aws-s3" ? externalId : "",
+      kmsKeyArn: provider === "aws-s3" ? kmsKeyArn : "",
+      organizationId: provider === "aws-s3" ? organizationId : "",
       ingestionMode: ingestionMode as IngestionSource["ingestionMode"],
       backfillStart,
       includedAccounts: cleanStringList(record.includedAccounts, 500, 12),
@@ -258,6 +339,16 @@ export function validateSourceInput(value: unknown) {
             ? cleanStringList(record.configResourceTypes, 100, 160)
             : defaultConfigResourceTypes
           : [],
+      adxClusterUrl: provider === "azure-data-explorer" ? adxClusterUrl : "",
+      adxDatabase: provider === "azure-data-explorer" ? adxDatabase : "",
+      adxTable: provider === "azure-data-explorer" ? adxTable : "",
+      adxTimestampColumn: provider === "azure-data-explorer" ? adxTimestampColumn : "",
+      adxPayloadColumn: provider === "azure-data-explorer" ? adxPayloadColumn : "",
+      adxQueryMode: (provider === "azure-data-explorer" ? adxQueryMode : "whole-row") as IngestionSource["adxQueryMode"],
+      adxBatchSize: provider === "azure-data-explorer" ? adxBatchSize : 500,
+      adxTenantId: provider === "azure-data-explorer" ? adxTenantId : "",
+      adxClientId: provider === "azure-data-explorer" ? adxClientId : "",
+      adxCursorValue: "",
       retentionDays,
     },
   };

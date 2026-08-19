@@ -47,8 +47,10 @@ import {
   sourceTypeDefinitions,
   type ConnectionTestSummary,
   type IngestionSource,
+  type SourceProvider,
   type SourceType,
 } from "../lib/admin-sources";
+import type { AdxPreview } from "../lib/azure-data-explorer";
 import type { JiraStatus } from "../lib/jira-bridge";
 
 type AdminTab =
@@ -141,6 +143,7 @@ type AiAnalystStatus = {
 
 type SourceDraft = {
   name: string;
+  provider: SourceProvider;
   sourceType: SourceType;
   bucketArn: string;
   region: string;
@@ -155,11 +158,23 @@ type SourceDraft = {
   excludedAccounts: string;
   includedRegions: string;
   configResourceTypes: string[];
+  adxClusterUrl: string;
+  adxDatabase: string;
+  adxTable: string;
+  adxTimestampColumn: string;
+  adxPayloadColumn: string;
+  adxQueryMode: "whole-row" | "payload-column";
+  adxBatchSize: number;
+  adxTenantId: string;
+  adxClientId: string;
+  adxClientSecret: string;
+  adxCursorValue: string;
   retentionDays: number;
 };
 
 const emptyDraft = (): SourceDraft => ({
   name: "",
+  provider: "aws-s3",
   sourceType: "cloudtrail",
   bucketArn: "",
   region: "us-east-1",
@@ -176,11 +191,22 @@ const emptyDraft = (): SourceDraft => ({
   excludedAccounts: "",
   includedRegions: "",
   configResourceTypes: defaultConfigResourceTypes,
+  adxClusterUrl: "",
+  adxDatabase: "",
+  adxTable: "",
+  adxTimestampColumn: "TimeGenerated",
+  adxPayloadColumn: "",
+  adxQueryMode: "whole-row",
+  adxBatchSize: 500,
+  adxTenantId: "",
+  adxClientId: "",
+  adxClientSecret: "",
+  adxCursorValue: "",
   retentionDays: 365,
 });
 
 const statusLabels: Record<string, string> = {
-  draft: "AWS verification pending",
+  draft: "Verification pending",
   testing: "Testing",
   ready: "Ready",
   backfilling: "Backfilling",
@@ -242,6 +268,7 @@ export default function AdminView({
   const [busyId, setBusyId] = useState("");
   const [selectedSource, setSelectedSource] =
     useState<IngestionSource | null>(null);
+  const [adxPreview, setAdxPreview] = useState<AdxPreview | null>(null);
   const [roleEmail, setRoleEmail] = useState("");
   const [roleName, setRoleName] = useState("analyst");
   const [retention, setRetention] = useState({
@@ -379,6 +406,8 @@ export default function AdminView({
       const payload = (await response.json()) as {
         source?: IngestionSource;
         test?: ConnectionTestSummary;
+        preview?: AdxPreview;
+        outcome?: { normalized: number; fetched: number; skipped: number };
         template?: string;
         filename?: string;
         error?: string;
@@ -387,14 +416,19 @@ export default function AdminView({
       if (action === "template" && payload.template) {
         download(payload.filename ?? "gatewatch-read-role.yaml", payload.template);
         onToast("Downloaded the least-privilege IAM role template.");
+      } else if (action === "preview" && payload.preview) {
+        setAdxPreview(payload.preview);
+        onToast(`Queried ${payload.preview.rowCount} bounded row(s); ${payload.preview.records.length} mapped successfully.`);
       } else {
         if (payload.source) setSelectedSource(payload.source);
         await load();
         onToast(
           action === "test"
             ? payload.test?.passed
-              ? "Live AWS connection verified."
-              : "Configuration saved. AWS runtime verification is still pending."
+              ? "Live source connection verified."
+              : "Configuration saved. Runtime verification is still pending."
+            : action === "sync" || (action === "backfill" && source.provider === "azure-data-explorer")
+              ? `Imported ${payload.outcome?.normalized ?? 0} normalized records from ${payload.outcome?.fetched ?? 0} ADX rows.`
             : `Source ${action} completed.`,
         );
       }
@@ -409,14 +443,16 @@ export default function AdminView({
     setSaving(true);
     setError("");
     try {
+      const { adxClientSecret, ...source } = draft;
       const response = await fetch("/api/admin/sources", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           action: editingId ? "update" : "create",
           id: editingId || undefined,
+          clientSecret: adxClientSecret,
           source: {
-            ...draft,
+            ...source,
             includedAccounts: draft.includedAccounts,
             excludedAccounts: draft.excludedAccounts,
             includedRegions: draft.includedRegions,
@@ -435,6 +471,7 @@ export default function AdminView({
       setWizardStep(1);
       setDraft(emptyDraft());
       setSelectedSource(payload.source);
+      setAdxPreview(null);
       await load();
       onToast(
         editingId
@@ -524,8 +561,8 @@ export default function AdminView({
           <p className="eyebrow">Administration</p>
           <h1>Configuration</h1>
           <p>
-            Connect read-only AWS evidence, control ingestion, and govern who can
-            operate Gatewatch.
+            Connect AWS evidence from S3 or Azure Data Explorer, control ingestion,
+            and govern who can operate Gatewatch.
           </p>
         </div>
         <div className="page-actions">
@@ -542,7 +579,7 @@ export default function AdminView({
               setWizardOpen(true);
             }}
           >
-            <Plus size={16} /> Add S3 source
+            <Plus size={16} /> Add log source
           </button>
         </div>
       </div>
@@ -552,11 +589,11 @@ export default function AdminView({
         <div>
           <strong>Read-only by design</strong>
           <p>
-            Gatewatch stores role references—not AWS access keys. Raw logs remain
-            in your bucket and every administrative action is recorded.
+            Gatewatch uses temporary AWS roles or a database-viewer Entra application.
+            Raw logs remain in the source system and every administrative action is recorded.
           </p>
         </div>
-        <span>AWS deployment ready</span>
+        <span>Multi-source ingestion</span>
       </section>
 
       <div className="admin-tabs" role="tablist" aria-label="Administration sections">
@@ -623,8 +660,8 @@ export default function AdminView({
               </div>
               <div className="pipeline-map">
                 {([
-                  ["Raw evidence", "S3", Database],
-                  ["Object events", "EventBridge + SQS", Activity],
+                  ["Raw evidence", "S3 or ADX", Database],
+                  ["Source cursor", "Events or checkpoint", Activity],
                   ["Normalize", "Lambda workers", RefreshCw],
                   ["Query state", "Aurora PostgreSQL", Search],
                 ] as Array<[string, string, LucideIcon]>).map(([label, detail, Icon], index) => (
@@ -642,8 +679,8 @@ export default function AdminView({
                 <h2>{sourceTotals.total ? "Verify configured sources" : "Connect your first evidence source"}</h2>
                 <p>
                   {sourceTotals.total
-                    ? "A source must pass a live AssumeRole, list, and bounded object-read test before activation."
-                    : "Add the AWS log and evidence prefixes that explain configuration, reachability, observed traffic, and threat context."}
+                    ? "A source must pass a live, bounded read-only connection test before activation."
+                    : "Add S3 prefixes or ADX tables containing AWS configuration, reachability, traffic, access, and threat evidence."}
                 </p>
                 <button className="button button-dark" onClick={() => setTab("sources")}>
                   Open data sources <ArrowRight size={15} />
@@ -681,8 +718,8 @@ export default function AdminView({
         <section className="panel admin-source-panel">
           <div className="panel-header">
             <div>
-              <h2>S3 evidence sources</h2>
-              <p>AWS-native configuration, traffic, access, analysis, and finding sources</p>
+              <h2>Evidence sources</h2>
+              <p>AWS logs from S3 or Azure Data Explorer, normalized into one evidence model</p>
             </div>
             <span className="version-chip">{data.sources.length} configured</span>
           </div>
@@ -695,15 +732,15 @@ export default function AdminView({
                 >
                   <button
                     className="admin-source-main"
-                    onClick={() => setSelectedSource(source)}
+                    onClick={() => { setSelectedSource(source); setAdxPreview(null); }}
                   >
                     <span className="source-icon">
                       {source.sourceType === "cloudtrail" ? <Activity size={18} /> : <Database size={18} />}
                     </span>
                     <div>
                       <strong>{source.name}</strong>
-                      <p>{source.bucketName}/{source.objectPrefix}</p>
-                      <small>{source.region} · {sourceTypeDefinition(source.sourceType).label}</small>
+                      <p>{source.provider === "azure-data-explorer" ? `${source.adxDatabase}.${source.adxTable}` : `${source.bucketName}/${source.objectPrefix}`}</p>
+                      <small>{source.provider === "azure-data-explorer" ? "Azure Data Explorer" : source.region} · {sourceTypeDefinition(source.sourceType).label}</small>
                     </div>
                     <span className={`admin-status status-${source.status}`}>
                       <i /> {statusLabels[source.status] ?? source.status}
@@ -712,16 +749,25 @@ export default function AdminView({
                   <div className="admin-source-facts">
                     <span><strong>Mode</strong>{source.ingestionMode}</span>
                     <span><strong>Last test</strong>{formatDate(source.lastTestedAt)}</span>
-                    <span><strong>Last object</strong>{formatDate(source.lastSuccessfulObjectAt)}</span>
+                    <span><strong>{source.provider === "azure-data-explorer" ? "Checkpoint" : "Last object"}</strong>{formatDate(source.lastSuccessfulObjectAt)}</span>
                     <span><strong>Retention</strong>{source.retentionDays} days</span>
                   </div>
                   {selectedSource?.id === source.id ? (
                     <div className="admin-source-detail">
-                      <div className="connection-details">
-                        <span><strong>Role ARN</strong><code>{source.roleArn}</code></span>
-                        <span><strong>External ID</strong><code>{source.externalId}</code></span>
-                        <span><strong>KMS key</strong><code>{source.kmsKeyArn || "Bucket-default encryption"}</code></span>
-                      </div>
+                      {source.provider === "azure-data-explorer" ? (
+                        <div className="connection-details">
+                          <span><strong>Cluster</strong><code>{source.adxClusterUrl}</code></span>
+                          <span><strong>Database / table</strong><code>{source.adxDatabase}.{source.adxTable}</code></span>
+                          <span><strong>Entra application</strong><code>{source.adxClientId}</code></span>
+                          <span><strong>Checkpoint column</strong><code>{source.adxTimestampColumn}</code></span>
+                        </div>
+                      ) : (
+                        <div className="connection-details">
+                          <span><strong>Role ARN</strong><code>{source.roleArn}</code></span>
+                          <span><strong>External ID</strong><code>{source.externalId}</code></span>
+                          <span><strong>KMS key</strong><code>{source.kmsKeyArn || "Bucket-default encryption"}</code></span>
+                        </div>
+                      )}
                       {source.testSummary?.checks?.length ? (
                         <div className="connection-checks">
                           {source.testSummary.checks.map((item) => (
@@ -734,9 +780,17 @@ export default function AdminView({
                       ) : (
                         <div className="empty-checks">
                           <FileClock size={17} />
-                          Run a connection test to validate role assumption, prefix listing, and sample-object access.
+                          {source.provider === "azure-data-explorer"
+                            ? "Run a connection test to validate Entra authentication, database viewer access, table access, and row mapping."
+                            : "Run a connection test to validate role assumption, prefix listing, and sample-object access."}
                         </div>
                       )}
+                      {source.provider === "azure-data-explorer" && adxPreview ? (
+                        <div className="adx-preview" aria-live="polite">
+                          <div><strong>Bounded preview</strong><span>{adxPreview.records.length} mapped · {adxPreview.skippedRows} skipped · {adxPreview.columns.length} columns</span></div>
+                          <pre>{adxPreview.records.map((record) => JSON.stringify(record)).join("\n") || "The table returned no rows."}</pre>
+                        </div>
+                      ) : null}
                       <div className="admin-source-actions">
                         <button
                           className="button button-primary"
@@ -746,14 +800,21 @@ export default function AdminView({
                           <RefreshCw size={15} className={busyId === source.id ? "spin" : ""} />
                           Test connection
                         </button>
-                        <button className="button button-secondary" onClick={() => void sourceAction("template", source)}>
-                          <Download size={15} /> IAM template
-                        </button>
+                        {source.provider === "aws-s3" ? (
+                          <button className="button button-secondary" onClick={() => void sourceAction("template", source)}>
+                            <Download size={15} /> IAM template
+                          </button>
+                        ) : (
+                          <button className="button button-secondary" disabled={busyId === source.id} onClick={() => void sourceAction("preview", source)}>
+                            <Search size={15} /> Preview rows
+                          </button>
+                        )}
                         <button
                           className="button button-secondary"
                           onClick={() => {
                             setDraft({
                               name: source.name,
+                              provider: source.provider,
                               sourceType: source.sourceType,
                               bucketArn: source.bucketArn,
                               region: source.region,
@@ -768,6 +829,17 @@ export default function AdminView({
                               excludedAccounts: source.excludedAccounts.join(", "),
                               includedRegions: source.includedRegions.join(", "),
                               configResourceTypes: source.configResourceTypes,
+                              adxClusterUrl: source.adxClusterUrl,
+                              adxDatabase: source.adxDatabase,
+                              adxTable: source.adxTable,
+                              adxTimestampColumn: source.adxTimestampColumn,
+                              adxPayloadColumn: source.adxPayloadColumn,
+                              adxQueryMode: source.adxQueryMode,
+                              adxBatchSize: source.adxBatchSize,
+                              adxTenantId: source.adxTenantId,
+                              adxClientId: source.adxClientId,
+                              adxClientSecret: "",
+                              adxCursorValue: source.adxCursorValue,
                               retentionDays: source.retentionDays,
                             });
                             setEditingId(source.id);
@@ -793,10 +865,10 @@ export default function AdminView({
                         )}
                         <button
                           className="button button-secondary"
-                          disabled={!source.testSummary?.passed}
-                          onClick={() => void sourceAction("backfill", source)}
+                          disabled={!source.testSummary?.passed || (source.provider === "azure-data-explorer" && source.status !== "live")}
+                          onClick={() => void sourceAction(source.provider === "azure-data-explorer" ? "sync" : "backfill", source)}
                         >
-                          <RotateCcw size={15} /> Start backfill
+                          <RotateCcw size={15} /> {source.provider === "azure-data-explorer" ? "Sync now" : "Start backfill"}
                         </button>
                         <button
                           className="button button-danger"
@@ -805,7 +877,7 @@ export default function AdminView({
                             void sourceAction(
                               "delete",
                               source,
-                              `Delete ${source.name}? This removes only the Gatewatch configuration and never deletes S3 objects.`,
+                              `Delete ${source.name}? This removes only the Gatewatch configuration and stored credential reference. It never deletes source logs.`,
                             )
                           }
                         >
@@ -820,8 +892,8 @@ export default function AdminView({
           ) : (
             <div className="admin-empty">
               <span><CloudCog size={24} /></span>
-              <h3>No S3 evidence sources yet</h3>
-              <p>Start with CloudTrail, Config, and VPC Flow Logs; add path analysis, service access, and security findings as enrichment.</p>
+              <h3>No evidence sources yet</h3>
+              <p>Connect an S3 prefix or an Azure Data Explorer table containing CloudTrail, Config, flow, access, analysis, or managed-finding records.</p>
               <button
                 className="button button-primary"
                 onClick={() => {
@@ -831,7 +903,7 @@ export default function AdminView({
                   setWizardOpen(true);
                 }}
               >
-                <Plus size={15} /> Add S3 source
+                <Plus size={15} /> Add log source
               </button>
             </div>
           )}
@@ -1006,7 +1078,7 @@ export default function AdminView({
           <button className="modal-scrim" aria-label="Close source wizard" onClick={() => setWizardOpen(false)} />
           <div className="admin-source-modal">
             <div className="modal-header">
-              <div><p>Read-only AWS evidence</p><h2 id="source-wizard-title">{editingId ? "Edit S3 source" : "Add S3 source"}</h2><span>Step {wizardStep} of 3 · {wizardStep === 1 ? "Location" : wizardStep === 2 ? "Permissions" : "Scope and backfill"}</span></div>
+              <div><p>Read-only AWS evidence</p><h2 id="source-wizard-title">{editingId ? "Edit log source" : "Add log source"}</h2><span>Step {wizardStep} of 3 · {wizardStep === 1 ? "Provider and location" : wizardStep === 2 ? "Read-only identity" : "Mapping and schedule"}</span></div>
               <button className="icon-button" aria-label="Close source wizard" onClick={() => setWizardOpen(false)}><X size={18} /></button>
             </div>
             <div className="wizard-progress"><span className={wizardStep >= 1 ? "active" : ""} /><span className={wizardStep >= 2 ? "active" : ""} /><span className={wizardStep >= 3 ? "active" : ""} /></div>
@@ -1014,20 +1086,28 @@ export default function AdminView({
               {wizardStep === 1 ? (
                 <div className="source-form-grid">
                   <label className="form-field"><span>Source name</span><input autoFocus value={draft.name} maxLength={120} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Organization AWS evidence" /></label>
-                  <label className="form-field"><span>AWS source type</span><select value={draft.sourceType} onChange={(event) => setDraft((current) => ({ ...current, sourceType: event.target.value as SourceType }))}>{[...new Set(sourceTypeDefinitions.map((definition) => definition.group))].map((group) => <optgroup key={group} label={group}>{sourceTypeDefinitions.filter((definition) => definition.group === group).map((definition) => <option key={definition.value} value={definition.value}>{definition.label}</option>)}</optgroup>)}</select><small>{sourceTypeDefinition(draft.sourceType).description} Expected: {sourceTypeDefinition(draft.sourceType).format}.</small></label>
-                  <label className="form-field source-span-two"><span>S3 bucket ARN</span><input value={draft.bucketArn} onChange={(event) => setDraft((current) => ({ ...current, bucketArn: event.target.value }))} placeholder="arn:aws:s3:::organization-security-logs" /><small>Enter the bucket ARN, not an HTTPS URL.</small></label>
-                  <label className="form-field"><span>AWS region</span><input value={draft.region} onChange={(event) => setDraft((current) => ({ ...current, region: event.target.value }))} placeholder="us-east-1" /></label>
-                  <label className="form-field"><span>Object prefix</span><input value={draft.objectPrefix} onChange={(event) => setDraft((current) => ({ ...current, objectPrefix: event.target.value }))} placeholder="AWSLogs/o-example/" /></label>
-                  <label className="form-field source-span-two"><span>AWS Organizations ID <em>Optional</em></span><input value={draft.organizationId} onChange={(event) => setDraft((current) => ({ ...current, organizationId: event.target.value }))} placeholder="o-a1b2c3d4e5" /></label>
+                  <label className="form-field"><span>Provider</span><select value={draft.provider} onChange={(event) => setDraft((current) => ({ ...current, provider: event.target.value as SourceProvider }))}><option value="aws-s3">Amazon S3</option><option value="azure-data-explorer">Azure Data Explorer</option></select><small>Choose where the AWS log records are stored.</small></label>
+                  <label className="form-field source-span-two"><span>AWS evidence type</span><select value={draft.sourceType} onChange={(event) => setDraft((current) => ({ ...current, sourceType: event.target.value as SourceType }))}>{[...new Set(sourceTypeDefinitions.map((definition) => definition.group))].map((group) => <optgroup key={group} label={group}>{sourceTypeDefinitions.filter((definition) => definition.group === group).map((definition) => <option key={definition.value} value={definition.value}>{definition.label}</option>)}</optgroup>)}</select><small>{sourceTypeDefinition(draft.sourceType).description} Expected record shape: {sourceTypeDefinition(draft.sourceType).format}.</small></label>
+                  {draft.provider === "aws-s3" ? <>
+                    <label className="form-field source-span-two"><span>S3 bucket ARN</span><input value={draft.bucketArn} onChange={(event) => setDraft((current) => ({ ...current, bucketArn: event.target.value }))} placeholder="arn:aws:s3:::organization-security-logs" /><small>Enter the bucket ARN, not an HTTPS URL.</small></label>
+                    <label className="form-field"><span>AWS region</span><input value={draft.region} onChange={(event) => setDraft((current) => ({ ...current, region: event.target.value }))} placeholder="us-east-1" /></label>
+                    <label className="form-field"><span>Object prefix</span><input value={draft.objectPrefix} onChange={(event) => setDraft((current) => ({ ...current, objectPrefix: event.target.value }))} placeholder="AWSLogs/o-example/" /></label>
+                    <label className="form-field source-span-two"><span>AWS Organizations ID <em>Optional</em></span><input value={draft.organizationId} onChange={(event) => setDraft((current) => ({ ...current, organizationId: event.target.value }))} placeholder="o-a1b2c3d4e5" /></label>
+                  </> : <>
+                    <label className="form-field source-span-two"><span>ADX cluster URL</span><input value={draft.adxClusterUrl} onChange={(event) => setDraft((current) => ({ ...current, adxClusterUrl: event.target.value }))} placeholder="https://securitylogs.eastus.kusto.windows.net" /><small>Only HTTPS Microsoft Kusto cluster domains are accepted; paths and query strings are rejected.</small></label>
+                    <label className="form-field"><span>Database</span><input value={draft.adxDatabase} onChange={(event) => setDraft((current) => ({ ...current, adxDatabase: event.target.value }))} placeholder="SecurityLogs" /></label>
+                    <label className="form-field"><span>Table</span><input value={draft.adxTable} onChange={(event) => setDraft((current) => ({ ...current, adxTable: event.target.value }))} placeholder="AwsEvidence" /></label>
+                  </>}
                 </div>
               ) : null}
               {wizardStep === 2 ? (
                 <div className="source-permission-step">
-                  <div className="permission-banner"><KeyRound size={19} /><p><strong>Use a dedicated cross-account role</strong><span>Gatewatch assumes this role only to list the configured prefix and read delivered objects.</span></p></div>
-                  <label className="form-field"><span>IAM role ARN</span><input value={draft.roleArn} onChange={(event) => setDraft((current) => ({ ...current, roleArn: event.target.value }))} placeholder="arn:aws:iam::123456789012:role/GatewatchLogReadRole" /></label>
-                  <label className="form-field"><span>External ID</span><div className="copy-input"><input readOnly value={draft.externalId} /><button aria-label="Copy external ID" onClick={() => { void navigator.clipboard.writeText(draft.externalId); onToast("External ID copied."); }}><Copy size={15} /></button></div><small>Include this unique value in the role trust policy.</small></label>
-                  <label className="form-field"><span>Customer-managed KMS key ARN <em>Optional</em></span><input value={draft.kmsKeyArn} onChange={(event) => setDraft((current) => ({ ...current, kmsKeyArn: event.target.value }))} placeholder="arn:aws:kms:us-east-1:123456789012:key/…" /></label>
-                  <button
+                  {draft.provider === "aws-s3" ? <>
+                    <div className="permission-banner"><KeyRound size={19} /><p><strong>Use a dedicated cross-account role</strong><span>Gatewatch assumes this role only to list the configured prefix and read delivered objects.</span></p></div>
+                    <label className="form-field"><span>IAM role ARN</span><input value={draft.roleArn} onChange={(event) => setDraft((current) => ({ ...current, roleArn: event.target.value }))} placeholder="arn:aws:iam::123456789012:role/GatewatchLogReadRole" /></label>
+                    <label className="form-field"><span>External ID</span><div className="copy-input"><input readOnly value={draft.externalId} /><button aria-label="Copy external ID" onClick={() => { void navigator.clipboard.writeText(draft.externalId); onToast("External ID copied."); }}><Copy size={15} /></button></div><small>Include this unique value in the role trust policy.</small></label>
+                    <label className="form-field"><span>Customer-managed KMS key ARN <em>Optional</em></span><input value={draft.kmsKeyArn} onChange={(event) => setDraft((current) => ({ ...current, kmsKeyArn: event.target.value }))} placeholder="arn:aws:kms:us-east-1:123456789012:key/…" /></label>
+                    <button
                     className="button button-secondary template-preview-button"
                     disabled={!draft.bucketArn || !draft.region}
                     onClick={() => {
@@ -1045,14 +1125,26 @@ export default function AdminView({
                     }}
                   >
                     <Download size={15} /> Download role template
-                  </button>
+                    </button>
+                  </> : <>
+                    <div className="permission-banner"><KeyRound size={19} /><p><strong>Use a dedicated database viewer</strong><span>Grant the Entra application viewer access only to the configured ADX database. Gatewatch stores its secret in the isolated AWS credential vault.</span></p></div>
+                    <label className="form-field"><span>Microsoft Entra tenant ID</span><input value={draft.adxTenantId} onChange={(event) => setDraft((current) => ({ ...current, adxTenantId: event.target.value }))} placeholder="00000000-0000-4000-8000-000000000000" /></label>
+                    <label className="form-field"><span>Application (client) ID</span><input value={draft.adxClientId} onChange={(event) => setDraft((current) => ({ ...current, adxClientId: event.target.value }))} placeholder="00000000-0000-4000-8000-000000000000" /></label>
+                    <label className="form-field"><span>Client secret {editingId ? <em>Optional when unchanged</em> : null}</span><input type="password" autoComplete="new-password" value={draft.adxClientSecret} onChange={(event) => setDraft((current) => ({ ...current, adxClientSecret: event.target.value }))} placeholder={editingId ? "Stored securely — enter only to replace" : "Microsoft Entra client secret"} /><small>The authenticated server immediately relays this to the isolated AWS bridge; it is never stored in the application database.</small></label>
+                  </>}
                 </div>
               ) : null}
               {wizardStep === 3 ? (
                 <div className="source-form-grid">
                   <label className="form-field"><span>Ingestion mode</span><select value={draft.ingestionMode} onChange={(event) => setDraft((current) => ({ ...current, ingestionMode: event.target.value as SourceDraft["ingestionMode"] }))}><option value="both">Continuous + historical backfill</option><option value="continuous">Continuous deliveries only</option><option value="backfill">Historical backfill only</option></select></label>
                   <label className="form-field"><span>Backfill start</span><input type="date" disabled={draft.ingestionMode === "continuous"} value={draft.backfillStart} onChange={(event) => setDraft((current) => ({ ...current, backfillStart: event.target.value }))} /></label>
-                  <label className="form-field"><span>Included accounts <em>Optional</em></span><textarea value={draft.includedAccounts} onChange={(event) => setDraft((current) => ({ ...current, includedAccounts: event.target.value }))} placeholder="111122223333, 444455556666" /><small>Leave blank to accept every account below the prefix.</small></label>
+                  {draft.provider === "azure-data-explorer" ? <>
+                    <label className="form-field"><span>Timestamp column</span><input value={draft.adxTimestampColumn} onChange={(event) => setDraft((current) => ({ ...current, adxTimestampColumn: event.target.value }))} placeholder="TimeGenerated" /><small>Used for deterministic incremental checkpoints.</small></label>
+                    <label className="form-field"><span>Row mapping</span><select value={draft.adxQueryMode} onChange={(event) => setDraft((current) => ({ ...current, adxQueryMode: event.target.value as SourceDraft["adxQueryMode"] }))}><option value="whole-row">Use the complete ADX row</option><option value="payload-column">Parse one dynamic/JSON column</option></select></label>
+                    <label className="form-field"><span>Payload column</span><input disabled={draft.adxQueryMode === "whole-row"} value={draft.adxPayloadColumn} onChange={(event) => setDraft((current) => ({ ...current, adxPayloadColumn: event.target.value }))} placeholder="RawEvent" /></label>
+                    <label className="form-field"><span>Rows per sync</span><input type="number" min={10} max={1000} value={draft.adxBatchSize} onChange={(event) => setDraft((current) => ({ ...current, adxBatchSize: Number(event.target.value) }))} /><small>Hard limit: 1,000 rows and 5 MB per query.</small></label>
+                  </> : null}
+                  <label className="form-field"><span>Included accounts <em>Optional</em></span><textarea value={draft.includedAccounts} onChange={(event) => setDraft((current) => ({ ...current, includedAccounts: event.target.value }))} placeholder="111122223333, 444455556666" /><small>Leave blank to accept every account in the source.</small></label>
                   <label className="form-field"><span>Included regions <em>Optional</em></span><textarea value={draft.includedRegions} onChange={(event) => setDraft((current) => ({ ...current, includedRegions: event.target.value }))} placeholder="us-east-1, us-west-2" /><small>Leave blank to accept every delivered region.</small></label>
                   <label className="form-field"><span>Excluded accounts <em>Optional</em></span><textarea value={draft.excludedAccounts} onChange={(event) => setDraft((current) => ({ ...current, excludedAccounts: event.target.value }))} placeholder="999900001111" /></label>
                   <label className="form-field"><span>Normalized retention</span><div className="input-suffix"><input type="number" min={30} max={3650} value={draft.retentionDays} onChange={(event) => setDraft((current) => ({ ...current, retentionDays: Number(event.target.value) }))} /><em>days</em></div></label>

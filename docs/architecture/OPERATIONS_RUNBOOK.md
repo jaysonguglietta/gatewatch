@@ -34,6 +34,24 @@ After a model, prompt, schema, or Guardrail change, invoke one confirmed,
 internal, and evidence-incomplete fixture. Confirm exact verdict preservation,
 valid citations, audit events, usage, fallback, and no AWS mutation path.
 
+## Azure Data Explorer source health
+
+Open **Administration → Data sources**, expand the ADX source, and inspect its
+last test, checkpoint, connection checks, and ingestion runs.
+
+| Symptom | Check | Response |
+|---|---|---|
+| Entra authentication rejected | Secret rotation, tenant ID, client ID | Edit the source, replace the secret, test, then reactivate |
+| Viewer access denied | ADX database role assignment | Grant database `viewer`; never grant cluster admin to solve a read failure |
+| Table or column missing | Source schema and identifier spelling | Pause, correct mapping, preview, test, reactivate |
+| Source degraded after timeout/429 | ADX query health and application logs | Wait or reduce batch size; test before reactivation |
+| Full 1,000-row batches every cycle | Checkpoint age and source arrival rate | Reduce schedule interval only after capacity review, or partition sources |
+| Rows fetched but none normalized | Evidence type and complete-row/payload mapping | Preview sanitized rows and select the matching AWS evidence type |
+
+Do not paste client secrets, access tokens, or raw security records into tickets.
+The `adx_sync_failed` event contains counts only. A sync failure does not advance
+the checkpoint, so retry is duplicate-safe.
+
 ## Collection health triage
 
 ### Partial account

@@ -86,6 +86,9 @@ Apply the migrations in filename order through a controlled migration identity:
    adds AWS verification runs, provider correlations, graph edges, governed
    remediation, owner actions, incidents, policy packs, exposure SLO snapshots,
    and enrichment extensions with forced workspace isolation.
+7. [`0007_azure_data_explorer_sources.sql`](../../db/postgres/0007_azure_data_explorer_sources.sql)
+   adds provider-aware ADX source metadata, expands the supported AWS evidence
+   types, and creates a durable forced-RLS polling checkpoint table.
 
 The governance migration and each later product migration enable and force
 row-level security on every workspace-scoped table. Each application
@@ -212,6 +215,25 @@ blocked at both SDK and network layers.
   IAM Access Analyzer before deployment.
 - Activate a source only after live STS, list, bounded read, and KMS tests pass.
 
+### Azure Data Explorer source
+
+If the same AWS logs are centralized in ADX, deploy the current web stack so it
+creates `AzureDataExplorerCredentialsSecret` and the five-minute private sync
+association. In **Administration → Data sources**, choose Azure Data Explorer,
+then specify the cluster, database, table, timestamp column, evidence type, and
+row mapping.
+
+Create a dedicated Microsoft Entra application and grant it `viewer` access to
+only the selected ADX database. Enter its tenant ID, client ID, and secret in
+the source wizard. The bridge stores one credential object under that source ID
+inside Secrets Manager; the application database stores only tenant/client IDs.
+Run **Test connection**, inspect **Preview rows**, activate the source, then run
+the initial synchronization.
+
+For Private Link clusters, verify that the Gatewatch private subnet resolves and
+routes to the validated `*.kusto.*` hostname over TCP 443. Do not add an arbitrary
+proxy or custom cluster domain; the bridge intentionally rejects them.
+
 ## Validation checklist
 
 - [ ] StackSet instances are current for every selected account.
@@ -270,6 +292,15 @@ blocked at both SDK and network layers.
 - [ ] Prompt-like AWS metadata is blocked or safely analyzed without changing the verdict.
 - [ ] Disabling Bedrock produces a labeled deterministic fallback and does not affect findings.
 - [ ] Parallel requests stop at the per-user/workspace daily counters.
+- [ ] The ADX credential is absent from browser responses, SQLite, Aurora, and logs.
+- [ ] An ADX application with database `viewer` access can test and preview, while
+  the same identity cannot execute management commands or write to the table.
+- [ ] Non-Kusto URLs, URL credentials, paths, redirects, and injected table or
+  column identifiers are rejected before any outbound request.
+- [ ] Manual and scheduled ADX syncs advance the timestamp checkpoint only after
+  evidence writes complete, and replayed rows do not create duplicate evidence.
+- [ ] Oversized, malformed, throttled, or unauthorized ADX responses create a
+  failed run and degraded source without exposing tokens or provider internals.
 
 ## Rollback
 
